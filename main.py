@@ -96,8 +96,7 @@ def main() -> None:
 	print(f"Stochastic outputs shape (clusterized smoother rebuild): {tuple(outputs_for_clusterized.shape)}")
 	for i, cluster_i in enumerate(clusters):
 		print(
-			f"x[{i}]={x[i, 0].item():.3f} centroids={cluster_i.centroids.squeeze(-1).tolist()} "
-			f"weights={cluster_i.weights.tolist()}"
+			f"x[{i}]={x[i, 0].item():.3f} centroids={cluster_i.centroids.squeeze(-1).tolist()}"
 		)
 	print("")
 
