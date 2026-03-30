@@ -13,19 +13,17 @@ class ThreeMode1DGaussianMixture(StochasticFunction):
         self.probs = probs
         self.std = std
 
-    def sample(self, x: torch.Tensor, num_samples: int) -> torch.Tensor:
-        m = x.shape[0]
-        num_components = self.locs.shape[0]
+    def sample(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim < 2:
+            raise ValueError("x must have shape (..., d)")
 
-        component_idx = torch.multinomial(
-            self.probs.expand(m, num_components),
-            num_samples=num_samples,
-            replacement=True,
-        )
+        leading_shape = x.shape[:-1]
+        locs = self.locs.to(device=x.device, dtype=x.dtype)
+        probs = self.probs.to(device=x.device)
 
-        component_means = x[:, 0].unsqueeze(1) + self.locs[component_idx]
-        noise = self.std * torch.randn((m, num_samples))
+        component_idx = torch.distributions.Categorical(probs=probs).sample(leading_shape)
+        component_means = x[..., 0] + locs[component_idx]
+        noise = self.std * torch.randn(leading_shape, dtype=x.dtype, device=x.device)
         y = component_means + noise
 
-        # q = 1, so we add a final singleton dimension.
         return y.unsqueeze(-1)

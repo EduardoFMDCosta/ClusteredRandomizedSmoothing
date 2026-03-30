@@ -11,12 +11,14 @@ class Cluster:
         x: torch.Tensor,
         *,
         num_samples: int = 1000,
+        max_num_clusters: int = 8,
         max_iter: int = 100,
         tol: float = 1e-5,
     ):
         self.stochastic_function = stochastic_function
         self.x = x
 
+        self.max_num_clusters = max_num_clusters
         self.max_iter = max_iter
         self.tol = tol
 
@@ -24,7 +26,8 @@ class Cluster:
         self.weights = self._compute_weights()
 
     def _compute_centroids(self, num_samples: int) -> torch.Tensor:
-        outputs = self.stochastic_function.sample(self.x, num_samples)
+        repeated_x = self.x.unsqueeze(1).expand(-1, num_samples, -1)
+        outputs = self.stochastic_function.sample(repeated_x)
 
         m, n, q = outputs.shape
         pooled = outputs.reshape(m * n, q)

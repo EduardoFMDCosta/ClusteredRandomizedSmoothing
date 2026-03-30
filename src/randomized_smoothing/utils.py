@@ -1,38 +1,11 @@
 import torch
 
-# Utility functions for trimming
 def _validate_alpha(alpha: float) -> None:
     if not (0.0 <= alpha < 0.5):
         raise ValueError("Trimming parameter alpha must satisfy 0 <= alpha < 0.5")
     else:
         return alpha
-
-
-def _trim_core_per_dimension(samples: torch.Tensor, alpha: float) -> torch.Tensor:
-    n = samples.shape[0]
-
-    tail = int(alpha * n)
-    sorted_vals, _ = torch.sort(samples, dim=0)
-    return sorted_vals[tail : n - tail, :]
-
-
-def _sample_from_trimmed_core(trimmed_core: torch.Tensor, num_draws: int) -> torch.Tensor:
-    """Sample from coordinate-wise trimmed empirical distribution.
-
-    For q>1, each coordinate is sampled independently from its trimmed marginal.
-    """
-    if num_draws <= 0:
-        raise ValueError("num_draws must be > 0")
-
-    n_trim, q = trimmed_core.shape
-    if n_trim == 0:
-        raise ValueError("trimmed core must be non-empty")
-
-    idx = torch.randint(0, n_trim, (num_draws, q), device=trimmed_core.device)
-    return trimmed_core.gather(dim=0, index=idx)
-
-
-# Utility functions for clustering
+    
 def _run_kmeans(
         data: torch.Tensor,
         num_clusters: int,

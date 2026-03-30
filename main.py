@@ -32,10 +32,10 @@ def main() -> None:
 	x = torch.tensor([[0.0]], dtype=torch.float64)  # (m=3, d=1)
 
 	num_samples_per_x = 1000
-	outputs = stochastic_fn.sample(x, num_samples=num_samples_per_x)  # (m, n, q)
+	outputs = stochastic_fn.sample(x.unsqueeze(1).expand(-1, num_samples_per_x, -1))  # (m, n, q)
 
 	# ii) Build one Cluster per input by observing x-dependent samples.
-	observed_for_clustering = stochastic_fn.sample(x, num_samples=5000)  # (m, n_cluster, q)
+	observed_for_clustering = stochastic_fn.sample(x.unsqueeze(1).expand(-1, 5000, -1))  # (m, n_cluster, q)
 	clusters = fit_kmeans_clusters_per_input(
 		observed_samples=observed_for_clustering,
 		num_clusters=3,
@@ -56,12 +56,12 @@ def main() -> None:
 		dtype=outputs.dtype,
 	)
 	for t in range(num_mc_repetitions):
-		outputs_t = stochastic_fn.sample(x, num_samples=num_samples_per_repetition)
+		outputs_t = stochastic_fn.sample(x.unsqueeze(1).expand(-1, num_samples_per_repetition, -1))
 		global_draw_t = global_smoother.sample_from_trimmed(outputs_t, num_draws=1).squeeze(1)
 		global_trimmed_mc_samples[:, t, :] = global_draw_t
 
 	# Regenerate stochastic samples to rebuild the clusterized smoother per x.
-	outputs_for_clusterized = stochastic_fn.sample(x, num_samples=900)
+	outputs_for_clusterized = stochastic_fn.sample(x.unsqueeze(1).expand(-1, 900, -1))
 	cluster_smoother = ClusterizedAlphaTrimmingSmoothing(alpha=alpha)
 	cluster_result = cluster_smoother.smooth_and_sample(
 		outputs=outputs_for_clusterized,
@@ -76,7 +76,7 @@ def main() -> None:
 		dtype=outputs.dtype,
 	)
 	for t in range(num_mc_repetitions):
-		outputs_t = stochastic_fn.sample(x, num_samples=num_samples_per_repetition)
+		outputs_t = stochastic_fn.sample(x.unsqueeze(1).expand(-1, num_samples_per_repetition, -1))
 		clusters_t = fit_kmeans_clusters_per_input(
 			observed_samples=outputs_t,
 			num_clusters=3,
