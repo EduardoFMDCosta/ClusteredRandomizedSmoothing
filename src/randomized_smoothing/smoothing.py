@@ -22,11 +22,8 @@ class Smoothing(ABC):
         raise NotImplementedError
 
     def monte_carlo(self, num_simulations: int) -> torch.Tensor:
-        outputs = list()
-        for _ in range(num_simulations):
-            distribution = self.smooth()
-            outputs.append(distribution.sample())
-        return torch.stack(outputs)
+        draws = [self.smooth().sample() for _ in range(num_simulations)]
+        return torch.stack(draws, dim=1)
 
 
 class AlphaTrimmingSmoothing(Smoothing):
