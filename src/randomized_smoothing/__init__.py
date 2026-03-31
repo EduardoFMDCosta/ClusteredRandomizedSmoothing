@@ -1,25 +1,38 @@
-from .clusters import Cluster
+from .clusters import Cluster, ClusterParameters
 from .distributions import (
     Distribution,
     MultivariateGaussian,
     Dirac,
     MixtureDirac,
 )
-from .examples import ThreeMode1DGaussianMixture
-from .smoothing import AlphaTrimmingSmoothing, ClusterizedAlphaTrimmingSmoothing
+from .smoothing import (
+    Smoothing,
+    SmoothingParameters,
+    AlphaTrimmingSmoothing,
+    ClusterizedAlphaTrimmingSmoothing,
+)
 from .stochastic import StochasticFunction
 from .bounds import alpha_trimming_bound, clusterized_alpha_trimming_bound
 
 __all__ = [
+    # Core abstractions
     "StochasticFunction",
-    "Cluster",
+    "Smoothing",
     "Distribution",
+    # Configuration
+    "SmoothingParameters",
+    "ClusterParameters",
+    # Smoothers
     "AlphaTrimmingSmoothing",
     "ClusterizedAlphaTrimmingSmoothing",
+    # Clustering
+    "Cluster",
+    # Noise distributions
     "MultivariateGaussian",
+    # Output distributions (returned by smooth())
     "Dirac",
     "MixtureDirac",
-    "ThreeMode1DGaussianMixture",
+    # Bounds
     "alpha_trimming_bound",
     "clusterized_alpha_trimming_bound",
 ]
