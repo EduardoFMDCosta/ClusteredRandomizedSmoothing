@@ -9,135 +9,99 @@ import torch
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
-	sys.path.insert(0, str(SRC))
+    sys.path.insert(0, str(SRC))
 
-from randomized_smoothing import (  # noqa: E402
-	AlphaTrimmingSmoothing,
-	ClusterizedAlphaTrimmingSmoothing,
-	ThreeMode1DGaussianMixture,
-	fit_kmeans_clusters_per_input,
+from randomized_smoothing.clusters import Cluster, ClusterParameters  # noqa: E402
+from randomized_smoothing.distributions import MultivariateGaussian  # noqa: E402
+from randomized_smoothing.examples import ThreeMode1DGaussianMixture  # noqa: E402
+from randomized_smoothing.smoothing import (  # noqa: E402
+    AlphaTrimmingSmoothing,
+    ClusterizedAlphaTrimmingSmoothing,
+    SmoothingParameters,
 )
 from plotting import plot_experiment_results  # noqa: E402
 
 
+def _draw_empirical_samples(smoother, num_draws: int) -> torch.Tensor:
+    draws = [smoother.smooth().sample() for _ in range(num_draws)]
+    return torch.stack(draws, dim=1)
+
+
 def main() -> None:
-	torch.manual_seed(0)
+    torch.manual_seed(0)
 
-	# i) Define the stochastic function and evaluate on one or many inputs.
-	stochastic_fn = ThreeMode1DGaussianMixture(
-		offsets=torch.tensor([-5.0, 0.0, 5.0]),
-		probs=torch.tensor([0.40, 0.20, 0.40]),
-		std=0.5,
-	)
-	x = torch.tensor([[0.0]], dtype=torch.float64)  # (m=3, d=1)
+    x = torch.tensor([[0.0], [5.0]], dtype=torch.float64)
+    stochastic_fn = ThreeMode1DGaussianMixture(
+        locs=torch.tensor([-5.0, 0.0, 5.0], dtype=torch.float64),
+        probs=torch.tensor([0.40, 0.20, 0.40], dtype=torch.float64),
+        std=0.5,
+    )
 
-	num_samples_per_x = 1000
-	outputs = stochastic_fn.sample(x.unsqueeze(1).expand(-1, num_samples_per_x, -1))  # (m, n, q)
+    noise_mean = torch.zeros(x.shape[-1], dtype=x.dtype)
+    noise_cov = 1.5 * torch.eye(x.shape[-1], dtype=x.dtype)
+    smoothing_distribution = MultivariateGaussian(mean=noise_mean, cov=noise_cov)
 
-	# ii) Build one Cluster per input by observing x-dependent samples.
-	observed_for_clustering = stochastic_fn.sample(x.unsqueeze(1).expand(-1, 5000, -1))  # (m, n_cluster, q)
-	clusters = fit_kmeans_clusters_per_input(
-		observed_samples=observed_for_clustering,
-		num_clusters=3,
-	)
+    alpha = 0.40
+    num_empirical_samples = 5000
+    num_cluster_samples = 5000
+    num_smoother_draws = 2000
 
-	# iii) For a chosen alpha, produce many samples from each smoothing strategy.
-	alpha = 0.40
-	num_mc_repetitions = 1000
-	num_samples_per_repetition = 500
+    raw_noise = smoothing_distribution.sample(size=(x.shape[0], num_empirical_samples))
+    raw_outputs = stochastic_fn.sample(x.unsqueeze(1) + raw_noise)
 
-	global_smoother = AlphaTrimmingSmoothing(alpha=alpha)
-	global_trimmed_mean = global_smoother.smooth(outputs)  # (m, q)
+    cluster_noise = smoothing_distribution.sample(size=(x.shape[0], num_cluster_samples))
+    cluster_outputs = stochastic_fn.sample(x.unsqueeze(1) + cluster_noise)
+    cluster = Cluster(
+        outputs=cluster_outputs,
+        params=ClusterParameters(num_clusters=3),
+    )
 
-	# Monte Carlo over the whole global-trimming pipeline:
-	# sample from stochastic function -> trim -> sample from trimmed set.
-	global_trimmed_mc_samples = torch.empty(
-		(x.shape[0], num_mc_repetitions, outputs.shape[2]),
-		dtype=outputs.dtype,
-	)
-	for t in range(num_mc_repetitions):
-		outputs_t = stochastic_fn.sample(x.unsqueeze(1).expand(-1, num_samples_per_repetition, -1))
-		global_draw_t = global_smoother.sample_from_trimmed(outputs_t, num_draws=1).squeeze(1)
-		global_trimmed_mc_samples[:, t, :] = global_draw_t
+    alpha_params = SmoothingParameters(
+        smoothing_distribution=smoothing_distribution,
+        N=200,
+        alpha=alpha,
+    )
+    alpha_smoother = AlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=x,
+        params=alpha_params,
+    )
 
-	# Regenerate stochastic samples to rebuild the clusterized smoother per x.
-	outputs_for_clusterized = stochastic_fn.sample(x.unsqueeze(1).expand(-1, 900, -1))
-	cluster_smoother = ClusterizedAlphaTrimmingSmoothing(alpha=alpha)
-	cluster_result = cluster_smoother.smooth_and_sample(
-		outputs=outputs_for_clusterized,
-		cluster=clusters,
-		num_draws=400,
-	)
+    clusterized_params = SmoothingParameters(
+        smoothing_distribution=smoothing_distribution,
+        N=200,
+        alpha=alpha,
+        cluster=cluster,
+    )
+    clusterized_smoother = ClusterizedAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=x,
+        params=clusterized_params,
+    )
 
-	# Monte Carlo over the whole clusterized-trimming pipeline:
-	# sample from stochastic function -> fit clusters -> clusterized trim -> sample from trimmed points.
-	clusterized_mc_samples = torch.empty(
-		(x.shape[0], num_mc_repetitions, outputs.shape[2]),
-		dtype=outputs.dtype,
-	)
-	for t in range(num_mc_repetitions):
-		outputs_t = stochastic_fn.sample(x.unsqueeze(1).expand(-1, num_samples_per_repetition, -1))
-		clusters_t = fit_kmeans_clusters_per_input(
-			observed_samples=outputs_t,
-			num_clusters=3,
-			max_iter=100,
-			tol=1e-4,
-		)
-		clusterized_draw_t = cluster_smoother.sample_from_trimmed(
-			outputs=outputs_t,
-			cluster=clusters_t,
-			num_draws=1,
-		).squeeze(1)
-		clusterized_mc_samples[:, t, :] = clusterized_draw_t
+    global_trimmed_mc_samples = _draw_empirical_samples(alpha_smoother, num_smoother_draws)
+    clusterized_mc_samples = _draw_empirical_samples(clusterized_smoother, num_smoother_draws)
 
-	print("=== Experiment Summary ===")
-	print(f"Input tensor x shape: {tuple(x.shape)}")
-	print(f"Stochastic outputs shape (global smoother): {tuple(outputs.shape)}")
-	print(f"Stochastic outputs shape (clusterized smoother rebuild): {tuple(outputs_for_clusterized.shape)}")
-	for i, cluster_i in enumerate(clusters):
-		print(
-			f"x[{i}]={x[i, 0].item():.3f} centroids={cluster_i.centroids.squeeze(-1).tolist()}"
-		)
-	print("")
+    chart_paths = plot_experiment_results(
+        x=x,
+        outputs=raw_outputs,
+        global_trimmed_mc_samples=global_trimmed_mc_samples,
+        clusterized_mc_samples=clusterized_mc_samples,
+        output_dir=ROOT / "outputs",
+    )
 
-	print("=== AlphaTrimmingSmoothing ===")
-	print(f"alpha = {alpha}")
-	print(f"alpha-trimmed means per x (shape {tuple(global_trimmed_mean.shape)}):")
-	print(global_trimmed_mean.squeeze(-1))
-	print("")
-
-	print("=== ClusterizedAlphaTrimmingSmoothing ===")
-	print(f"cluster means shape: {tuple(cluster_result.cluster_means.shape)}")
-	print(f"weighted sampled outputs shape: {tuple(cluster_result.sampled.shape)}")
-	print("first 10 sampled points for each input:")
-	print(cluster_result.sampled[:, :10, 0])
-	print("")
-	print("=== Monte Carlo Smoother Sampling ===")
-	print("Each sample below is generated by repeating the whole process:")
-	print("global: sample stochastic outputs -> trim -> sample from trimmed points")
-	print("clusterized: sample stochastic outputs -> fit clusters -> trim per cluster -> sample from trimmed points")
-	print(f"num repetitions: {num_mc_repetitions}")
-	print(f"global MC samples shape: {tuple(global_trimmed_mc_samples.shape)}")
-	print(f"clusterized MC samples shape: {tuple(clusterized_mc_samples.shape)}")
-	print("first 10 global MC samples per x:")
-	print(global_trimmed_mc_samples[:, :10, 0])
-	print("first 10 clusterized MC samples per x:")
-	print(clusterized_mc_samples[:, :10, 0])
-
-	chart_paths = plot_experiment_results(
-		x=x,
-		outputs=outputs,
-		global_trimmed_mc_samples=global_trimmed_mc_samples,
-		clusterized_mc_samples=clusterized_mc_samples,
-		output_dir=ROOT / "outputs",
-	)
-
-	print("")
-	print("=== Saved Charts ===")
-	for p in chart_paths:
-		print(str(p))
+    print("=== Experiment Summary ===")
+    print(f"x shape: {tuple(x.shape)}")
+    print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
+    print(f"alpha-trimming samples shape: {tuple(global_trimmed_mc_samples.shape)}")
+    print(f"clusterized samples shape: {tuple(clusterized_mc_samples.shape)}")
+    print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
+    print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
+    print("")
+    print("Saved charts:")
+    for path in chart_paths:
+        print(path)
 
 
 if __name__ == "__main__":
-	main()
-
+    main()

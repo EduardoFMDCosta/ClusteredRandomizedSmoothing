@@ -20,7 +20,7 @@ class Smoothing(ABC):
     @abstractmethod
     def smooth(self) -> Distribution:
         raise NotImplementedError
-    @abstractmethod
+
     def monte_carlo(self, num_simulations: int) -> torch.Tensor:
         outputs = list()
         for _ in range(num_simulations):

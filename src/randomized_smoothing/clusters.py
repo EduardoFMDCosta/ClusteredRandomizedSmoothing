@@ -5,6 +5,7 @@ from randomized_smoothing.utils import _run_kmeans, _select_num_clusters_elbow
 
 @dataclass
 class ClusterParameters:
+    num_clusters: int | None = None
     num_samples: int = 1000
     max_num_clusters: int = 10
     max_iter: int = 1000
@@ -23,23 +24,28 @@ class Cluster:
     def _compute_centroids(self, outputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         m, n, q = outputs.shape
 
-        flat_outputs = outputs.reshape(m * n, q)
-        sample_size = min(self.params.num_samples, flat_outputs.shape[0])
-        generator = torch.Generator(device=flat_outputs.device)
-        generator.manual_seed(0)
-
-        if sample_size < flat_outputs.shape[0]:
-            idx = torch.randperm(flat_outputs.shape[0], generator=generator, device=flat_outputs.device)[:sample_size]
-            elbow_data = flat_outputs[idx]
+        if self.params.num_clusters is not None:
+            if self.params.num_clusters <= 0:
+                raise ValueError("num_clusters must be positive when provided")
+            k = min(self.params.num_clusters, n)
         else:
-            elbow_data = flat_outputs
+            flat_outputs = outputs.reshape(m * n, q)
+            sample_size = min(self.params.num_samples, flat_outputs.shape[0])
+            generator = torch.Generator(device=flat_outputs.device)
+            generator.manual_seed(0)
 
-        k = _select_num_clusters_elbow(
-            elbow_data,
-            max_k=min(self.params.max_num_clusters, n),
-            max_iter=self.params.max_iter,
-            tol=self.params.tol,
-        )
+            if sample_size < flat_outputs.shape[0]:
+                idx = torch.randperm(flat_outputs.shape[0], generator=generator, device=flat_outputs.device)[:sample_size]
+                elbow_data = flat_outputs[idx]
+            else:
+                elbow_data = flat_outputs
+
+            k = _select_num_clusters_elbow(
+                elbow_data,
+                max_k=min(self.params.max_num_clusters, n),
+                max_iter=self.params.max_iter,
+                tol=self.params.tol,
+            )
 
         centroids = torch.empty((m, k, q), dtype=outputs.dtype, device=outputs.device)
         assignments = torch.empty((m, n), dtype=torch.long, device=outputs.device)
