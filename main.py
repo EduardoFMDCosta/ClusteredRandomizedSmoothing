@@ -38,7 +38,7 @@ def main():
 	# Define smoothing distribution
     smoothing_distribution = MultivariateGaussian(
         mean=torch.zeros(x.shape[-1], dtype=x.dtype), 
-        cov=1.5 * torch.eye(x.shape[-1], dtype=x.dtype)
+        cov=1.0 * torch.eye(x.shape[-1], dtype=x.dtype)
     )
 
 	# Define parameters
@@ -47,7 +47,7 @@ def main():
     beta = 1e-2
     num_clusters = 3
     N = 50
-    num_samples = 10000
+    num_samples = 5000
     
 
 	# Construct cluster and region of high probability mass based on samples from h_w(x + noise)
