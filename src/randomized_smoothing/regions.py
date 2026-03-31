@@ -29,9 +29,6 @@ class HyperRectangle:
     
     @staticmethod
     def from_samples(samples, cluster, p):
-        # This method should return a Hyperrectangle that contains a fraction p of the samples assigned to each cluster (which comes from being closer to the centroid)
-        # samples is (m, N, q), cluster.centroids is (m, k, q), and p is a float in (0, 1)
-        # The method should return a HyperRectangle with lower and upper bounds of shape (m, k, q) that contains a fraction p of the samples assigned to each cluster. This can be done by computing the distance of each sample to its assigned centroid, then finding the radius that contains fraction p of those distances, and finally constructing the hyperrectangle around the centroid with that radius.
         if not isinstance(samples, torch.Tensor):
             raise TypeError("samples must be a torch.Tensor")
         if samples.ndim != 3:

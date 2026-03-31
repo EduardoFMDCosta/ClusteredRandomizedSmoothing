@@ -11,26 +11,23 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.clusters import Cluster, ClusterParameters  # noqa: E402
-from randomized_smoothing.distributions import MultivariateGaussian  # noqa: E402
-from randomized_smoothing.examples import ThreeMode1DGaussianMixture  # noqa: E402
-from randomized_smoothing.regions import HyperRectangle  # noqa: E402
-from randomized_smoothing.smoothing import (  # noqa: E402
+from randomized_smoothing.bounds import lower_bound_clopper_pearson
+from randomized_smoothing.clusters import Cluster, ClusterParameters
+from randomized_smoothing.distributions import MultivariateGaussian
+from randomized_smoothing.examples import ThreeMode1DGaussianMixture
+from randomized_smoothing.regions import HyperRectangle
+from randomized_smoothing.smoothing import (
     AlphaTrimmingSmoothing,
     ClusterizedAlphaTrimmingSmoothing,
     SmoothingParameters,
 )
-from plotting import plot_experiment_results  # noqa: E402
+from plotting import plot_experiment_results
 
 
-def _draw_empirical_samples(smoother, num_draws: int) -> torch.Tensor:
-    draws = [smoother.smooth().sample() for _ in range(num_draws)]
-    return torch.stack(draws, dim=1)
-
-
-def main() -> None:
+def main():
     torch.manual_seed(0)
-
+    
+	# Define stochastic function and inputs x
     x = torch.tensor([[0.0], [5.0]], dtype=torch.float64)
     stochastic_fn = ThreeMode1DGaussianMixture(
         locs=torch.tensor([-5.0, 0.0, 5.0], dtype=torch.float64),
@@ -38,67 +35,79 @@ def main() -> None:
         std=0.5,
     )
 
-    noise_mean = torch.zeros(x.shape[-1], dtype=x.dtype)
-    noise_cov = 1.5 * torch.eye(x.shape[-1], dtype=x.dtype)
-    smoothing_distribution = MultivariateGaussian(mean=noise_mean, cov=noise_cov)
-
-    alpha = 0.25
-    region_mass = 0.50
-    num_empirical_samples = 5000
-    num_cluster_samples = 5000
-    num_smoother_draws = 2000
-
-    raw_noise = smoothing_distribution.sample(size=(x.shape[0], num_empirical_samples))
-    raw_outputs = stochastic_fn.sample(x.unsqueeze(1) + raw_noise)
-
-    cluster_noise = smoothing_distribution.sample(size=(x.shape[0], num_cluster_samples))
-    cluster_outputs = stochastic_fn.sample(x.unsqueeze(1) + cluster_noise)
-    cluster = Cluster(
-        outputs=cluster_outputs,
-        params=ClusterParameters(num_clusters=3),
+	# Define smoothing distribution
+    smoothing_distribution = MultivariateGaussian(
+        mean=torch.zeros(x.shape[-1], dtype=x.dtype), 
+        cov=1.5 * torch.eye(x.shape[-1], dtype=x.dtype)
     )
-    region = HyperRectangle.from_samples(samples=cluster_outputs, cluster=cluster, p=region_mass)
 
-    alpha_params = SmoothingParameters(
+	# Define parameters
+    alpha = 0.25
+    p = 0.80
+    beta = 1e-2
+    num_clusters = 3
+    N = 50
+    num_samples = 10000
+    
+
+	# Construct cluster and region of high probability mass based on samples from h_w(x + noise)
+    certified_p = lower_bound_clopper_pearson(beta=beta, p=p, num_samples=num_samples)
+    raw_outputs = stochastic_fn.sample(
+        x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], num_samples))
+    )
+
+    cluster = Cluster(
+        outputs=raw_outputs,
+        params=ClusterParameters(num_clusters=num_clusters),
+    )
+    region = HyperRectangle.from_samples(samples=raw_outputs, cluster=cluster, p=certified_p)
+
+
+	# Construct smoothers
+    params = SmoothingParameters(
         smoothing_distribution=smoothing_distribution,
-        N=200,
+        N=N,
         alpha=alpha,
     )
-    alpha_smoother = AlphaTrimmingSmoothing(
+    
+    alpha_trimming_smoother = AlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=x,
-        params=alpha_params,
+        params=params,
     )
 
     clusterized_params = SmoothingParameters(
         smoothing_distribution=smoothing_distribution,
-        N=200,
+        N=N,
         alpha=alpha,
         cluster=cluster,
     )
-    clusterized_smoother = ClusterizedAlphaTrimmingSmoothing(
+    clusterized_alpha_trimming_smoother = ClusterizedAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=x,
         params=clusterized_params,
     )
 
-    global_trimmed_mc_samples = _draw_empirical_samples(alpha_smoother, num_smoother_draws)
-    clusterized_mc_samples = _draw_empirical_samples(clusterized_smoother, num_smoother_draws)
+	# Plot empirical distributions of raw outputs and smoothed outputs
+    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(num_simulations=num_samples)
+    clusterized_alpha_trimming_mc_samples = clusterized_alpha_trimming_smoother.monte_carlo(num_simulations=num_samples)
 
     chart_paths = plot_experiment_results(
         x=x,
         outputs=raw_outputs,
-        global_trimmed_mc_samples=global_trimmed_mc_samples,
-        clusterized_mc_samples=clusterized_mc_samples,
+        global_trimmed_mc_samples=alpha_trimming_mc_samples,
+        clusterized_mc_samples=clusterized_alpha_trimming_mc_samples,
         region=region,
         output_dir=ROOT / "outputs",
     )
 
     print("=== Experiment Summary ===")
+    print(f"p: {p}")
+    print(f"certified p: {certified_p}")
     print(f"x shape: {tuple(x.shape)}")
     print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
-    print(f"alpha-trimming samples shape: {tuple(global_trimmed_mc_samples.shape)}")
-    print(f"clusterized samples shape: {tuple(clusterized_mc_samples.shape)}")
+    print(f"alpha-trimming samples shape: {tuple(alpha_trimming_mc_samples.shape)}")
+    print(f"clusterized samples shape: {tuple(clusterized_alpha_trimming_mc_samples.shape)}")
     print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
     print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
     print(f"region bounds shape: {tuple(region.lower.shape)}")

@@ -144,3 +144,78 @@ def clusterized_alpha_trimming_bound(
         total_per_m = total_per_m + inner * outer
 
     return torch.sum(pi_t * total_per_m)
+
+
+def clopper_pearson_tail_probability(*, z: int, m: int, p: float) -> float:
+    """Compute the binomial tail used in the Clopper-Pearson construction.
+
+    Computes:
+        sum_{j=z}^{m} C(m, j) p^j (1-p)^(m-j)
+
+    Args:
+        z: Success threshold Z.
+        m: Number of Bernoulli trials M.
+        p: Probability value in [0, 1].
+
+    Returns:
+        Tail probability as a Python float.
+    """
+    if m <= 0:
+        raise ValueError("m must be > 0")
+    if not (0 <= z <= m):
+        raise ValueError("z must satisfy 0 <= z <= m")
+    _validate_probability("p", p)
+
+    k = torch.arange(z, m + 1, dtype=torch.float64)
+    success = torch.tensor(p, dtype=torch.float64)
+    return float(_binom_pmf_terms(k=k, n=m, success_prob=success).sum().item())
+
+
+def lower_bound_clopper_pearson(*, beta: float, p: float, num_samples: int) -> float:
+    """Compute the Clopper-Pearson lower bound p_check from the lemma equation.
+
+    Given ``M = num_samples`` and ``Z = int(M * p)``, finds ``p_check in [0, 1]``
+    such that:
+
+        beta = sum_{j=Z}^{M} C(M, j) p_check^j (1-p_check)^(M-j)
+
+    using a monotone bisection solve over p_check.
+
+    Args:
+        beta: Confidence parameter in [0, 1].
+        p: Empirical success fraction in [0, 1].
+        num_samples: Number of samples M (> 0).
+
+    Returns:
+        The lower-bound value p_check.
+    """
+    if not (0.0 <= beta <= 1.0):
+        raise ValueError("beta must be in [0, 1]")
+    _validate_probability("p", p)
+    if num_samples <= 0:
+        raise ValueError("num_samples must be > 0")
+
+    m = int(num_samples)
+    z = int(m * p)
+
+    if z == 0:
+        if beta != 1.0:
+            raise ValueError("No solution for z=0 unless beta=1")
+        return 0.0
+
+    if beta == 0.0:
+        return 0.0
+    if beta == 1.0:
+        return 1.0
+
+    lo = 0.0
+    hi = 1.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        tail_mid = clopper_pearson_tail_probability(z=z, m=m, p=mid)
+        if tail_mid >= beta:
+            hi = mid
+        else:
+            lo = mid
+
+    return 0.5 * (lo + hi)
