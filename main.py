@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
 from randomized_smoothing.clusters import Cluster, ClusterParameters  # noqa: E402
 from randomized_smoothing.distributions import MultivariateGaussian  # noqa: E402
 from randomized_smoothing.examples import ThreeMode1DGaussianMixture  # noqa: E402
+from randomized_smoothing.regions import HyperRectangle  # noqa: E402
 from randomized_smoothing.smoothing import (  # noqa: E402
     AlphaTrimmingSmoothing,
     ClusterizedAlphaTrimmingSmoothing,
@@ -42,6 +43,7 @@ def main() -> None:
     smoothing_distribution = MultivariateGaussian(mean=noise_mean, cov=noise_cov)
 
     alpha = 0.25
+    region_mass = 0.50
     num_empirical_samples = 5000
     num_cluster_samples = 5000
     num_smoother_draws = 2000
@@ -55,6 +57,7 @@ def main() -> None:
         outputs=cluster_outputs,
         params=ClusterParameters(num_clusters=3),
     )
+    region = HyperRectangle.from_samples(samples=cluster_outputs, cluster=cluster, p=region_mass)
 
     alpha_params = SmoothingParameters(
         smoothing_distribution=smoothing_distribution,
@@ -87,6 +90,7 @@ def main() -> None:
         outputs=raw_outputs,
         global_trimmed_mc_samples=global_trimmed_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
+        region=region,
         output_dir=ROOT / "outputs",
     )
 
@@ -97,6 +101,7 @@ def main() -> None:
     print(f"clusterized samples shape: {tuple(clusterized_mc_samples.shape)}")
     print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
     print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
+    print(f"region bounds shape: {tuple(region.lower.shape)}")
     print("")
     print("Saved charts:")
     for path in chart_paths:

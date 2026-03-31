@@ -17,6 +17,7 @@ def plot_experiment_results(
 	global_trimmed_mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
 	output_dir: Path,
+	region=None,
 ) -> list[Path]:
 	"""Create and save charts for the smoothing experiment."""
 	output_dir.mkdir(parents=True, exist_ok=True)
@@ -25,6 +26,8 @@ def plot_experiment_results(
 	outputs_np = _to_numpy(outputs[:, :, 0])
 	global_mc_np = _to_numpy(global_trimmed_mc_samples[:, :, 0])
 	clusterized_mc_np = _to_numpy(clusterized_mc_samples[:, :, 0])
+	region_lower_np = _to_numpy(region.lower[:, :, 0]) if region is not None else None
+	region_upper_np = _to_numpy(region.upper[:, :, 0]) if region is not None else None
 
 	m = outputs_np.shape[0]
 	colors = {
@@ -69,13 +72,24 @@ def plot_experiment_results(
 			label="MC clusterized trimming samples",
 		)
 
+		if region_lower_np is not None and region_upper_np is not None:
+			k = region_lower_np.shape[1]
+			region_color = "#7A7A7A"
+			for j in range(k):
+				left = region_lower_np[i, j]
+				right = region_upper_np[i, j]
+				ax.axvspan(left, right, color=region_color, alpha=0.14, lw=0)
+				ax.axvline(left, color=region_color, linestyle="--", linewidth=1.0, alpha=0.9)
+				ax.axvline(right, color=region_color, linestyle="--", linewidth=1.0, alpha=0.9)
+				ax.plot([], [], color=region_color, linewidth=3, alpha=0.7)
+
 		ax.set_title(f"Input x={x_np[i]:.3f}")
 		ax.set_xlabel("Output y")
 		ax.set_ylabel("Density")
 		ax.grid(alpha=0.25, linestyle=":")
 		ax.legend(loc="upper left", fontsize=9)
 
-	fig1.suptitle("Single-Run vs Monte Carlo Smoothing Distributions", fontsize=13)
+	fig1.suptitle("Single-Run vs Monte Carlo Smoothing Distributions with Cluster Regions", fontsize=13)
 	fig1.tight_layout()
 	fig1_path = output_dir / "distribution_comparison.png"
 	fig1.savefig(fig1_path, dpi=180)
