@@ -41,7 +41,7 @@ def main() -> None:
     noise_cov = 1.5 * torch.eye(x.shape[-1], dtype=x.dtype)
     smoothing_distribution = MultivariateGaussian(mean=noise_mean, cov=noise_cov)
 
-    alpha = 0.40
+    alpha = 0.25
     num_empirical_samples = 5000
     num_cluster_samples = 5000
     num_smoother_draws = 2000
