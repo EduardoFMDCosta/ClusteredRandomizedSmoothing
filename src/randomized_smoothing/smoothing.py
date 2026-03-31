@@ -1,10 +1,19 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 import torch
 
-from randomized_smoothing.distributions import Dirac, Distribution, MultivariateGaussian
+from randomized_smoothing.distributions import Dirac, Distribution, MixtureDirac
 from randomized_smoothing.stochastic import StochasticFunction
-from randomized_smoothing.utils import _validate_alpha
+from randomized_smoothing.utils import _validate_alpha, _validate_cluster
 from .clusters import Cluster
+
+
+@dataclass
+class SmoothingParameters:
+    smoothing_distribution: Distribution
+    N: int
+    alpha: float
+    cluster: Cluster = None
 
 
 class Smoothing(ABC):
@@ -30,18 +39,16 @@ class AlphaTrimmingSmoothing(Smoothing):
             self, 
             stochastic_function: StochasticFunction, 
             x: torch.Tensor, 
-            N: int, 
-            alpha: float,
-            noise_var: float
+            params: SmoothingParameters
         ):
         self.stochastic_function = stochastic_function
         self.x = x
-        self.N = N
-        self.alpha = _validate_alpha(alpha)
-        self.noise_distribution = MultivariateGaussian(dimension=x.shape[-1], noise_var=noise_var)
+        self.N = params.N
+        self.alpha = _validate_alpha(params.alpha)
+        self.smoothing_distribution = params.smoothing_distribution
 
     def smooth(self) -> Distribution:
-        noise = self.noise_distribution.sample(size=(self.x.shape[0], self.N))
+        noise = self.smoothing_distribution.sample(size=(self.x.shape[0], self.N))
         outputs = self.stochastic_function.sample(self.x.unsqueeze(1) + noise)
 
         tail = int(self.alpha * self.N)
@@ -56,24 +63,54 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
             self, 
             stochastic_function: StochasticFunction, 
             x: torch.Tensor, 
-            N: int, 
-            alpha: float,
-            noise_var: float,
-            cluster: Cluster
+            params: SmoothingParameters
         ):
         self.stochastic_function = stochastic_function
         self.x = x
-        self.N = N
-        self.alpha = _validate_alpha(alpha)
-        self.cluster = cluster
-        self.noise_distribution = MultivariateGaussian(dimension=x.shape[-1], noise_var=noise_var)
+        self.N = params.N
+        self.alpha = _validate_alpha(params.alpha)
+        self.cluster = _validate_cluster(params.cluster)
+        self.smoothing_distribution = params.smoothing_distribution
 
     def smooth(self) -> Distribution:
-        noise = self.noise_distribution.sample(size=(self.x.shape[0], self.N))
+        noise = self.smoothing_distribution.sample(size=(self.x.shape[0], self.N))
         outputs = self.stochastic_function.sample(self.x.unsqueeze(1) + noise)
 
         centroids = self.cluster.centroids
         weights = self.cluster.weights
+        if outputs.ndim != 3 or centroids.ndim != 3 or weights.ndim != 2:
+            raise ValueError("Expected outputs (m, N, q), centroids (m, k, q), and weights (m, k)")
 
-        # TODO: 
+        m, n, q = outputs.shape
+        m_c, k, q_c = centroids.shape
+        m_w, k_w = weights.shape
+        if m != m_c or m != m_w or q != q_c or k != k_w:
+            raise ValueError("Incompatible shapes between outputs, cluster centroids, and cluster weights")
+
+        distances = torch.cdist(outputs, centroids)  # (m, N, k)
+        assignments = distances.argmin(dim=2)  # (m, N)
+
+        membership = torch.nn.functional.one_hot(assignments, num_classes=k).to(dtype=torch.bool)  # (m, N, k)
+        membership_mkn = membership.permute(0, 2, 1)  # (m, k, N)
+
+        values = outputs.unsqueeze(1).expand(-1, k, -1, -1)  # (m, k, N, q)
+        inf = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
+        masked_values = torch.where(membership_mkn.unsqueeze(-1), values, inf)
+        sorted_values = masked_values.sort(dim=2).values
+
+        counts = membership_mkn.sum(dim=2)  # (m, k)
+        left = torch.floor(self.alpha * counts.to(outputs.dtype)).to(torch.long)
+        right = counts - left
+
+        positions = torch.arange(n, device=outputs.device).view(1, 1, n, 1)
+        in_trimmed_core = (positions >= left.unsqueeze(-1).unsqueeze(-1)) & (
+            positions < right.unsqueeze(-1).unsqueeze(-1)
+        )
+
+        trimmed_sum = torch.where(in_trimmed_core, sorted_values, torch.zeros(1, device=outputs.device, dtype=outputs.dtype)).sum(dim=2)
+        trimmed_count = (right - left).to(outputs.dtype)
+        trimmed_mean = trimmed_sum / trimmed_count.clamp(min=1).unsqueeze(-1)
+        trimmed_mean = torch.where(trimmed_count.unsqueeze(-1) > 0, trimmed_mean, centroids)
+
+        return MixtureDirac(locs=trimmed_mean, probs=weights)
 

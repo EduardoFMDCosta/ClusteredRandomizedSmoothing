@@ -11,10 +11,7 @@ class Distribution(ABC):
 
 
 class MultivariateGaussian(Distribution):
-    def __init__(self, dimension: int, noise_var: float):
-        mean = torch.zeros(dimension)
-        cov = noise_var * torch.eye(dimension)
-
+    def __init__(self, mean: torch.Tensor, cov: torch.Tensor):
         self.mean = mean
         self.cov = cov
         self._dist = MultivariateNormal(loc=mean, covariance_matrix=cov)

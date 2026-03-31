@@ -1,53 +1,63 @@
+from dataclasses import dataclass
 import torch
 
-from randomized_smoothing.stochastic import StochasticFunction
 from randomized_smoothing.utils import _run_kmeans, _select_num_clusters_elbow
 
+@dataclass
+class ClusterParameters:
+    num_samples: int = 1000
+    max_num_clusters: int = 10
+    max_iter: int = 1000
+    tol: float = 1e-5
 
 class Cluster:
     def __init__(
         self,
-        stochastic_function: StochasticFunction,
-        x: torch.Tensor,
-        *,
-        num_samples: int = 1000,
-        max_num_clusters: int = 8,
-        max_iter: int = 100,
-        tol: float = 1e-5,
+        outputs: torch.Tensor,
+        params: ClusterParameters = ClusterParameters(),
     ):
-        self.stochastic_function = stochastic_function
-        self.x = x
-
-        self.max_num_clusters = max_num_clusters
-        self.max_iter = max_iter
-        self.tol = tol
-
-        self.centroids = self._compute_centroids(num_samples=num_samples)
+        self.params = params
+        self.centroids, self.assignments = self._compute_centroids(outputs)
         self.weights = self._compute_weights()
-
-    def _compute_centroids(self, num_samples: int) -> torch.Tensor:
-        repeated_x = self.x.unsqueeze(1).expand(-1, num_samples, -1)
-        outputs = self.stochastic_function.sample(repeated_x)
-
+    
+    def _compute_centroids(self, outputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         m, n, q = outputs.shape
-        pooled = outputs.reshape(m * n, q)
-        k = _select_num_clusters_elbow(
-            pooled,
-            max_k=self.max_num_clusters,
-            max_iter=self.max_iter,
-                tol=self.tol,
-            )
 
-        centroids = torch.empty((m, k, q))
+        flat_outputs = outputs.reshape(m * n, q)
+        sample_size = min(self.params.num_samples, flat_outputs.shape[0])
+        generator = torch.Generator(device=flat_outputs.device)
+        generator.manual_seed(0)
+
+        if sample_size < flat_outputs.shape[0]:
+            idx = torch.randperm(flat_outputs.shape[0], generator=generator, device=flat_outputs.device)[:sample_size]
+            elbow_data = flat_outputs[idx]
+        else:
+            elbow_data = flat_outputs
+
+        k = _select_num_clusters_elbow(
+            elbow_data,
+            max_k=min(self.params.max_num_clusters, n),
+            max_iter=self.params.max_iter,
+            tol=self.params.tol,
+        )
+
+        centroids = torch.empty((m, k, q), dtype=outputs.dtype, device=outputs.device)
+        assignments = torch.empty((m, n), dtype=torch.long, device=outputs.device)
+
         for i in range(m):
-            centroids_i, _, _ = _run_kmeans(
+            c_i, a_i, _ = _run_kmeans(
                 outputs[i],
                 num_clusters=k,
-                max_iter=self.max_iter,
-                tol=self.tol,
+                max_iter=self.params.max_iter,
+                tol=self.params.tol,
             )
-            centroids[i] = centroids_i
-        return centroids
-    
+            centroids[i] = c_i
+            assignments[i] = a_i
+
+        return centroids, assignments
+
     def _compute_weights(self) -> torch.Tensor:
-        pass
+        m, k, _ = self.centroids.shape
+
+        one_hot_assignments = torch.nn.functional.one_hot(self.assignments, num_classes=k)
+        return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)

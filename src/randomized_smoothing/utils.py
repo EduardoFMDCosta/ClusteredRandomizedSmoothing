@@ -6,6 +6,12 @@ def _validate_alpha(alpha: float) -> None:
     else:
         return alpha
     
+def _validate_cluster(cluster) -> None:
+    if cluster is None:
+        raise ValueError("Cluster must be provided for ClusterizedAlphaTrimmingSmoothing")
+    else:
+        return cluster
+    
 def _run_kmeans(
         data: torch.Tensor,
         num_clusters: int,
