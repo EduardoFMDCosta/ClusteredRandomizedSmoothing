@@ -181,8 +181,8 @@ def _bound_rekavandi_et_al_2024(p: torch.Tensor, num_samples: int, alpha: float)
 
     return certified_probs
 
-def _bound_ours(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
-    m = weights.shape[0]
+def _bound_ours_per_region(p: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
+    m = p.shape[0] // 2
     total_per_m = torch.zeros(m)
 
     p_regions = p[:m]
@@ -199,7 +199,10 @@ def _bound_ours(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.
             success_prob=1.0 - p_partition,
         )
         total_per_m = total_per_m + inner * outer
+    return total_per_m
 
+def _bound_ours(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
+    total_per_m = _bound_ours_per_region(p=p, num_samples=num_samples, alpha=alpha)
     certified_probs = (weights * total_per_m)
 
     return certified_probs
