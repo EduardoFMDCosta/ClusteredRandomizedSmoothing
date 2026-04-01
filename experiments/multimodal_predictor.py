@@ -5,9 +5,9 @@ from pathlib import Path
 
 import torch
 
-# Make src/ importable when running `python main.py`.
+# Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
-SRC = ROOT / "src"
+SRC = ROOT.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 

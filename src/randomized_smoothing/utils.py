@@ -173,3 +173,33 @@ def lower_bound_clopper_pearson(*, p: float, beta: float, num_samples: int) -> f
 
     return 0.5 * (lo + hi)
 
+def _bound_rekavandi_et_al_2024(p: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
+    j_max = int(math.floor(alpha * num_samples))
+    k = torch.arange(0, j_max + 1, dtype=torch.float64)
+    success = torch.as_tensor(1.0 - p, dtype=torch.float64)
+    certified_probs = _binom_pmf_terms(k=k, n=num_samples, success_prob=success).sum()
+
+    return certified_probs
+
+def _bound_ours(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
+    m = weights.shape[0]
+    total_per_m = torch.zeros(m)
+
+    p_regions = p[:m]
+    p_partition = p[m:]
+
+    for ell in range(1, num_samples + 1):
+        j_max = int(math.floor(alpha * ell))
+        j = torch.arange(0, j_max + 1)
+        inner = _binom_pmf_terms(k=j.unsqueeze(1), n=ell, success_prob=(1.0 - p_regions).unsqueeze(0)).sum(dim=0)
+
+        outer = _binom_pmf_terms(
+            k=torch.tensor(float(ell)),
+            n=num_samples,
+            success_prob=1.0 - p_partition,
+        )
+        total_per_m = total_per_m + inner * outer
+
+    certified_probs = (weights * total_per_m)
+
+    return certified_probs

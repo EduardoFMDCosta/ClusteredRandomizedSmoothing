@@ -8,6 +8,8 @@ from .distributions import Dirac, Distribution, MixtureDirac
 from .stochastic import StochasticFunction
 from .utils import (
     _binom_pmf_terms,
+    _bound_ours,
+    _bound_rekavandi_et_al_2024,
     _validate_alpha,
     _validate_cluster,
     _compute_probability_given_radius,
@@ -71,17 +73,17 @@ class AlphaTrimmingSmoothing(Smoothing):
     
     def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples)
-        robust_p = _compute_probability_given_radius(
+        p_for_radius = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
             radius=radius, 
-            sigma=self.smoothing_distribution.sigma)
+            sigma=self.smoothing_distribution.sigma
+        )
         
-        j_max = int(math.floor(self.alpha * num_samples))
-        k = torch.arange(0, j_max + 1, dtype=torch.float64)
-        success = torch.tensor(1.0 - robust_p, dtype=torch.float64)
+        certified_probs = _bound_rekavandi_et_al_2024(p=p_for_radius, num_samples=num_samples, alpha=self.alpha)
+
         return RobustnessCertificate(
             certified_radius=radius,
-            certified_probs=_binom_pmf_terms(k=k, n=num_samples, success_prob=success).sum()
+            certified_probs=certified_probs
         )
 
 
@@ -145,31 +147,16 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
 
     def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples, cluster=self.cluster)
-        robust_p = _compute_probability_given_radius(
+        p_for_radius = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
             radius=radius, 
-            sigma=self.smoothing_distribution.sigma)
-        
-        m = self.cluster.weights.shape[0]
-        total_per_m = torch.zeros(m)
+            sigma=self.smoothing_distribution.sigma
+        )
 
-        p_regions = robust_p[:m]
-        p_partition = robust_p[m:]
-
-        for ell in range(1, num_samples + 1):
-            j_max = int(math.floor(self.alpha * ell))
-            j = torch.arange(0, j_max + 1)
-            inner = _binom_pmf_terms(k=j.unsqueeze(1), n=ell, success_prob=(1.0 - p_regions).unsqueeze(0)).sum(dim=0)
-
-            outer = _binom_pmf_terms(
-                k=torch.tensor(float(ell)),
-                n=num_samples,
-                success_prob=1.0 - p_partition,
-            )
-            total_per_m = total_per_m + inner * outer
+        certified_probs=_bound_ours(p=p_for_radius, num_samples=num_samples, alpha=self.alpha, weights=self.cluster.weights)
 
         return RobustnessCertificate(
             certified_radius=radius,
-            certified_probs=torch.sum(self.cluster.weights * total_per_m)
+            certified_probs=certified_probs
         )
 
