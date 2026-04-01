@@ -13,7 +13,7 @@ from .smoothing import (
     ClusterizedAlphaTrimmingSmoothing,
 )
 from .stochastic import StochasticFunction
-from .bounds import (
+from .utils import (
     clopper_pearson_tail_probability,
     lower_bound_clopper_pearson,
 )

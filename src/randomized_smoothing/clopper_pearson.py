@@ -1,7 +1,7 @@
 from typing import Optional
 import torch
 
-from .bounds import clopper_pearson_tail_probability
+from .utils import clopper_pearson_tail_probability
 from .clusters import Cluster
 
 class ClopperPearsonLowerBound:

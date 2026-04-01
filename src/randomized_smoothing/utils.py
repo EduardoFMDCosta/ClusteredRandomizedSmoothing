@@ -1,17 +1,26 @@
+import math
 import torch
 
-def _validate_alpha(alpha: float) -> None:
+
+# -----------------------------------------------------------------------------
+# Parameter validation
+# -----------------------------------------------------------------------------
+def _validate_alpha(alpha: float):
     if not (0.0 <= alpha < 0.5):
         raise ValueError("Trimming parameter alpha must satisfy 0 <= alpha < 0.5")
     else:
         return alpha
     
-def _validate_cluster(cluster) -> None:
+def _validate_cluster(cluster):
     if cluster is None:
         raise ValueError("Cluster must be provided for ClusterizedAlphaTrimmingSmoothing")
     else:
         return cluster
-    
+
+
+# -----------------------------------------------------------------------------
+# Clustering utilities
+# -----------------------------------------------------------------------------
 def _run_kmeans(
         data: torch.Tensor,
         num_clusters: int,
@@ -80,13 +89,87 @@ def _select_num_clusters_elbow(
     return int(torch.argmax(distances).item()) + 1
 
 
-def compute_probability_for_robust_radius(p: torch.Tensor, radius: float, sigma: float) -> float:
+# -----------------------------------------------------------------------------
+# Robustness certification utilities
+# -----------------------------------------------------------------------------
+def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float) -> float:
     z = torch.special.ndtri(p)
     shifted = z - radius / sigma
-    value = 0.5 * (1.0 + torch.erf(shifted / torch.sqrt(torch.tensor(2.0))))
+    probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
 
-    if torch.any(value < 0):
+    if torch.any(probs < 0):
         raise RuntimeError(f"Desired radius cannot be robustified. Please select a smaller radius or increase sigma.")
 
-    return value.min().item()
+    return probs.min().item()
+
+
+def _binom_pmf_terms(k: torch.Tensor, n: int, success_prob: torch.Tensor) -> torch.Tensor:
+    """Compute Binomial(n, success_prob) PMF at integer tensor k.
+
+    Args:
+        k: Integer tensor of event counts.
+        n: Number of trials.
+        success_prob: Success probability tensor broadcastable with k.
+    """
+    n_tensor = torch.tensor(float(n), device=success_prob.device, dtype=success_prob.dtype)
+    log_choose = (
+        torch.lgamma(n_tensor + 1.0)
+        - torch.lgamma(k.to(success_prob.dtype) + 1.0)
+        - torch.lgamma(n_tensor - k.to(success_prob.dtype) + 1.0)
+    )
+
+    eps = torch.finfo(success_prob.dtype).tiny
+    p = success_prob.clamp(min=eps, max=1.0 - eps)
+    log_prob = log_choose + k * torch.log(p) + (n - k) * torch.log1p(-p)
+    return torch.exp(log_prob)
+
+
+
+def clopper_pearson_tail_probability(*, z: int, m: int, p: float) -> float:
+    """Compute the binomial tail used in the Clopper-Pearson construction.
+
+    Computes:
+        sum_{j=z}^{m} C(m, j) p^j (1-p)^(m-j)
+
+    Args:
+        z: Success threshold Z.
+        m: Number of Bernoulli trials M.
+        p: Probability value in [0, 1].
+
+    Returns:
+        Tail probability as a Python float.
+    """
+    k = torch.arange(z, m + 1, dtype=torch.float64)
+    success = torch.tensor(p, dtype=torch.float64)
+    return float(_binom_pmf_terms(k=k, n=m, success_prob=success).sum().item())
+
+
+def lower_bound_clopper_pearson(*, p: float, beta: float, num_samples: int) -> float:
+    """Compute the one-sided Clopper-Pearson lower confidence bound.
+
+    Args:
+        p: Empirical success rate in [0, 1].
+        beta: Confidence parameter in [0, 1].
+        num_samples: Number of Bernoulli samples used to estimate p.
+
+    Returns:
+        Lower confidence bound as a float.
+    """
+    z = int(num_samples * p)
+    if z == 0 or beta == 0.0:
+        return 0.0
+    if beta == 1.0:
+        return 1.0
+
+    lo = 0.0
+    hi = 1.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        tail_mid = clopper_pearson_tail_probability(z=z, m=num_samples, p=mid)
+        if tail_mid >= beta:
+            hi = mid
+        else:
+            lo = mid
+
+    return 0.5 * (lo + hi)
 

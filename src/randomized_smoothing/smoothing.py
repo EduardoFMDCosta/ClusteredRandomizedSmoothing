@@ -3,11 +3,15 @@ from dataclasses import dataclass
 import math
 import torch
 
-from .bounds import _binom_pmf_terms
 from .clopper_pearson import ClopperPearsonLowerBound
 from .distributions import Dirac, Distribution, MixtureDirac
 from .stochastic import StochasticFunction
-from .utils import _validate_alpha, _validate_cluster, compute_probability_for_robust_radius
+from .utils import (
+    _binom_pmf_terms,
+    _validate_alpha,
+    _validate_cluster,
+    _compute_probability_given_radius,
+)
 from .clusters import Cluster
 
 
@@ -67,7 +71,7 @@ class AlphaTrimmingSmoothing(Smoothing):
     
     def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples)
-        robust_p = compute_probability_for_robust_radius(
+        robust_p = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
             radius=radius, 
             sigma=self.smoothing_distribution.sigma)
@@ -141,7 +145,7 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
 
     def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples, cluster=self.cluster)
-        robust_p = compute_probability_for_robust_radius(
+        robust_p = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
             radius=radius, 
             sigma=self.smoothing_distribution.sigma)
