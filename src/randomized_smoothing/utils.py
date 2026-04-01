@@ -78,3 +78,15 @@ def _select_num_clusters_elbow(
 
     distances = torch.abs((y1 - y0) * x - (x1 - x0) * curve + x1 * y0 - y1 * x0) / denominator
     return int(torch.argmax(distances).item()) + 1
+
+
+def compute_probability_for_robust_radius(p, radius, sigma):
+    z = torch.special.ndtri(p)
+    shifted = z - radius / sigma
+    value = 0.5 * (1.0 + torch.erf(shifted / torch.sqrt(torch.tensor(2.0))))
+
+    if torch.any(value < 0):
+        raise RuntimeError(f"Desired radius cannot be robustified. Please select a smaller radius or increase sigma.")
+
+    return value
+

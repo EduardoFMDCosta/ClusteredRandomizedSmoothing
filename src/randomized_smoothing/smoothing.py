@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import math
 import torch
 
+from randomized_smoothing.bounds import _binom_pmf_terms
+from randomized_smoothing.certification import CertifiedProbability
 from randomized_smoothing.distributions import Dirac, Distribution, MixtureDirac
 from randomized_smoothing.stochastic import StochasticFunction
-from randomized_smoothing.utils import _validate_alpha, _validate_cluster
+from randomized_smoothing.utils import _validate_alpha, _validate_cluster, compute_probability_for_robust_radius
 from .clusters import Cluster
 
 
@@ -19,6 +22,10 @@ class SmoothingParameters:
 class Smoothing(ABC):
     @abstractmethod
     def smooth(self) -> Distribution:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def robust_certification(self, p: float, radius: float) -> torch.Tensor:
         raise NotImplementedError
 
     def monte_carlo(self, num_simulations: int) -> torch.Tensor:
@@ -52,6 +59,18 @@ class AlphaTrimmingSmoothing(Smoothing):
         sorted_outputs, _ = torch.sort(outputs, dim=1)
         trimmed_core = sorted_outputs[:, tail : self.N - tail, :]
         return Dirac(loc=trimmed_core.mean(dim=1))
+    
+    def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> torch.Tensor:
+        certified_p = CertifiedProbability(p=p, beta=beta, num_samples=num_samples)
+        robust_p = compute_probability_for_robust_radius(
+            p=certified_p, 
+            radius=radius, 
+            sigma=self.smoothing_distribution.cov.diagonal()[0].sqrt().item())
+        
+        j_max = int(math.floor(self.alpha * num_samples))
+        k = torch.arange(0, j_max + 1, dtype=torch.float64)
+        success = torch.tensor(1.0 - robust_p, dtype=torch.float64)
+        return _binom_pmf_terms(k=k, n=num_samples, success_prob=success).sum().item()
 
 
 

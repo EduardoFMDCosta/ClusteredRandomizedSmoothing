@@ -25,17 +25,6 @@ def _binom_pmf_terms(k: torch.Tensor, n: int, success_prob: torch.Tensor) -> tor
     return torch.exp(log_prob)
 
 
-def robust_certification(
-    p: float,
-    alpha: float,
-    n: int,
-) -> float:
-    j_max = int(math.floor(alpha * n))
-    k = torch.arange(0, j_max + 1, dtype=torch.float64)
-    success = torch.tensor(1.0 - p, dtype=torch.float64)
-    return _binom_pmf_terms(k=k, n=n, success_prob=success).sum().item()
-
-
 def clusterized_robust_certification(
     weights: torch.Tensor,
     p_regions: torch.Tensor,

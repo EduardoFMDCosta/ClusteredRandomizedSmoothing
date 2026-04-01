@@ -16,6 +16,10 @@ class MultivariateGaussian(Distribution):
         self.cov = cov
         self._dist = MultivariateNormal(loc=mean, covariance_matrix=cov)
 
+    @property
+    def sigma(self) -> float:
+        return self.cov.diagonal().sqrt().max().item()
+
     def sample(self, size: tuple[int, ...]) -> torch.Tensor:
         return self._dist.sample(size)
 
