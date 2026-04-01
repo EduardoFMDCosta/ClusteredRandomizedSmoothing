@@ -80,33 +80,19 @@ def clopper_pearson_tail_probability(*, z: int, m: int, p: float) -> float:
     return float(_binom_pmf_terms(k=k, n=m, success_prob=success).sum().item())
 
 
-def lower_bound_clopper_pearson(*, beta: float, p: float, num_samples: int) -> float:
-    """Compute the Clopper-Pearson lower bound p_check from the lemma equation.
-
-    Given ``M = num_samples`` and ``Z = int(M * p)``, finds ``p_check in [0, 1]``
-    such that:
-
-        beta = sum_{j=Z}^{M} C(M, j) p_check^j (1-p_check)^(M-j)
-
-    using a monotone bisection solve over p_check.
+def lower_bound_clopper_pearson(*, p: float, beta: float, num_samples: int) -> float:
+    """Compute the one-sided Clopper-Pearson lower confidence bound.
 
     Args:
+        p: Empirical success rate in [0, 1].
         beta: Confidence parameter in [0, 1].
-        p: Empirical success fraction in [0, 1].
-        num_samples: Number of samples M (> 0).
+        num_samples: Number of Bernoulli samples used to estimate p.
 
     Returns:
-        The lower-bound value p_check.
+        Lower confidence bound as a float.
     """
-    m = int(num_samples)
-    z = int(m * p)
-
-    if z == 0:
-        if beta != 1.0:
-            raise ValueError("No solution for z=0 unless beta=1")
-        return 0.0
-
-    if beta == 0.0:
+    z = int(num_samples * p)
+    if z == 0 or beta == 0.0:
         return 0.0
     if beta == 1.0:
         return 1.0
@@ -115,7 +101,7 @@ def lower_bound_clopper_pearson(*, beta: float, p: float, num_samples: int) -> f
     hi = 1.0
     for _ in range(80):
         mid = 0.5 * (lo + hi)
-        tail_mid = clopper_pearson_tail_probability(z=z, m=m, p=mid)
+        tail_mid = clopper_pearson_tail_probability(z=z, m=num_samples, p=mid)
         if tail_mid >= beta:
             hi = mid
         else:

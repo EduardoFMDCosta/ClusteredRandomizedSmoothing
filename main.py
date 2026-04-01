@@ -21,6 +21,7 @@ from randomized_smoothing.smoothing import (
     ClusterizedAlphaTrimmingSmoothing,
     SmoothingParameters,
 )
+from randomized_smoothing.certification import CertifiedProbability
 from plotting import plot_experiment_results
 
 
@@ -51,7 +52,6 @@ def main():
     
 
 	# Construct cluster and region of high probability mass based on samples from h_w(x + noise)
-    certified_p = lower_bound_clopper_pearson(beta=beta, p=p, num_samples=num_samples)
     raw_outputs = stochastic_fn.sample(
         x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], num_samples))
     )
@@ -60,8 +60,14 @@ def main():
         outputs=raw_outputs,
         params=ClusterParameters(num_clusters=num_clusters),
     )
-    region = HyperRectangle.from_samples(samples=raw_outputs, cluster=cluster, p=certified_p)
+    regions = HyperRectangle.from_samples(samples=raw_outputs, cluster=cluster, p=p)
+    
+	# Certify probabilities with Clopper-Pearson
+    certified_p = CertifiedProbability(p=p, beta=beta, num_samples=num_samples)
+    clusterized_certified_p = CertifiedProbability(p=p, beta=beta, num_samples=num_samples, cluster=cluster)
 
+    certified_p_regions = clusterized_certified_p.certified_p_regions
+    certified_p_partition = clusterized_certified_p.certified_p_partition
 
 	# Construct smoothers
     params = SmoothingParameters(
@@ -97,7 +103,7 @@ def main():
         outputs=raw_outputs,
         global_trimmed_mc_samples=alpha_trimming_mc_samples,
         clusterized_mc_samples=clusterized_alpha_trimming_mc_samples,
-        region=region,
+        region=regions,
         output_dir=ROOT / "outputs",
     )
 
@@ -110,7 +116,7 @@ def main():
     print(f"clusterized samples shape: {tuple(clusterized_alpha_trimming_mc_samples.shape)}")
     print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
     print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
-    print(f"region bounds shape: {tuple(region.lower.shape)}")
+    print(f"region bounds shape: {tuple(regions.lower.shape)}")
     print("")
     print("Saved charts:")
     for path in chart_paths:

@@ -1,0 +1,80 @@
+Metadata-Version: 2.4
+Name: randomized-smoothing
+Version: 0.1.0
+Summary: Scientific prototype for stochastic smoothing with alpha trimming
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.2
+Provides-Extra: plots
+Requires-Dist: matplotlib>=3.8; extra == "plots"
+Requires-Dist: numpy>=2.0; extra == "plots"
+
+# RandomizedSmoothing
+
+Scientific Python prototype for stochastic-function smoothing with robust
+alpha-trimming strategies.
+
+## Project Structure
+
+```text
+RandomizedSmoothing/
+├─ main.py
+├─ bounds.py
+├─ plotting.py
+├─ pyproject.toml
+└─ src/
+	 └─ randomized_smoothing/
+			├─ __init__.py
+			├─ stochastic.py
+			├─ examples.py
+			├─ clusters.py
+			├─ kmeans.py
+			└─ smoothing.py
+```
+
+## Core Concepts
+
+- `StochasticFunction`:
+	interface for `sample(x, num_samples) -> (m, num_samples, q)`.
+- `AlphaTrimmingSmoothing`:
+	robust smoother that returns alpha-trimmed averages `(m, q)`.
+- `Cluster`:
+	holds `centroids (num_centroids, q)` and centroid probability `weights`.
+- `ClusterizedAlphaTrimmingSmoothing`:
+	trims inside nearest-centroid clusters, computes cluster means, then samples
+	from weighted cluster means.
+- `fit_kmeans_cluster(...)`:
+	K-means helper to build `Cluster` objects from observed outputs.
+- `fit_kmeans_clusters_per_input(...)`:
+	builds one `Cluster` per input `x`, enabling fully x-dependent smoothing.
+
+## Demonstration
+
+`main.py` includes a full experiment:
+
+1. Defines a 1D three-mode Gaussian-mixture stochastic function.
+2. Observes many samples for each `x` and fits one 3-centroid `Cluster` per input.
+3. Runs both smoothing methods for a given alpha and prints results.
+4. Rebuilds the clusterized smoother from fresh stochastic samples to visualize
+	its resulting distribution.
+5. Repeats full smoothing pipelines many times (Monte Carlo):
+	sample from stochastic function, compute trimming, sample from trimmed smoother.
+	For clusterized Monte Carlo, clusters are fitted again on each fresh sample batch.
+
+## Run
+
+```bash
+python main.py
+```
+
+The script also saves charts in `outputs/`:
+
+- `distribution_comparison.png`
+
+## Install As Project
+
+From the repository root:
+
+```bash
+pip install -e .
+```
