@@ -1,10 +1,10 @@
-from typing import Optional, Union
+from typing import Optional
 import torch
 
-from randomized_smoothing.bounds import clopper_pearson_tail_probability
-from randomized_smoothing.clusters import Cluster
+from .bounds import clopper_pearson_tail_probability
+from .clusters import Cluster
 
-class CertifiedProbability:
+class ClopperPearsonLowerBound:
     def __init__(
         self,
         p: float,
@@ -17,9 +17,7 @@ class CertifiedProbability:
         self.cluster = cluster
 
         self.p = self._construct_p(p=p)
-        self.certified_p = self._lower_bound_clopper_pearson()
-
-        self.certified_p_regions, self.certified_p_partition = self.split()
+        self.lower_bound = self._lower_bound_clopper_pearson()
 
     def _construct_p(self, p: float) -> torch.Tensor:
         if self.cluster is None:
@@ -65,11 +63,3 @@ class CertifiedProbability:
             out[i] = 0.5 * (lo + hi)
 
         return out.to(dtype=self.p.dtype)
-    
-    def split(self):
-        if self.cluster is None:
-            return None, None
-        else:
-            m = self.certified_p.shape[0] // 2
-            regions_block, partition_block = torch.split(self.certified_p, m, dim=0)
-            return regions_block, partition_block

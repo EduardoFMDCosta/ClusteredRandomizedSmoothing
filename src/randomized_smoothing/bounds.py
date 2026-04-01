@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import torch
 
 
@@ -24,30 +23,6 @@ def _binom_pmf_terms(k: torch.Tensor, n: int, success_prob: torch.Tensor) -> tor
     log_prob = log_choose + k * torch.log(p) + (n - k) * torch.log1p(-p)
     return torch.exp(log_prob)
 
-
-def clusterized_robust_certification(
-    weights: torch.Tensor,
-    p_regions: torch.Tensor,
-    p_partition: torch.Tensor,
-    alpha: float,
-    n: int,
-) -> torch.Tensor:
-    m = weights.shape[0]
-    total_per_m = torch.zeros(m)
-
-    for ell in range(1, n + 1):
-        j_max = int(math.floor(alpha * ell))
-        j = torch.arange(0, j_max + 1)
-        inner = _binom_pmf_terms(k=j.unsqueeze(1), n=ell, success_prob=(1.0 - p_regions).unsqueeze(0)).sum(dim=0)
-
-        outer = _binom_pmf_terms(
-            k=torch.tensor(float(ell)),
-            n=n,
-            success_prob=1.0 - p_partition,
-        )
-        total_per_m = total_per_m + inner * outer
-
-    return torch.sum(weights * total_per_m).item()
 
 
 def clopper_pearson_tail_probability(*, z: int, m: int, p: float) -> float:

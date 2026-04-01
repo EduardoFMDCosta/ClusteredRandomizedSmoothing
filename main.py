@@ -11,7 +11,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.bounds import lower_bound_clopper_pearson
 from randomized_smoothing.clusters import Cluster, ClusterParameters
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.examples import ThreeMode1DGaussianMixture
@@ -21,7 +20,6 @@ from randomized_smoothing.smoothing import (
     ClusterizedAlphaTrimmingSmoothing,
     SmoothingParameters,
 )
-from randomized_smoothing.certification import CertifiedProbability
 from plotting import plot_experiment_results
 
 
@@ -61,13 +59,6 @@ def main():
         params=ClusterParameters(num_clusters=num_clusters),
     )
     regions = HyperRectangle.from_samples(samples=raw_outputs, cluster=cluster, p=p)
-    
-	# Certify probabilities with Clopper-Pearson
-    certified_p = CertifiedProbability(p=p, beta=beta, num_samples=num_samples)
-    clusterized_certified_p = CertifiedProbability(p=p, beta=beta, num_samples=num_samples, cluster=cluster)
-
-    certified_p_regions = clusterized_certified_p.certified_p_regions
-    certified_p_partition = clusterized_certified_p.certified_p_partition
 
 	# Construct smoothers
     params = SmoothingParameters(
@@ -107,9 +98,18 @@ def main():
         output_dir=ROOT / "outputs",
     )
 
+    # Robustness certification
+    certificate_alpha_trimming = alpha_trimming_smoother.robust_certification(
+        p=p, 
+        beta=beta, 
+        num_samples=num_samples, 
+        radius=0.1
+    )
+    print(certificate_alpha_trimming)
+
     print("=== Experiment Summary ===")
     print(f"p: {p}")
-    print(f"certified p: {certified_p}")
+    #print(f"certified p: {certified_p}")
     print(f"x shape: {tuple(x.shape)}")
     print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
     print(f"alpha-trimming samples shape: {tuple(alpha_trimming_mc_samples.shape)}")
