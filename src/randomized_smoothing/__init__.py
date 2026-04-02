@@ -12,15 +12,16 @@ from .smoothing import (
     AlphaTrimmingSmoothing,
     ClusterizedAlphaTrimmingSmoothing,
 )
-from .stochastic import StochasticFunction
+from .stochastic import StochasticFunction, ThreeMode1DGaussianMixture
+from .clopper_pearson import ClopperPearsonLowerBound
 from .utils import (
-    clopper_pearson_tail_probability,
     lower_bound_clopper_pearson,
 )
 
 __all__ = [
     # Core abstractions
     "StochasticFunction",
+    "ThreeMode1DGaussianMixture",
     "Smoothing",
     "Distribution",
     # Configuration
@@ -30,6 +31,7 @@ __all__ = [
     "AlphaTrimmingSmoothing",
     "ClusterizedAlphaTrimmingSmoothing",
     "RobustnessCertificate",
+    "ClopperPearsonLowerBound",
     # Clustering
     "Cluster",
     # Noise distributions
@@ -38,6 +40,5 @@ __all__ = [
     "Dirac",
     "MixtureDirac",
     # Bounds
-    "clopper_pearson_tail_probability",
     "lower_bound_clopper_pearson",
 ]

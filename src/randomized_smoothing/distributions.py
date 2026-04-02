@@ -38,7 +38,7 @@ class MixtureDirac(Distribution):
         self.probs = probs
 
     def sample(self) -> torch.Tensor:
-        m, _, q = self.locs.shape
+        nx, _, dimension = self.locs.shape
         indices = torch.multinomial(self.probs, num_samples=1, replacement=True).squeeze(1)
-        gather_idx = indices.view(m, 1, 1).expand(-1, 1, q)
+        gather_idx = indices.view(nx, 1, 1).expand(-1, 1, dimension)
         return self.locs.gather(dim=1, index=gather_idx).squeeze(1)

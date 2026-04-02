@@ -18,20 +18,15 @@ class Cluster:
         self.params = params
         self.centroids, self.assignments = self._compute_centroids(outputs)
         self.weights = self._compute_weights()
+        self.num_clusters = self.params.num_clusters
     
     def _compute_centroids(self, outputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        m, n, q = outputs.shape
-
-        if self.params.num_clusters <= 0:
-            raise ValueError("num_clusters must be positive")
-        if self.params.num_clusters > n:
-            raise ValueError("num_clusters must be <= number of samples per input")
+        nx, num_samples, output_dim = outputs.shape
         k = self.params.num_clusters
 
-        centroids = torch.empty((m, k, q), dtype=outputs.dtype, device=outputs.device)
-        assignments = torch.empty((m, n), dtype=torch.long, device=outputs.device)
-
-        for i in range(m):
+        centroids = torch.empty((nx, k, output_dim))
+        assignments = torch.empty((nx, num_samples))
+        for i in range(nx):
             c_i, a_i, _ = _run_kmeans(
                 outputs[i],
                 num_clusters=k,
@@ -44,7 +39,5 @@ class Cluster:
         return centroids, assignments
 
     def _compute_weights(self) -> torch.Tensor:
-        m, k, _ = self.centroids.shape
-
-        one_hot_assignments = torch.nn.functional.one_hot(self.assignments, num_classes=k)
-        return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
+        one_hot_assignments = torch.nn.functional.one_hot(self.assignments, num_classes=self.num_clusters)
+        return one_hot_assignments.mean(dim=1)

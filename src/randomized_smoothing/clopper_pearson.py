@@ -1,7 +1,7 @@
 from typing import Optional
 import torch
 
-from .utils import clopper_pearson_tail_probability
+from .utils import _binomial_tail_probability
 from .clusters import Cluster
 
 class ClopperPearsonLowerBound:
@@ -28,33 +28,27 @@ class ClopperPearsonLowerBound:
             return torch.cat([p_block, weights], dim=1)
 
     def _lower_bound_clopper_pearson(self) -> torch.Tensor:
-        m_samples = int(self.num_samples)
-        out = torch.zeros_like(self.p, dtype=torch.float64)
+        
+        lb = torch.zeros_like(self.p)
+        nx = self.p.shape[0]
+        num_clusters = self.p.shape[1]
 
-        beta_per = self.beta / self.p.shape[1]
+        adjusted_beta = self.beta / num_clusters
 
-        for row_idx in range(self.p.shape[0]):
-            for col_idx in range(self.p.shape[1]):
-                p_i = float(self.p[row_idx, col_idx].item())
-                z_i = int(m_samples * p_i)
+        for row in range(nx):
+            for col in range(num_clusters):
+                p = self.p[row, col].item()
+                z = int(self.num_samples * p)
 
-                if z_i == 0 or beta_per == 0.0:
-                    out[row_idx, col_idx] = 0.0
-                    continue
-                if beta_per == 1.0:
-                    out[row_idx, col_idx] = 1.0
-                    continue
-
-                lo = 0.0
-                hi = 1.0
-                for _ in range(80):
+                lo, hi = 0.0, 1.0
+                for _ in range(100):
                     mid = 0.5 * (lo + hi)
-                    tail_mid = clopper_pearson_tail_probability(z=z_i, m=m_samples, p=mid)
-                    if tail_mid >= beta_per:
+                    tail_mid = _binomial_tail_probability(z=z, num_samples=self.num_samples, p=mid)
+                    if tail_mid >= adjusted_beta:
                         hi = mid
                     else:
                         lo = mid
 
-                out[row_idx, col_idx] = 0.5 * (lo + hi)
+                lb[row, col] = 0.5 * (lo + hi)
 
-        return out.to(dtype=self.p.dtype)
+        return lb

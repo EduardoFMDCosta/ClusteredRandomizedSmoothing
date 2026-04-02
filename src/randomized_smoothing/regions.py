@@ -29,28 +29,15 @@ class HyperRectangle:
     
     @staticmethod
     def from_samples(samples, cluster, p):
-        if not isinstance(samples, torch.Tensor):
-            raise TypeError("samples must be a torch.Tensor")
-        if samples.ndim != 3:
-            raise ValueError("samples must have shape (m, N, q)")
-        if not (0.0 < p < 1.0):
-            raise ValueError("p must be in (0, 1)")
-
         centroids = cluster.centroids
-        if not isinstance(centroids, torch.Tensor) or centroids.ndim != 3:
-            raise ValueError("cluster.centroids must have shape (m, k, q)")
-
         m, n, q = samples.shape
         m_c, k, q_c = centroids.shape
-        if m != m_c or q != q_c:
-            raise ValueError("samples and cluster.centroids must agree on m and q dimensions")
 
         distances = torch.cdist(samples, centroids)  # (m, N, k)
         assignments = distances.argmin(dim=2)  # (m, N)
         assigned_distances = distances.gather(2, assignments.unsqueeze(-1)).squeeze(-1)  # (m, N)
 
         radii = torch.zeros((m, k), dtype=samples.dtype, device=samples.device)
-
         for i in range(m):
             for j in range(k):
                 mask = assignments[i] == j

@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
 
 from randomized_smoothing.clusters import Cluster, ClusterParameters
 from randomized_smoothing.distributions import MultivariateGaussian
-from randomized_smoothing.examples import ThreeMode1DGaussianMixture
+from randomized_smoothing.stochastic import ThreeMode1DGaussianMixture
 from randomized_smoothing.regions import HyperRectangle
 from randomized_smoothing.smoothing import (
     AlphaTrimmingSmoothing,

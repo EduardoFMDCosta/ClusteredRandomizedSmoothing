@@ -15,7 +15,6 @@ RandomizedSmoothing/
 	 └─ randomized_smoothing/
 			├─ __init__.py
 			├─ stochastic.py
-			├─ examples.py
 			├─ clusters.py
 			├─ kmeans.py
 			└─ smoothing.py
@@ -24,18 +23,21 @@ RandomizedSmoothing/
 ## Core Concepts
 
 - `StochasticFunction`:
-	interface for `sample(x, num_samples) -> (m, num_samples, q)`.
+	interface for stochastic mappings. The `stochastic.py` module also contains
+	concrete example implementations for experiments and tests.
+- `ThreeMode1DGaussianMixture`:
+	ready-to-use example stochastic function for experiments and tests.
 - `AlphaTrimmingSmoothing`:
 	robust smoother that returns alpha-trimmed averages `(m, q)`.
 - `Cluster`:
-	holds `centroids (num_centroids, q)` and centroid probability `weights`.
+	holds per-input cluster `centroids (m, k, q)` and centroid weights `(m, k)`.
+- `ClusterParameters`:
+	configuration object that fixes the number of k-means clusters and solver tolerances.
 - `ClusterizedAlphaTrimmingSmoothing`:
 	trims inside nearest-centroid clusters, computes cluster means, then samples
 	from weighted cluster means.
-- `fit_kmeans_cluster(...)`:
-	K-means helper to build `Cluster` objects from observed outputs.
-- `fit_kmeans_clusters_per_input(...)`:
-	builds one `Cluster` per input `x`, enabling fully x-dependent smoothing.
+- `ClopperPearsonLowerBound` and `lower_bound_clopper_pearson(...)`:
+	utilities for the confidence bounds used in certification.
 
 ## Demonstration
 
