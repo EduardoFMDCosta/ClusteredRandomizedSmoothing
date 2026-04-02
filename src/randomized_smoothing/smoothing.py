@@ -33,11 +33,11 @@ class Smoothing(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def robust_certification(self, p: float, radius: float) -> RobustnessCertificate:
+    def robust_certification(self, region_coverage: float, beta: float, num_samples: int, radius: float) -> RobustnessCertificate:
         raise NotImplementedError
 
-    def monte_carlo(self, num_simulations: int) -> torch.Tensor:
-        draws = [self.smooth().sample() for _ in range(num_simulations)]
+    def monte_carlo(self, x: torch.Tensor, num_simulations: int) -> torch.Tensor:
+        draws = [self.smooth(x=x).sample() for _ in range(num_simulations)]
         return torch.stack(draws, dim=1)
 
 
@@ -155,9 +155,11 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
         return MixtureDirac(locs=trimmed_mean, probs=weights)
     
 
-    def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
+    def robust_certification(self, region_coverage: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
         if not isinstance(self.smoothing_distribution, MultivariateGaussian):
             raise ValueError("Robustness certification is only available for MultivariateGaussian")
+        
+        # TODO: FIX
         
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples, cluster=self.cluster)
         p_for_radius = _compute_probability_given_radius(

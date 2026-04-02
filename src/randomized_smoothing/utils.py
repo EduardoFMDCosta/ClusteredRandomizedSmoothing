@@ -66,9 +66,6 @@ def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: flo
     shifted = z - radius / sigma
     probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
 
-    if torch.any(probs < p):
-        raise RuntimeError("Desired radius cannot be robustified. Please select a smaller radius.")
-
     return probs.min().item()
 
 

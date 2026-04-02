@@ -69,25 +69,18 @@ def main():
     
     alpha_trimming_smoother = AlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=x,
         params=params,
     )
 
-    clusterized_params = SmoothingParameters(
-        smoothing_distribution=smoothing_distribution,
-        N=N,
-        alpha=alpha,
-        cluster=cluster,
-    )
     clusterized_alpha_trimming_smoother = ClusterizedAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=x,
-        params=clusterized_params,
+        params=params,
+        cluster=cluster,
     )
 
 	# Plot empirical distributions of raw outputs and smoothed outputs
-    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(num_simulations=num_samples)
-    clusterized_alpha_trimming_mc_samples = clusterized_alpha_trimming_smoother.monte_carlo(num_simulations=num_samples)
+    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(x=x, num_simulations=num_samples)
+    clusterized_alpha_trimming_mc_samples = clusterized_alpha_trimming_smoother.monte_carlo(x=x, num_simulations=num_samples)
 
     chart_paths = plot_experiment_results(
         x=x,
@@ -100,7 +93,7 @@ def main():
 
     # Robustness certification
     certificate_alpha_trimming = alpha_trimming_smoother.robust_certification(
-        p=region_coverage, 
+        region_coverage=region_coverage, 
         beta=beta, 
         num_samples=num_samples, 
         radius=0.1
