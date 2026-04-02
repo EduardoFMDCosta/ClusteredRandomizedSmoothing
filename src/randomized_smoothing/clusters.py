@@ -24,8 +24,8 @@ class Cluster:
         nx, num_samples, output_dim = outputs.shape
         k = self.params.num_clusters
 
-        centroids = torch.empty((nx, k, output_dim))
-        assignments = torch.empty((nx, num_samples))
+        centroids = torch.empty((nx, k, output_dim), dtype=outputs.dtype, device=outputs.device)
+        assignments = torch.empty((nx, num_samples), dtype=torch.long, device=outputs.device)
         for i in range(nx):
             c_i, a_i, _ = _run_kmeans(
                 outputs[i],
@@ -40,4 +40,4 @@ class Cluster:
 
     def _compute_weights(self) -> torch.Tensor:
         one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.num_clusters)
-        return one_hot_assignments.float().mean(dim=1)
+        return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)

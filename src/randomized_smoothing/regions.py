@@ -45,7 +45,18 @@ class HyperRectangle:
                 if d_ij.numel() == 0:
                     continue
 
-                rank = max(1, int(torch.ceil(torch.tensor(p * d_ij.numel())).item()))
+                rank = max(
+                    1,
+                    int(
+                        torch.ceil(
+                            torch.tensor(
+                                p * d_ij.numel(),
+                                dtype=d_ij.dtype,
+                                device=d_ij.device,
+                            )
+                        ).item()
+                    ),
+                )
                 rank = min(rank, d_ij.numel())
                 radii[i, j] = d_ij.kthvalue(rank).values
 

@@ -7,6 +7,8 @@ from .clopper_pearson import ClopperPearsonLowerBound
 from .distributions import Dirac, Distribution, MixtureDirac
 from .stochastic import StochasticFunction
 from .utils import (
+    _alpha_trimming_lower_bound,
+    _clusterized_alpha_trimming_lower_bound,
     _validate_alpha,
     _validate_cluster,
     _compute_probability_given_radius,
@@ -76,7 +78,7 @@ class AlphaTrimmingSmoothing(Smoothing):
             sigma=self.smoothing_distribution.sigma
         )
         
-        certified_probs = _bound_rekavandi_et_al_2024(p=p_for_radius, num_samples=num_samples, alpha=self.alpha)
+        certified_probs = _alpha_trimming_lower_bound(p=p_for_radius, num_samples=num_samples, alpha=self.alpha)
 
         return RobustnessCertificate(
             certified_radius=radius,
@@ -114,10 +116,10 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
         if m != m_c or m != m_w or q != q_c or k != k_w:
             raise ValueError("Incompatible shapes between outputs, cluster centroids, and cluster weights")
 
-        distances = torch.cdist(outputs, centroids)  # (m, N, k)
+        distances = torch.cdist(outputs, centroids)
         assignments = distances.argmin(dim=2)  # (m, N)
 
-        membership = torch.nn.functional.one_hot(assignments, num_classes=k).to(dtype=torch.bool)  # (m, N, k)
+        membership = torch.nn.functional.one_hot(assignments, num_classes=k).to(dtype=torch.bool)
         membership_mkn = membership.permute(0, 2, 1)  # (m, k, N)
 
         values = outputs.unsqueeze(1).expand(-1, k, -1, -1)  # (m, k, N, q)
@@ -150,7 +152,7 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
             sigma=self.smoothing_distribution.sigma
         )
 
-        certified_probs=_bound_ours(p=p_for_radius, num_samples=num_samples, alpha=self.alpha, weights=self.cluster.weights)
+        certified_probs = _clusterized_alpha_trimming_lower_bound(p=p_for_radius, num_samples=num_samples, alpha=self.alpha, weights=self.cluster.weights)
 
         return RobustnessCertificate(
             certified_radius=radius,

@@ -21,7 +21,7 @@ class ClopperPearsonLowerBound:
 
     def _construct_p(self, p: float) -> torch.Tensor:
         if self.cluster is None:
-            return torch.tensor([[p]], dtype=torch.float32)
+            return torch.tensor([[p]], dtype=torch.get_default_dtype())
         else:
             weights = self.cluster.weights.squeeze(-1)
             p_block = torch.full_like(weights, p)

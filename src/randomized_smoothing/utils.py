@@ -30,12 +30,12 @@ def _run_kmeans(
 
     n = data.shape[0]
 
-    generator = torch.Generator()
+    generator = torch.Generator(device=data.device)
     generator.manual_seed(0)
-    init_idx = torch.randperm(n, generator=generator)[:num_clusters]
+    init_idx = torch.randperm(n, generator=generator, device=data.device)[:num_clusters]
     centroids = data[init_idx].clone()
 
-    assignments = torch.zeros(n, dtype=torch.long)
+    assignments = torch.zeros(n, dtype=torch.long, device=data.device)
     for _ in range(max_iter):
         distances = torch.cdist(data, centroids)
         new_assignments = distances.argmin(dim=1)
@@ -81,12 +81,17 @@ def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: flo
 
 
 def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
+    k = k.to(dtype=torch.get_default_dtype())
+    N = torch.tensor(float(N), dtype=k.dtype, device=k.device)
+    p = torch.tensor(p, dtype=k.dtype, device=k.device)
+    one = torch.tensor(1.0, dtype=k.dtype, device=k.device)
+
     log_combination = (
         torch.lgamma(N + 1.0)
         - torch.lgamma(k + 1.0)
         - torch.lgamma(N - k + 1.0)
     )
-    log_prob = log_combination + k * torch.log(1 - p) + (N - k) * torch.log(p)
+    log_prob = log_combination + k * torch.log(one - p) + (N - k) * torch.log(p)
     return torch.exp(log_prob)
 
 
