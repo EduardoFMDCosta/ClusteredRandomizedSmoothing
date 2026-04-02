@@ -9,6 +9,14 @@ class HyperRectangle:
         return self.upper - self.lower
 
     @property
+    def volume(self):
+        return self.width.prod(dim=-1)
+
+    @property
+    def total_volume(self):
+        return self.volume.sum()
+
+    @property
     def center(self):
         return (self.upper + self.lower) / 2
 
