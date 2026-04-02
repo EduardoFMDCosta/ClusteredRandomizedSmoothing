@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import math
 import torch
 
 from .clopper_pearson import ClopperPearsonLowerBound
-from .distributions import Dirac, Distribution, MixtureDirac
+from .distributions import Dirac, Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
 from .utils import (
     _alpha_trimming_lower_bound,
@@ -71,6 +70,9 @@ class AlphaTrimmingSmoothing(Smoothing):
         return Dirac(loc=trimmed_core.mean(dim=1))
     
     def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
+        if not isinstance(self.smoothing_distribution, MultivariateGaussian):
+            raise ValueError("Robustness certification is only available for MultivariateGaussian")
+        
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples)
         p_for_radius = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
@@ -145,6 +147,9 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
     
 
     def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
+        if not isinstance(self.smoothing_distribution, MultivariateGaussian):
+            raise ValueError("Robustness certification is only available for MultivariateGaussian")
+        
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples, cluster=self.cluster)
         p_for_radius = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
