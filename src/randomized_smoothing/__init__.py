@@ -14,9 +14,6 @@ from .smoothing import (
 )
 from .stochastic import StochasticFunction, ThreeMode1DGaussianMixture
 from .clopper_pearson import ClopperPearsonLowerBound
-from .utils import (
-    lower_bound_clopper_pearson,
-)
 
 __all__ = [
     # Core abstractions
@@ -39,6 +36,4 @@ __all__ = [
     # Output distributions (returned by smooth())
     "Dirac",
     "MixtureDirac",
-    # Bounds
-    "lower_bound_clopper_pearson",
 ]

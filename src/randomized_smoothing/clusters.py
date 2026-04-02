@@ -16,9 +16,9 @@ class Cluster:
         params: ClusterParameters,
     ):
         self.params = params
+        self.num_clusters = self.params.num_clusters
         self.centroids, self.assignments = self._compute_centroids(outputs)
         self.weights = self._compute_weights()
-        self.num_clusters = self.params.num_clusters
     
     def _compute_centroids(self, outputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         nx, num_samples, output_dim = outputs.shape
@@ -39,5 +39,5 @@ class Cluster:
         return centroids, assignments
 
     def _compute_weights(self) -> torch.Tensor:
-        one_hot_assignments = torch.nn.functional.one_hot(self.assignments, num_classes=self.num_clusters)
-        return one_hot_assignments.mean(dim=1)
+        one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.num_clusters)
+        return one_hot_assignments.float().mean(dim=1)

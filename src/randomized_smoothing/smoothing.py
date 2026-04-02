@@ -7,8 +7,6 @@ from .clopper_pearson import ClopperPearsonLowerBound
 from .distributions import Dirac, Distribution, MixtureDirac
 from .stochastic import StochasticFunction
 from .utils import (
-    _bound_ours,
-    _bound_rekavandi_et_al_2024,
     _validate_alpha,
     _validate_cluster,
     _compute_probability_given_radius,
