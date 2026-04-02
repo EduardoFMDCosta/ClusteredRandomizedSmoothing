@@ -98,7 +98,15 @@ def main():
         num_samples=num_samples, 
         radius=0.1
     )
-    print(certificate_alpha_trimming)
+    print(f"certificate_alpha_trimming: {certificate_alpha_trimming}")
+
+    certificate = clusterized_alpha_trimming_smoother.robust_certification(
+        region_coverage=region_coverage, 
+        beta=beta, 
+        num_samples=num_samples, 
+        radius=0.1
+    )
+    print(f"certificate_clusterized_alpha_trimming: {certificate}")
 
     print("=== Experiment Summary ===")
     print(f"region coverage: {region_coverage}")

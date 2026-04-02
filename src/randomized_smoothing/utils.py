@@ -69,17 +69,16 @@ def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: flo
     return probs
 
 
+def log_combination(N: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    return torch.lgamma(N + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(N - k + 1.0)
+
 def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
     k = k.to(dtype=torch.get_default_dtype())
     N = torch.tensor(float(N), dtype=k.dtype, device=k.device)
     p = torch.tensor(p, dtype=k.dtype, device=k.device)
     one = torch.tensor(1.0, dtype=k.dtype, device=k.device)
 
-    log_combination = (
-        torch.lgamma(N + 1.0)
-        - torch.lgamma(k + 1.0)
-        - torch.lgamma(N - k + 1.0)
-    )
+    log_combination = log_combination(N, k)
     log_prob = log_combination + k * torch.log(one - p) + (N - k) * torch.log(p)
     return torch.exp(log_prob)
 
@@ -94,5 +93,57 @@ def _alpha_trimming_lower_bound(p: float, num_samples: int, alpha: float) -> flo
     return _binomial_cumulative_probability(from_idx=0, to_idx=alphaN, p=p)
 
 
+def _compute_per_region_factor(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
+    device = p_clusters.device
+    dtype = torch.float64
+
+    p_region = torch.tensor(float(p), dtype=dtype, device=device)
+    one = torch.tensor(1.0, dtype=dtype, device=device)
+
+    p_v = p_clusters.to(dtype=dtype)
+
+    log_p_region = torch.log(p_region)
+    log_one_minus_p_region = torch.log(one - p_region)
+    log_p_v = torch.log(p_v)
+    log_one_minus_p_v = torch.log(one - p_v)
+
+    result = torch.zeros_like(p_v)
+
+    for ell in range(1, num_samples + 1):
+        ell_t = torch.tensor(float(ell), dtype=dtype, device=device)
+
+        inner_sum = torch.tensor(0.0, dtype=dtype, device=device)
+        max_j = int(alpha * ell)
+        for j in range(0, max_j + 1):
+            j_t = torch.tensor(float(j), dtype=dtype, device=device)
+
+            log_choose_ell_j = (
+                torch.lgamma(ell_t + 1.0)
+                - torch.lgamma(j_t + 1.0)
+                - torch.lgamma(ell_t - j_t + 1.0)
+            )
+            log_term_j = (
+                log_choose_ell_j
+                + j_t * log_one_minus_p_region
+                + (ell_t - j_t) * log_p_region
+            )
+            inner_sum = inner_sum + torch.exp(log_term_j)
+
+        log_choose_n_ell = (
+            torch.lgamma(torch.tensor(float(num_samples), dtype=dtype, device=device) + 1.0)
+            - torch.lgamma(ell_t + 1.0)
+            - torch.lgamma(torch.tensor(float(num_samples - ell), dtype=dtype, device=device) + 1.0)
+        )
+
+        cluster_term = torch.exp(
+            log_choose_n_ell
+            + ell_t * log_one_minus_p_v
+            + (num_samples - ell_t) * log_p_v
+        )
+        result = result + inner_sum * cluster_term
+    return result
+
+
 def _clusterized_alpha_trimming_lower_bound(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
-    pass
+    result = _compute_per_region_factor(p=p, p_clusters=p_clusters, num_samples=num_samples, alpha=alpha)
+    return (weights * result).to(p_clusters.dtype)
