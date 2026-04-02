@@ -30,15 +30,15 @@ class HyperRectangle:
     @staticmethod
     def from_samples(samples, cluster, p):
         centroids = cluster.centroids
-        m, n, q = samples.shape
-        m_c, k, q_c = centroids.shape
+        nx, _, _ = samples.shape
+        k = cluster.num_clusters
 
-        distances = torch.cdist(samples, centroids)  # (m, N, k)
-        assignments = distances.argmin(dim=2)  # (m, N)
-        assigned_distances = distances.gather(2, assignments.unsqueeze(-1)).squeeze(-1)  # (m, N)
+        distances = torch.cdist(samples, centroids)
+        assignments = distances.argmin(dim=2)
+        assigned_distances = distances.gather(2, assignments.unsqueeze(-1)).squeeze(-1)
 
-        radii = torch.zeros((m, k), dtype=samples.dtype, device=samples.device)
-        for i in range(m):
+        radii = torch.zeros((nx, k), dtype=samples.dtype, device=samples.device)
+        for i in range(nx):
             for j in range(k):
                 mask = assignments[i] == j
                 d_ij = assigned_distances[i][mask]
