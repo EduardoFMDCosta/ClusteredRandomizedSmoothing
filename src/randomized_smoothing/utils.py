@@ -61,12 +61,12 @@ def _run_kmeans(
 # -----------------------------------------------------------------------------
 # Robustness certification utilities
 # -----------------------------------------------------------------------------
-def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float) -> float:
+def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float) -> torch.Tensor:
     z = torch.special.ndtri(p)
     shifted = z - radius / sigma
     probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
 
-    return probs.min().item()
+    return probs
 
 
 def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
@@ -94,5 +94,5 @@ def _alpha_trimming_lower_bound(p: float, num_samples: int, alpha: float) -> flo
     return _binomial_cumulative_probability(from_idx=0, to_idx=alphaN, p=p)
 
 
-def _clusterized_alpha_trimming_lower_bound(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
+def _clusterized_alpha_trimming_lower_bound(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
     pass

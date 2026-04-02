@@ -112,45 +112,43 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
         self.smoothing_distribution = params.smoothing_distribution
 
     def smooth(self, x: torch.Tensor) -> Distribution:
-        nx = x.shape[0]
-        noise = self.smoothing_distribution.sample(size=(nx, self.N))
+        noise = self.smoothing_distribution.sample(size=(x.shape[0], self.N))
         outputs = self.stochastic_function.sample(x.unsqueeze(1) + noise)
 
         centroids = self.cluster.centroids
         weights = self.cluster.weights
-        if outputs.ndim != 3 or centroids.ndim != 3 or weights.ndim != 2:
-            raise ValueError("Expected outputs (m, N, q), centroids (m, k, q), and weights (m, k)")
 
-        m, n, q = outputs.shape
-        m_c, k, q_c = centroids.shape
-        m_w, k_w = weights.shape
-        if m != m_c or m != m_w or q != q_c or k != k_w:
-            raise ValueError("Incompatible shapes between outputs, cluster centroids, and cluster weights")
+        nx, num_samples, _ = outputs.shape
+        num_clusters = self.cluster.num_clusters
 
         distances = torch.cdist(outputs, centroids)
-        assignments = distances.argmin(dim=2)  # (m, N)
+        assignments = distances.argmin(dim=2)
 
-        membership = torch.nn.functional.one_hot(assignments, num_classes=k).to(dtype=torch.bool)
-        membership_mkn = membership.permute(0, 2, 1)  # (m, k, N)
-
-        values = outputs.unsqueeze(1).expand(-1, k, -1, -1)  # (m, k, N, q)
+        trimmed_mean = torch.zeros_like(centroids)
+        positions = torch.arange(num_samples, device=outputs.device).view(1, num_samples, 1)
         inf = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
-        masked_values = torch.where(membership_mkn.unsqueeze(-1), values, inf)
-        sorted_values = masked_values.sort(dim=2).values
+        zero = torch.zeros(1, device=outputs.device, dtype=outputs.dtype)
 
-        counts = membership_mkn.sum(dim=2)  # (m, k)
-        left = torch.floor(self.alpha * counts.to(outputs.dtype)).to(torch.long)
-        right = counts - left
+        for j in range(num_clusters):
+            cluster_mask = assignments == j
+            cluster_values = torch.where(cluster_mask.unsqueeze(-1), outputs, inf)
+            sorted_cluster_values = cluster_values.sort(dim=1).values
 
-        positions = torch.arange(n, device=outputs.device).view(1, 1, n, 1)
-        in_trimmed_core = (positions >= left.unsqueeze(-1).unsqueeze(-1)) & (
-            positions < right.unsqueeze(-1).unsqueeze(-1)
-        )
+            counts = cluster_mask.sum(dim=1)
+            left = torch.floor(self.alpha * counts.to(outputs.dtype)).to(torch.long)
+            right = counts - left
 
-        trimmed_sum = torch.where(in_trimmed_core, sorted_values, torch.zeros(1, device=outputs.device, dtype=outputs.dtype)).sum(dim=2)
-        trimmed_count = (right - left).to(outputs.dtype)
-        trimmed_mean = trimmed_sum / trimmed_count.clamp(min=1).unsqueeze(-1)
-        trimmed_mean = torch.where(trimmed_count.unsqueeze(-1) > 0, trimmed_mean, centroids)
+            in_trimmed_core = (positions >= left.view(nx, 1, 1)) & (positions < right.view(nx, 1, 1))
+            trimmed_sum = torch.where(in_trimmed_core, sorted_cluster_values, zero).sum(dim=1)
+            trimmed_count = (right - left).to(outputs.dtype).view(nx, 1)
+
+            cluster_trimmed_mean = trimmed_sum / trimmed_count.clamp(min=1)
+            has_trimmed_points = trimmed_count.squeeze(-1) > 0
+            trimmed_mean[:, j, :] = torch.where(
+                has_trimmed_points.unsqueeze(-1),
+                cluster_trimmed_mean,
+                centroids[:, j, :],
+            )
 
         return MixtureDirac(locs=trimmed_mean, probs=weights)
     
