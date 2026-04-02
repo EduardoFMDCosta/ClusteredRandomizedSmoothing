@@ -62,20 +62,12 @@ def _run_kmeans(
 # Robustness certification utilities
 # -----------------------------------------------------------------------------
 def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float) -> float:
-    p_tensor = torch.as_tensor(p)
-    z = torch.special.ndtri(p_tensor)
+    z = torch.special.ndtri(p)
     shifted = z - radius / sigma
     probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
 
-    if torch.any(probs < 0):
-        raise RuntimeError(f"Desired radius cannot be robustified. Please select a smaller radius or increase sigma.")
-
-    if p_tensor.ndim == 2 and p_tensor.shape[1] > 1:
-        if p_tensor.shape[1] % 2 != 0:
-            raise ValueError("Clustered probabilities must have shape (m, 2c)")
-
-        num_regions = p_tensor.shape[1] // 2
-        return torch.cat([probs[:, :num_regions], p_tensor[:, num_regions:]], dim=1)
+    if torch.any(probs < p):
+        raise RuntimeError("Desired radius cannot be robustified. Please select a smaller radius.")
 
     return probs.min().item()
 

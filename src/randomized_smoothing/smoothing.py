@@ -17,10 +17,9 @@ from .clusters import Cluster
 
 @dataclass
 class SmoothingParameters:
-    smoothing_distribution: Distribution
     N: int
     alpha: float
-    cluster: Cluster = None
+    smoothing_distribution: Distribution
 
 @dataclass
 class RobustnessCertificate:
@@ -51,28 +50,34 @@ class AlphaTrimmingSmoothing(Smoothing):
     def __init__(
             self, 
             stochastic_function: StochasticFunction, 
-            x: torch.Tensor, 
             params: SmoothingParameters
         ):
         self.stochastic_function = stochastic_function
-        self.x = x
         self.N = params.N
         self.alpha = _validate_alpha(params.alpha)
         self.smoothing_distribution = params.smoothing_distribution
 
-    def smooth(self) -> Distribution:
-        noise = self.smoothing_distribution.sample(size=(self.x.shape[0], self.N))
-        outputs = self.stochastic_function.sample(self.x.unsqueeze(1) + noise)
+    def smooth(self, x: torch.Tensor) -> Distribution:
+        nx = x.shape[0]
+        noise = self.smoothing_distribution.sample(size=(nx, self.N))
+        outputs = self.stochastic_function.sample(x.unsqueeze(1) + noise)
 
         tail = int(self.alpha * self.N)
         sorted_outputs, _ = torch.sort(outputs, dim=1)
         trimmed_core = sorted_outputs[:, tail : self.N - tail, :]
-        return Dirac(loc=trimmed_core.mean(dim=1))
+        mean_trimmed_core = trimmed_core.mean(dim=1)
+        return Dirac(loc=mean_trimmed_core)
     
-    def robust_certification(self, p: float, beta: float, num_samples: int, radius: float,) -> RobustnessCertificate:
+    def robust_certification(
+            self, 
+            region_coverage: float, 
+            beta: float, 
+            num_samples: int, 
+            radius: float,) -> RobustnessCertificate:
         if not isinstance(self.smoothing_distribution, MultivariateGaussian):
             raise ValueError("Robustness certification is only available for MultivariateGaussian")
         
+        p = torch.tensor([[region_coverage]])
         clopper_pearson = ClopperPearsonLowerBound(p=p, beta=beta, num_samples=num_samples)
         p_for_radius = _compute_probability_given_radius(
             p=clopper_pearson.lower_bound, 
@@ -80,7 +85,11 @@ class AlphaTrimmingSmoothing(Smoothing):
             sigma=self.smoothing_distribution.sigma
         )
         
-        certified_probs = _alpha_trimming_lower_bound(p=p_for_radius, num_samples=num_samples, alpha=self.alpha)
+        certified_probs = _alpha_trimming_lower_bound(
+            p=p_for_radius, 
+            num_samples=num_samples, 
+            alpha=self.alpha
+        )
 
         return RobustnessCertificate(
             certified_radius=radius,
@@ -93,19 +102,19 @@ class ClusterizedAlphaTrimmingSmoothing(Smoothing):
     def __init__(
             self, 
             stochastic_function: StochasticFunction, 
-            x: torch.Tensor, 
-            params: SmoothingParameters
+            params: SmoothingParameters,
+            cluster: Cluster
         ):
         self.stochastic_function = stochastic_function
-        self.x = x
         self.N = params.N
         self.alpha = _validate_alpha(params.alpha)
-        self.cluster = _validate_cluster(params.cluster)
+        self.cluster = _validate_cluster(cluster)
         self.smoothing_distribution = params.smoothing_distribution
 
-    def smooth(self) -> Distribution:
-        noise = self.smoothing_distribution.sample(size=(self.x.shape[0], self.N))
-        outputs = self.stochastic_function.sample(self.x.unsqueeze(1) + noise)
+    def smooth(self, x: torch.Tensor) -> Distribution:
+        nx = x.shape[0]
+        noise = self.smoothing_distribution.sample(size=(nx, self.N))
+        outputs = self.stochastic_function.sample(x.unsqueeze(1) + noise)
 
         centroids = self.cluster.centroids
         weights = self.cluster.weights
