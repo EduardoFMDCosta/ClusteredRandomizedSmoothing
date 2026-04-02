@@ -1,6 +1,5 @@
 import torch
 
-
 class HyperRectangle:
     def __init__(self, lower, upper):
         self.lower, self.upper = lower, upper
@@ -28,10 +27,9 @@ class HyperRectangle:
         return HyperRectangle(lower, upper)
     
     @staticmethod
-    def from_samples(samples, cluster, p):
-        centroids = cluster.centroids
+    def from_samples(samples: torch.Tensor, centroids: torch.Tensor, region_coverage: float):
         nx, _, _ = samples.shape
-        k = cluster.num_clusters
+        k = centroids.shape[1]
 
         distances = torch.cdist(samples, centroids)
         assignments = distances.argmin(dim=2)
@@ -50,7 +48,7 @@ class HyperRectangle:
                     int(
                         torch.ceil(
                             torch.tensor(
-                                p * d_ij.numel(),
+                                region_coverage * d_ij.numel(),
                                 dtype=d_ij.dtype,
                                 device=d_ij.device,
                             )

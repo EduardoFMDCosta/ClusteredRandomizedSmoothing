@@ -42,7 +42,7 @@ def main():
 
 	# Define parameters
     alpha = 0.25
-    p = 0.80
+    region_coverage = 0.80
     beta = 1e-2
     num_clusters = 3
     N = 50
@@ -58,7 +58,7 @@ def main():
         outputs=raw_outputs,
         params=ClusterParameters(num_clusters=num_clusters),
     )
-    regions = HyperRectangle.from_samples(samples=raw_outputs, cluster=cluster, p=p)
+    regions = HyperRectangle.from_samples(samples=raw_outputs, centroids=cluster.centroids, region_coverage=region_coverage)
 
 	# Construct smoothers
     params = SmoothingParameters(
@@ -100,7 +100,7 @@ def main():
 
     # Robustness certification
     certificate_alpha_trimming = alpha_trimming_smoother.robust_certification(
-        p=p, 
+        p=region_coverage, 
         beta=beta, 
         num_samples=num_samples, 
         radius=0.1
@@ -108,7 +108,7 @@ def main():
     print(certificate_alpha_trimming)
 
     print("=== Experiment Summary ===")
-    print(f"p: {p}")
+    print(f"region coverage: {region_coverage}")
     #print(f"certified p: {certified_p}")
     print(f"x shape: {tuple(x.shape)}")
     print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
