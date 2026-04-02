@@ -90,75 +90,15 @@ def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
     return torch.exp(log_prob)
 
 
-def _binomial_tail_probability(z: int, N: int, p: float) -> float:
-    k = torch.arange(z, N + 1)
-    return _binomial(k=k, N=N, p=p).sum().item()
+def _binomial_cumulative_probability(from_idx: int, to_idx: int, p: float) -> float:
+    k = torch.arange(from_idx, to_idx + 1)
+    return _binomial(k=k, N=to_idx, p=p).sum().item()
 
 
+def _alpha_trimming_lower_bound(p: float, num_samples: int, alpha: float) -> float:
+    alphaN = int(alpha * num_samples)
+    return _binomial_cumulative_probability(from_idx=0, to_idx=alphaN, p=p)
 
 
-
-
-
-def _bound_rekavandi_et_al_2024(p: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
-    j_max = int(math.floor(alpha * num_samples))
-    k = torch.arange(0, j_max + 1, dtype=torch.float64)
-    success = torch.as_tensor(1.0 - p, dtype=torch.float64)
-    certified_probs = _binom_pmf_terms(k=k, n=num_samples, success_prob=success).sum()
-
-    return certified_probs
-
-def _bound_ours_per_region(p: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
-    if p.ndim == 1:
-        m = p.shape[0] // 2
-        total_per_m = torch.zeros(m, dtype=p.dtype, device=p.device)
-
-        p_regions = p[:m]
-        p_partition = p[m:]
-
-        for ell in range(1, num_samples + 1):
-            j_max = int(math.floor(alpha * ell))
-            j = torch.arange(0, j_max + 1, device=p.device)
-            inner = _binom_pmf_terms(k=j.unsqueeze(1), n=ell, success_prob=(1.0 - p_regions).unsqueeze(0)).sum(dim=0)
-
-            outer = _binom_pmf_terms(
-                k=torch.tensor(float(ell), device=p.device, dtype=p.dtype),
-                n=num_samples,
-                success_prob=1.0 - p_partition,
-            )
-            total_per_m = total_per_m + inner * outer
-
-        return total_per_m
-
-    if p.ndim != 2 or p.shape[1] % 2 != 0:
-        raise ValueError("Clustered probabilities must have shape (m, 2c)")
-
-    m, two_c = p.shape
-    num_regions = two_c // 2
-    total_per_m = torch.zeros((m, num_regions), dtype=p.dtype, device=p.device)
-
-    p_regions = p[:, :num_regions]
-    p_partition = p[:, num_regions:]
-
-    for ell in range(1, num_samples + 1):
-        j_max = int(math.floor(alpha * ell))
-        j = torch.arange(0, j_max + 1, device=p.device)
-        inner = _binom_pmf_terms(
-            k=j.view(-1, 1, 1),
-            n=ell,
-            success_prob=(1.0 - p_regions).unsqueeze(0),
-        ).sum(dim=0)
-
-        outer = _binom_pmf_terms(
-            k=torch.tensor(float(ell), device=p.device, dtype=p.dtype),
-            n=num_samples,
-            success_prob=1.0 - p_partition,
-        )
-        total_per_m = total_per_m + inner * outer
-    return total_per_m
-
-def _bound_ours(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
-    total_per_m = _bound_ours_per_region(p=p, num_samples=num_samples, alpha=alpha)
-    certified_probs = (weights * total_per_m)
-
-    return certified_probs
+def _clusterized_alpha_trimming_lower_bound(p: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
+    pass

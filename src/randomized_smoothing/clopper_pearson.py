@@ -1,7 +1,7 @@
 from typing import Optional
 import torch
 
-from .utils import _binomial_tail_probability
+from .utils import _binomial_cumulative_probability
 from .clusters import Cluster
 
 class ClopperPearsonLowerBound:
@@ -43,7 +43,7 @@ class ClopperPearsonLowerBound:
                 lo, hi = 0.0, 1.0
                 for _ in range(100):
                     mid = 0.5 * (lo + hi)
-                    tail_mid = _binomial_tail_probability(z=z, num_samples=self.num_samples, p=mid)
+                    tail_mid = _binomial_cumulative_probability(from_idx=z, to_idx=self.num_samples, p=mid)
                     if tail_mid >= adjusted_beta:
                         hi = mid
                     else:
