@@ -1,5 +1,6 @@
 import math
 import torch
+import torch.nn.functional as F
 
 
 # -----------------------------------------------------------------------------
@@ -31,14 +32,17 @@ def _run_kmeans(
 
     assignments = torch.zeros(n, dtype=torch.long, device=data.device)
     for _ in range(max_iter):
-        distances = torch.cdist(data, centroids)
-        new_assignments = distances.argmin(dim=1)
+        diff = data.unsqueeze(1) - centroids.unsqueeze(0)
+        squared_distances = (diff * diff).sum(dim=-1)
+        new_assignments = squared_distances.argmin(dim=1)
 
         new_centroids = centroids.clone()
-        for k in range(num_clusters):
-            mask = new_assignments == k
-            if mask.any():
-                new_centroids[k] = data[mask].mean(dim=0)
+        one_hot = F.one_hot(new_assignments, num_classes=num_clusters).to(dtype=data.dtype)
+        counts = one_hot.sum(dim=0)
+        non_empty = counts > 0
+        if non_empty.any():
+            sums = one_hot.transpose(0, 1) @ data
+            new_centroids[non_empty] = sums[non_empty] / counts[non_empty].unsqueeze(1)
 
         shift = torch.norm(new_centroids - centroids, dim=1).max()
         centroids = new_centroids
@@ -46,8 +50,9 @@ def _run_kmeans(
         if shift.item() < tol:
             break
 
-    final_distances = torch.cdist(data, centroids)
-    sq_min_dist = final_distances.gather(1, assignments.unsqueeze(1)).squeeze(1).pow(2)
+    final_diff = data.unsqueeze(1) - centroids.unsqueeze(0)
+    final_squared_distances = (final_diff * final_diff).sum(dim=-1)
+    sq_min_dist = final_squared_distances.gather(1, assignments.unsqueeze(1)).squeeze(1)
     inertia = sq_min_dist.sum()
     return centroids, assignments, inertia
 

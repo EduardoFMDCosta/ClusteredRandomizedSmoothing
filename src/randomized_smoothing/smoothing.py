@@ -29,14 +29,21 @@ class Smoothing(ABC):
     @abstractmethod
     def smooth(self, x: torch.Tensor) -> Distribution:
         raise NotImplementedError
-    
-    # @abstractmethod
-    # def robust_certification(self, region_coverage: float, p_partition: torch.Tensor, beta: float, num_samples: int, radius: float) -> RobustnessCertificate:
-    #     raise NotImplementedError
 
     def monte_carlo(self, num_simulations: int) -> torch.Tensor:
-        draws = [self.smooth().distribution.sample() for _ in range(num_simulations)]
-        return torch.stack(draws, dim=1)
+        if num_simulations <= 0:
+            raise ValueError("num_simulations must be positive")
+
+        first_draw = self.smooth().distribution.sample()
+        draws = torch.empty(
+            (first_draw.shape[0], num_simulations, *first_draw.shape[1:]),
+            dtype=first_draw.dtype,
+            device=first_draw.device,
+        )
+        draws[:, 0, ...] = first_draw
+        for i in range(1, num_simulations):
+            draws[:, i, ...] = self.smooth().distribution.sample()
+        return draws
 
 
 class AlphaTrimmingSmoothing(Smoothing):
@@ -79,8 +86,9 @@ class AlphaTrimmingSmoothing(Smoothing):
         nx, num_samples, _ = outputs.shape
         num_clusters = cluster.num_clusters
 
-        distances = torch.cdist(outputs, centroids)
-        assignments = distances.argmin(dim=2)
+        diff = outputs.unsqueeze(2) - centroids.unsqueeze(1)
+        squared_distances = (diff * diff).sum(dim=-1)
+        assignments = squared_distances.argmin(dim=2)
 
         trimmed_mean = torch.zeros_like(centroids)
         positions = torch.arange(num_samples, device=outputs.device).view(1, num_samples, 1)
@@ -113,6 +121,28 @@ class AlphaTrimmingSmoothing(Smoothing):
             distribution=distribution,
             certified_probs=None, 
             radii=None)
+
+
+class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
+    def __init__(
+            self,
+            stochastic_function: StochasticFunction,
+            x: torch.Tensor,
+            sigma: float,
+            parameters: Parameters,
+        ):
+        dimension = x.shape[-1]
+        mean = torch.zeros(dimension, device=x.device, dtype=x.dtype)
+        cov = (sigma ** 2) * torch.eye(dimension, device=x.device, dtype=x.dtype)
+        smoothing_distribution = MultivariateGaussian(mean=mean, cov=cov)
+
+        super().__init__(
+            stochastic_function=stochastic_function,
+            x=x,
+            smoothing_distribution=smoothing_distribution,
+            parameters=parameters,
+        )
+
     
     def _clopper_pearson_lower_bound(self) -> torch.Tensor:
         return ClopperPearsonLowerBound(

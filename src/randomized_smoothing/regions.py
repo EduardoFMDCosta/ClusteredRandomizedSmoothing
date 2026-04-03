@@ -39,15 +39,16 @@ class HyperRectangle:
         nx, _, _ = samples.shape
         k = centroids.shape[1]
 
-        distances = torch.cdist(samples, centroids)
-        assignments = distances.argmin(dim=2)
-        assigned_distances = distances.gather(2, assignments.unsqueeze(-1)).squeeze(-1)
+        diff = samples.unsqueeze(2) - centroids.unsqueeze(1)
+        squared_distances = (diff * diff).sum(dim=-1)
+        assignments = squared_distances.argmin(dim=2)
+        assigned_squared_distances = squared_distances.gather(2, assignments.unsqueeze(-1)).squeeze(-1)
 
         radii = torch.zeros((nx, k), dtype=samples.dtype, device=samples.device)
         for i in range(nx):
             for j in range(k):
                 mask = assignments[i] == j
-                d_ij = assigned_distances[i][mask]
+                d_ij = assigned_squared_distances[i][mask]
                 if d_ij.numel() == 0:
                     continue
 
@@ -64,7 +65,7 @@ class HyperRectangle:
                     ),
                 )
                 rank = min(rank, d_ij.numel())
-                radii[i, j] = d_ij.kthvalue(rank).values
+                radii[i, j] = d_ij.kthvalue(rank).values.sqrt()
 
         lower = centroids - radii.unsqueeze(-1)
         upper = centroids + radii.unsqueeze(-1)

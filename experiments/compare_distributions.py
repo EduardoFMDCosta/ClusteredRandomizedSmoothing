@@ -19,6 +19,7 @@ from randomized_smoothing.stochastic import ThreeMode1DGaussianMixture
 from randomized_smoothing.regions import HyperRectangle
 from randomized_smoothing.smoothing import (
     AlphaTrimmingSmoothing,
+    GaussianAlphaTrimmingSmoothing,
 )
 from plotting import plot_experiment_results
 
@@ -34,12 +35,6 @@ def main():
         std=0.5,
     )
 
-	# Define smoothing distribution
-    smoothing_distribution = MultivariateGaussian(
-        mean=torch.zeros(x.shape[-1], dtype=x.dtype), 
-        cov=1.0 * torch.eye(x.shape[-1], dtype=x.dtype)
-    )
-
 	# Define parameters
     smoothing_parameters = SmoothingParameters(
         N=50,
@@ -53,7 +48,14 @@ def main():
         beta=1e-2,
         num_samples=1000,
     )
-    
+
+    sigma = 1.0
+    # Define smoothing distribution
+    smoothing_distribution = MultivariateGaussian(
+        mean=torch.zeros(x.shape[-1], dtype=x.dtype), 
+        cov=sigma ** 2 * torch.eye(x.shape[-1], dtype=x.dtype)
+    )
+
     parameters = Parameters(
         smoothing=smoothing_parameters,
         clustering=clustering_parameters,
@@ -65,22 +67,22 @@ def main():
         x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], 5000))
     )
     
-    alpha_trimming_smoother = AlphaTrimmingSmoothing(
+    smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=x,
-        smoothing_distribution=smoothing_distribution,
+        sigma=sigma,
         parameters=parameters,
     )
 
 	# Plot empirical distributions of raw outputs and smoothed outputs
-    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(num_simulations=5000)
+    smoother_mc_samples = smoother.monte_carlo(num_simulations=5000)
 
     chart_paths = plot_experiment_results(
         x=x,
         outputs=raw_outputs,
-        global_trimmed_mc_samples=alpha_trimming_mc_samples,
-        clusterized_mc_samples=alpha_trimming_mc_samples, # TODO: FIX
-        region=alpha_trimming_smoother.regions,
+        global_trimmed_mc_samples=smoother_mc_samples,
+        clusterized_mc_samples=smoother_mc_samples, # TODO: FIX
+        region=smoother.regions,
         output_dir=ROOT / "outputs",
     )
 
