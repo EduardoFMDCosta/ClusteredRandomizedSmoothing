@@ -5,6 +5,8 @@ from pathlib import Path
 
 import torch
 
+from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, SmoothingParameters
+
 # Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT.parent / "src"
@@ -17,8 +19,6 @@ from randomized_smoothing.stochastic import ThreeMode1DGaussianMixture
 from randomized_smoothing.regions import HyperRectangle
 from randomized_smoothing.smoothing import (
     AlphaTrimmingSmoothing,
-    ClusterizedAlphaTrimmingSmoothing,
-    SmoothingParameters,
 )
 from plotting import plot_experiment_results
 
@@ -41,83 +41,72 @@ def main():
     )
 
 	# Define parameters
-    alpha = 0.25
-    region_coverage = 0.80
-    beta = 1e-2
-    num_clusters = 3
-    N = 50
-    num_samples = 5000
+    smoothing_parameters = SmoothingParameters(
+        N=50,
+        alpha=0.25,
+    )
+    clustering_parameters = ClusteringParameters(
+        num_clusters=3,
+        region_coverage=0.8,
+    )
+    confidence_parameters = ConfidenceParameters(
+        beta=1e-2,
+        num_samples=1000,
+    )
     
 
 	# Construct cluster and region of high probability mass based on samples from h_w(x + noise)
     raw_outputs = stochastic_fn.sample(
-        x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], num_samples))
-    )
-
-    cluster = Cluster(
-        outputs=raw_outputs,
-        params=ClusterParameters(num_clusters=num_clusters),
-    )
-    regions = HyperRectangle.from_samples(samples=raw_outputs, centroids=cluster.centroids, region_coverage=region_coverage)
-
-	# Construct smoothers
-    params = SmoothingParameters(
-        smoothing_distribution=smoothing_distribution,
-        N=N,
-        alpha=alpha,
+        x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], 5000))
     )
     
     alpha_trimming_smoother = AlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        params=params,
-    )
-
-    clusterized_alpha_trimming_smoother = ClusterizedAlphaTrimmingSmoothing(
-        stochastic_function=stochastic_fn,
-        params=params,
-        cluster=cluster,
+        smoothing_distribution=smoothing_distribution,
+        smoothing_params=smoothing_parameters,
+        clustering_params=clustering_parameters,
+        confidence_params=confidence_parameters,
     )
 
 	# Plot empirical distributions of raw outputs and smoothed outputs
-    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(x=x, num_simulations=num_samples)
-    clusterized_alpha_trimming_mc_samples = clusterized_alpha_trimming_smoother.monte_carlo(x=x, num_simulations=num_samples)
+    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(x=x, num_simulations=5000)
 
     chart_paths = plot_experiment_results(
         x=x,
         outputs=raw_outputs,
         global_trimmed_mc_samples=alpha_trimming_mc_samples,
-        clusterized_mc_samples=clusterized_alpha_trimming_mc_samples,
-        region=regions,
+        clusterized_mc_samples=alpha_trimming_mc_samples, # TODO: FIX
+        region=alpha_trimming_smoother.get_regions(),
         output_dir=ROOT / "outputs",
     )
 
     # Robustness certification
-    certificate_alpha_trimming = alpha_trimming_smoother.robust_certification(
-        region_coverage=region_coverage, 
-        beta=beta, 
-        num_samples=num_samples, 
-        radius=0.1
-    )
-    print(f"certificate_alpha_trimming: {certificate_alpha_trimming}")
+    # certificate_alpha_trimming = alpha_trimming_smoother.robust_certification(
+    #     region_coverage=region_coverage, 
+    #     beta=beta, 
+    #     num_samples=num_samples, 
+    #     radius=0.1
+    # )
+    # print(f"certificate_alpha_trimming: {certificate_alpha_trimming}")
 
-    certificate = clusterized_alpha_trimming_smoother.robust_certification(
-        region_coverage=region_coverage, 
-        beta=beta, 
-        num_samples=num_samples, 
-        radius=0.1
-    )
-    print(f"certificate_clusterized_alpha_trimming: {certificate}")
+    # certificate = clusterized_alpha_trimming_smoother.robust_certification(
+    #     region_coverage=region_coverage, 
+    #     beta=beta, 
+    #     num_samples=num_samples, 
+    #     radius=0.1
+    # )
+    # print(f"certificate_clusterized_alpha_trimming: {certificate}")
 
-    print("=== Experiment Summary ===")
-    print(f"region coverage: {region_coverage}")
-    #print(f"certified p: {certified_p}")
-    print(f"x shape: {tuple(x.shape)}")
-    print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
-    print(f"alpha-trimming samples shape: {tuple(alpha_trimming_mc_samples.shape)}")
-    print(f"clusterized samples shape: {tuple(clusterized_alpha_trimming_mc_samples.shape)}")
-    print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
-    print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
-    print(f"region bounds shape: {tuple(regions.lower.shape)}")
+    # print("=== Experiment Summary ===")
+    # print(f"region coverage: {region_coverage}")
+    # #print(f"certified p: {certified_p}")
+    # print(f"x shape: {tuple(x.shape)}")
+    # print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
+    # print(f"alpha-trimming samples shape: {tuple(alpha_trimming_mc_samples.shape)}")
+    # print(f"clusterized samples shape: {tuple(clusterized_alpha_trimming_mc_samples.shape)}")
+    # print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
+    # print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
+    # print(f"region bounds shape: {tuple(regions.lower.shape)}")
     print("")
     print("Saved charts:")
     for path in chart_paths:

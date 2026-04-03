@@ -9,13 +9,7 @@ def _validate_alpha(alpha: float):
     if not (0.0 <= alpha < 0.5):
         raise ValueError("Trimming parameter alpha must satisfy 0 <= alpha < 0.5")
     else:
-        return alpha
-    
-def _validate_cluster(cluster):
-    if cluster is None:
-        raise ValueError("Cluster must be provided for ClusterizedAlphaTrimmingSmoothing")
-    else:
-        return cluster
+        return True
 
 
 # -----------------------------------------------------------------------------
