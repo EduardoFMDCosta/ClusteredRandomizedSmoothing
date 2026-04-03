@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, SmoothingParameters
+from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 
 # Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
@@ -54,6 +54,11 @@ def main():
         num_samples=1000,
     )
     
+    parameters = Parameters(
+        smoothing=smoothing_parameters,
+        clustering=clustering_parameters,
+        confidence=confidence_parameters,
+    )
 
 	# Construct cluster and region of high probability mass based on samples from h_w(x + noise)
     raw_outputs = stochastic_fn.sample(
@@ -63,9 +68,7 @@ def main():
     alpha_trimming_smoother = AlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         smoothing_distribution=smoothing_distribution,
-        smoothing_params=smoothing_parameters,
-        clustering_params=clustering_parameters,
-        confidence_params=confidence_parameters,
+        parameters=parameters,
     )
 
 	# Plot empirical distributions of raw outputs and smoothed outputs
