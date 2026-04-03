@@ -4,10 +4,9 @@ from typing import Optional
 import torch
 
 from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
-from randomized_smoothing.regions import HyperRectangle
 
 from .clopper_pearson import ClopperPearsonLowerBound
-from .distributions import Dirac, Distribution, MixtureDirac, MultivariateGaussian
+from .distributions import Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
 from .utils import (
     _alpha_trimming_lower_bound,
@@ -16,25 +15,18 @@ from .utils import (
     _compute_probability_given_radius,
 )
 from .clusters import Cluster
-
-
-@dataclass
-class RobustSmoothedOutput:
-    distribution: Distribution
-    certified_probs: Optional[torch.Tensor]
-    radii: Optional[torch.Tensor]
     
 
 class Smoothing(ABC):
     @abstractmethod
-    def smooth(self, x: torch.Tensor) -> Distribution:
+    def smooth(self) -> Distribution:
         raise NotImplementedError
 
     def monte_carlo(self, num_simulations: int) -> torch.Tensor:
         if num_simulations <= 0:
             raise ValueError("num_simulations must be positive")
 
-        first_draw = self.smooth().distribution.sample()
+        first_draw = self.smooth().sample()
         draws = torch.empty(
             (first_draw.shape[0], num_simulations, *first_draw.shape[1:]),
             dtype=first_draw.dtype,
@@ -42,7 +34,7 @@ class Smoothing(ABC):
         )
         draws[:, 0, ...] = first_draw
         for i in range(1, num_simulations):
-            draws[:, i, ...] = self.smooth().distribution.sample()
+            draws[:, i, ...] = self.smooth().sample()
         return draws
 
 
@@ -114,11 +106,7 @@ class AlphaTrimmingSmoothing(Smoothing):
                 centroids[:, j, :],
             )
 
-        distribution = MixtureDirac(locs=trimmed_mean, probs=weights)
-        return RobustSmoothedOutput(
-            distribution=distribution,
-            certified_probs=None, 
-            radii=None)
+        return MixtureDirac(locs=trimmed_mean, probs=weights)
 
 
 class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
