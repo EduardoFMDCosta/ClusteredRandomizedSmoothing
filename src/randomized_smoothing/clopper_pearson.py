@@ -1,7 +1,14 @@
 import torch
+from dataclasses import dataclass
 
 from randomized_smoothing.dataclasses import ConfidenceParameters
 from .utils import _binomial_cumulative_probability
+
+
+@dataclass
+class _LowerBound:
+    coverage: torch.Tensor
+    partition_probs: torch.Tensor | None
 
 
 class ClopperPearsonLowerBound:
@@ -11,44 +18,71 @@ class ClopperPearsonLowerBound:
         partition_probs: torch.Tensor,
         parameters: ConfidenceParameters,
     ):
-        self.beta = parameters.beta
-        self.num_samples = parameters.num_samples
-        
-        self.coverage = coverage
-        self.partition_probs = partition_probs
-        self.num_clusters = partition_probs.shape[-1]
+        if partition_probs.ndim != 2:
+            raise ValueError("partition_probs must have shape (nx, num_clusters)")
 
-        self.p = self._construct_p()
-        self.lower_bound = self._lower_bound_clopper_pearson()
+        n = int(parameters.num_samples)
+        if n <= 0:
+            raise ValueError("parameters.num_samples must be positive")
 
-    def _construct_p(self) -> torch.Tensor:
-        if self.num_clusters == 1:
-            return torch.tensor([[self.coverage]], dtype=torch.float64, device=self.partition_probs.device)
+        nx, num_clusters = partition_probs.shape
+        if num_clusters <= 0:
+            raise ValueError("partition_probs must contain at least one cluster")
+
+        if num_clusters == 1:
+            delta = float(parameters.beta)
+            partition_lb = None
         else:
-            nx = self.partition_probs.shape[0]
-            region_coverage_repeated = torch.full((nx, self.num_clusters), self.coverage, dtype=self.partition_probs.dtype, device=self.partition_probs.device)
-            return torch.cat([region_coverage_repeated, self.partition_probs], dim=1)
+            delta = float(parameters.beta) / (2.0 * float(num_clusters))
+            counts_partition = torch.round(partition_probs.clamp(0.0, 1.0) * n).to(dtype=torch.long)
+            partition_lb = torch.empty_like(partition_probs)
+            for i in range(nx):
+                for j in range(num_clusters):
+                    partition_lb[i, j] = self._lower_bound_from_count(
+                        count=int(counts_partition[i, j].item()),
+                        num_samples=n,
+                        delta=delta,
+                    )
 
-    def _lower_bound_clopper_pearson(self) -> torch.Tensor:
-        lb = torch.zeros_like(self.p)
-        nx = self.p.shape[0]
-        num_events = self.p.shape[1]
+        count_coverage = int(round(float(coverage) * n))
+        count_coverage = max(0, min(n, count_coverage))
+        coverage_lb_scalar = self._lower_bound_from_count(
+            count=count_coverage,
+            num_samples=n,
+            delta=delta,
+        )
+        coverage_lb = torch.full(
+            (nx, 1),
+            fill_value=coverage_lb_scalar,
+            dtype=partition_probs.dtype,
+            device=partition_probs.device,
+        )
 
-        adjusted_beta = self.beta / num_events
+        self.lower_bound = _LowerBound(
+            coverage=coverage_lb,
+            partition_probs=partition_lb,
+        )
 
-        for row in range(nx):
-            for col in range(num_events):
-                prob = self.p[row, col].item()
-                z = int(self.num_samples * prob)
+    @staticmethod
+    def _lower_bound_from_count(count: int, num_samples: int, delta: float) -> float:
+        # One-sided CP lower bound: solve P[X >= count | p] = delta for p.
+        if count <= 0:
+            return 0.0
 
-                lo, hi = 0.0, 1.0
-                for _ in range(100):
-                    mid = 0.5 * (lo + hi)
-                    tail_mid = _binomial_cumulative_probability(from_idx=z, to_idx=self.num_samples, p=mid)
-                    if tail_mid >= adjusted_beta:
-                        hi = mid
-                    else:
-                        lo = mid
+        if count >= num_samples:
+            return float(delta ** (1.0 / float(num_samples)))
 
-                lb[row, col] = 0.5 * (lo + hi)
-        return lb
+        lo, hi = 0.0, 1.0
+        for _ in range(64):
+            mid = 0.5 * (lo + hi)
+            tail_prob = _binomial_cumulative_probability(
+                from_idx=count,
+                to_idx=num_samples,
+                p=1.0 - mid,
+            )
+            if tail_prob >= delta:
+                hi = mid
+            else:
+                lo = mid
+
+        return hi

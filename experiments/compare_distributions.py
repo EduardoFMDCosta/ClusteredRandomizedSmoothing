@@ -38,15 +38,15 @@ def main():
 	# Define parameters
     smoothing_parameters = SmoothingParameters(
         N=50,
-        alpha=0.25,
+        alpha=0.45,
     )
     clustering_parameters = ClusteringParameters(
         num_clusters=3,
-        coverage=0.8,
+        coverage=0.9,
     )
     confidence_parameters = ConfidenceParameters(
         beta=1e-2,
-        num_samples=1000,
+        num_samples=10000,
     )
 
     sigma = 1.0
@@ -87,13 +87,8 @@ def main():
     )
 
     # Robustness certification
-    # certificate_alpha_trimming = alpha_trimming_smoother.robust_certification(
-    #     region_coverage=region_coverage, 
-    #     beta=beta, 
-    #     num_samples=num_samples, 
-    #     radius=0.1
-    # )
-    # print(f"certificate_alpha_trimming: {certificate_alpha_trimming}")
+    certificate = smoother.robust_certification(radius=0.01)
+    print(f"certificate: {certificate}")
 
     # certificate = clusterized_alpha_trimming_smoother.robust_certification(
     #     region_coverage=region_coverage, 

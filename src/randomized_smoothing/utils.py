@@ -64,16 +64,90 @@ def log_combination(N: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
     return torch.lgamma(N + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(N - k + 1.0)
 
 def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
-    k = k.to(dtype=torch.get_default_dtype())
+    k = k.to(dtype=torch.float64)
     N = torch.tensor(float(N), dtype=k.dtype, device=k.device)
     p = torch.tensor(p, dtype=k.dtype, device=k.device)
     one = torch.tensor(1.0, dtype=k.dtype, device=k.device)
 
-    log_combination = log_combination(N, k)
-    log_prob = log_combination + k * torch.log(one - p) + (N - k) * torch.log(p)
+    log_comb = log_combination(N, k)
+    log_prob = log_comb + k * torch.log(one - p) + (N - k) * torch.log(p)
     return torch.exp(log_prob)
 
 
 def _binomial_cumulative_probability(from_idx: int, to_idx: int, p: float) -> float:
     k = torch.arange(from_idx, to_idx + 1)
     return _binomial(k=k, N=to_idx, p=p).sum().item()
+
+
+def robustness_bound(
+    coverage: torch.Tensor,
+    p_partition: torch.Tensor | None,
+    num_samples: int,
+    alpha: float,
+    weights: torch.Tensor,
+) -> torch.Tensor:
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
+
+    if coverage.ndim == 1:
+        coverage = coverage.unsqueeze(1)
+    if coverage.ndim != 2 or coverage.shape[1] != 1:
+        raise ValueError("coverage must have shape (nx, 1) or (nx,)")
+
+    nx = coverage.shape[0]
+    if weights.ndim != 2 or weights.shape[0] != nx:
+        raise ValueError("weights must have shape (nx, num_clusters)")
+
+    if p_partition is None:
+        p_partition = weights
+    if p_partition.ndim != 2 or p_partition.shape != weights.shape:
+        raise ValueError("p_partition must have the same shape as weights")
+
+    output_dtype = coverage.dtype
+    device = coverage.device
+    dtype = torch.float64
+    eps = 1e-12
+
+    coverage = coverage.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
+    p_partition = p_partition.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
+    weights = weights.to(device=device, dtype=dtype)
+
+    l = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
+    j = torch.arange(0, num_samples + 1, device=device, dtype=dtype)
+    j_max = torch.floor(alpha * l).to(dtype=torch.long)
+
+    l_row = l.view(1, num_samples, 1)
+    j_row = j.view(1, 1, num_samples + 1)
+    valid_j = j_row <= j_max.view(1, num_samples, 1)
+
+    log_comb_lj = (
+        torch.lgamma(l_row + 1.0)
+        - torch.lgamma(j_row + 1.0)
+        - torch.lgamma(l_row - j_row + 1.0)
+    )
+
+    c = coverage.view(nx, 1, 1)
+    log_term_j = (
+        log_comb_lj
+        + j_row * torch.log(1.0 - c)
+        + (l_row - j_row) * torch.log(c)
+    )
+    term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
+    inner_j = term_j.sum(dim=2)
+
+    log_comb_nl = (
+        torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) + 1.0)
+        - torch.lgamma(l + 1.0)
+        - torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) - l + 1.0)
+    )
+
+    p = p_partition.unsqueeze(-1)
+    log_term_l = (
+        log_comb_nl.view(1, 1, num_samples)
+        + l.view(1, 1, num_samples) * torch.log(1.0 - p)
+        + (num_samples - l).view(1, 1, num_samples) * torch.log(p)
+    )
+    term_l = torch.exp(log_term_l)
+
+    per_cluster = (inner_j.unsqueeze(1) * term_l).sum(dim=2)
+    return (weights * per_cluster).to(dtype=output_dtype)
