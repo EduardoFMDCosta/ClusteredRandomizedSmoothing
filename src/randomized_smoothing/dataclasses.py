@@ -13,12 +13,16 @@ class ClusteringParameters:
     max_iter: int = 1000
     tol: float = 1e-5
 
-
 @dataclass
 class ConfidenceParameters:
     num_samples: int = 1000
     beta: float = 1e-2
 
+@dataclass
+class Parameters:
+    smoothing: SmoothingParameters
+    clustering: ClusteringParameters
+    confidence: ConfidenceParameters
 
 @dataclass
 class RobustnessCertificate:

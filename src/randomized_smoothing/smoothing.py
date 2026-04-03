@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import torch
 
-from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, RobustnessCertificate, SmoothingParameters
+from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
 
 from .clopper_pearson import ClopperPearsonLowerBound
 from .distributions import Dirac, Distribution, MixtureDirac, MultivariateGaussian
@@ -35,17 +35,15 @@ class AlphaTrimmingSmoothing(Smoothing):
             self, 
             stochastic_function: StochasticFunction,
             smoothing_distribution: Distribution, 
-            smoothing_params: SmoothingParameters,
-            clustering_params: ClusteringParameters,
-            confidence_params: ConfidenceParameters,
+            parameters: Parameters,
         ):
         self.stochastic_function = stochastic_function
         self.smoothing_distribution = smoothing_distribution
         
-        if _validate_alpha(smoothing_params.alpha):
-            self.smoothing_parameters = smoothing_params
-        self.clustering_params = clustering_params
-        self.confidence_params = confidence_params
+        if _validate_alpha(parameters.smoothing.alpha):
+            self.smoothing_parameters = parameters.smoothing
+        self.clustering_parameters = parameters.clustering
+        self.confidence_parameters = parameters.confidence
         
         self.cluster = self._construct_cluster()
 
@@ -60,7 +58,7 @@ class AlphaTrimmingSmoothing(Smoothing):
 
     def _construct_cluster(self, x: torch.Tensor, num_samples: int) -> Cluster:
         raw_outputs = self._generate_noisy_samples_from_stochastic_function(x=x, num_samples=num_samples)
-        return Cluster(outputs=raw_outputs, params=self.smoothing_parameters,)
+        return Cluster(outputs=raw_outputs, parameters=self.clustering_parameters, coverage=self.clustering_parameters.region_coverage)
 
     def smooth(self, x: torch.Tensor) -> Distribution:
         noise = self.smoothing_distribution.sample(size=(x.shape[0], self.N))
@@ -105,9 +103,9 @@ class AlphaTrimmingSmoothing(Smoothing):
     
     def _clopper_pearson_lower_bound(self) -> torch.Tensor:
         return ClopperPearsonLowerBound(
-            cluster=self.cluster,
-            clustering_parameters=self.clustering_params,
-            confidence_params=self.confidence_params,
+            coverage=self.clustering_parameters.region_coverage,
+            partition_probs=self.cluster.weights,
+            parameters=self.confidence_parameters,
         ).lower_bound
 
     def robust_certification(self, x: torch.Tensor, radius: float,) -> RobustnessCertificate:

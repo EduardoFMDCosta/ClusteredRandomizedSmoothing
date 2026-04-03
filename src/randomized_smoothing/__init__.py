@@ -7,10 +7,8 @@ from .distributions import (
 )
 from .smoothing import (
     Smoothing,
-    SmoothingParameters,
     RobustnessCertificate,
     AlphaTrimmingSmoothing,
-    ClusterizedAlphaTrimmingSmoothing,
 )
 from .stochastic import StochasticFunction, ThreeMode1DGaussianMixture
 from .clopper_pearson import ClopperPearsonLowerBound
