@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
+import math
 import torch
 
 from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
@@ -10,6 +11,7 @@ from .distributions import Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
 from .utils import (
     _alpha_trimming_lower_bound,
+    _binomial_cumulative_probability,
     _clusterized_alpha_trimming_lower_bound,
     _validate_alpha,
     _compute_probability_given_radius,
@@ -129,28 +131,98 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             parameters=parameters,
         )
 
+    def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float) -> torch.Tensor:
+        z = torch.special.ndtri(p)
+        shifted = z - radius / sigma
+        probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
+
+        return probs
     
-    def _clopper_pearson_lower_bound(self) -> torch.Tensor:
-        return ClopperPearsonLowerBound(
+    
+    
+    def _alpha_trimming_lower_bound(p: float, num_samples: int, alpha: float) -> float:
+        alphaN = int(alpha * num_samples)
+        return _binomial_cumulative_probability(from_idx=0, to_idx=alphaN, p=p)
+    
+
+    def _compute_per_region_factor(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
+        device = p_clusters.device
+        dtype = torch.float64
+
+        p_region = torch.tensor(float(p), dtype=dtype, device=device)
+        one = torch.tensor(1.0, dtype=dtype, device=device)
+
+        p_v = p_clusters.to(dtype=dtype)
+
+        log_p_region = torch.log(p_region)
+        log_one_minus_p_region = torch.log(one - p_region)
+        log_p_v = torch.log(p_v)
+        log_one_minus_p_v = torch.log(one - p_v)
+
+        result = torch.zeros_like(p_v)
+
+        for ell in range(1, num_samples + 1):
+            ell_t = torch.tensor(float(ell), dtype=dtype, device=device)
+
+            inner_sum = torch.tensor(0.0, dtype=dtype, device=device)
+            max_j = int(alpha * ell)
+            for j in range(0, max_j + 1):
+                j_t = torch.tensor(float(j), dtype=dtype, device=device)
+
+                log_choose_ell_j = (
+                    torch.lgamma(ell_t + 1.0)
+                    - torch.lgamma(j_t + 1.0)
+                    - torch.lgamma(ell_t - j_t + 1.0)
+                )
+                log_term_j = (
+                    log_choose_ell_j
+                    + j_t * log_one_minus_p_region
+                    + (ell_t - j_t) * log_p_region
+                )
+                inner_sum = inner_sum + torch.exp(log_term_j)
+
+            log_choose_n_ell = (
+                torch.lgamma(torch.tensor(float(num_samples), dtype=dtype, device=device) + 1.0)
+                - torch.lgamma(ell_t + 1.0)
+                - torch.lgamma(torch.tensor(float(num_samples - ell), dtype=dtype, device=device) + 1.0)
+            )
+
+            cluster_term = torch.exp(
+                log_choose_n_ell
+                + ell_t * log_one_minus_p_v
+                + (num_samples - ell_t) * log_p_v
+            )
+            result = result + inner_sum * cluster_term
+        return result
+
+
+    def bound(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
+        result = _compute_per_region_factor(p=p, p_clusters=p_clusters, num_samples=num_samples, alpha=alpha)
+        return (weights * result).to(p_clusters.dtype)
+
+
+    def robust_certification(self, radius: float,) -> RobustnessCertificate:
+        cp = ClopperPearsonLowerBound(
             coverage=self.parameters.clustering.coverage,
             partition_probs=self.cluster.weights,
             parameters=self.parameters.confidence,
-        ).lower_bound
+        )
 
-    def robust_certification(self, radius: float,) -> RobustnessCertificate:
-        if not isinstance(self.smoothing_distribution, MultivariateGaussian):
-            raise ValueError("Robustness certification is only available for MultivariateGaussian")
-        
-        lb = self._clopper_pearson_lower_bound()
+        lb = cp.lower_bound
         p_for_radius = _compute_probability_given_radius(
             p=lb, 
             radius=radius, 
             sigma=self.smoothing_distribution.sigma
         )
 
-        certified_probs = _clusterized_alpha_trimming_lower_bound(p=p_for_radius, num_samples=self.parameters.smoothing.num_samples, alpha=self.parameters.smoothing.alpha, weights=self.cluster.weights)
+        certified_probs = self.bound(
+            p=p_for_radius, 
+            num_samples=self.parameters.smoothing.num_samples, 
+            alpha=self.parameters.smoothing.alpha, 
+            weights=self.cluster.weights
+        )
 
         return RobustnessCertificate(
-            certified_radius=radius,
-            certified_probs=certified_probs
+            radius=radius,
+            probs=certified_probs
         )

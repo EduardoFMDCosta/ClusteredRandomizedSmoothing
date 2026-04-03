@@ -27,5 +27,5 @@ class Parameters:
 
 @dataclass
 class RobustnessCertificate:
-    certified_radius: float
-    certified_probs: torch.Tensor
+    radius: torch.Tensor
+    probs: torch.Tensor

@@ -51,5 +51,4 @@ class ClopperPearsonLowerBound:
                         lo = mid
 
                 lb[row, col] = 0.5 * (lo + hi)
-
         return lb
