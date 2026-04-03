@@ -13,7 +13,7 @@ SRC = ROOT.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.clusters import Cluster, ClusterParameters
+from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.stochastic import ThreeMode1DGaussianMixture
 from randomized_smoothing.regions import HyperRectangle

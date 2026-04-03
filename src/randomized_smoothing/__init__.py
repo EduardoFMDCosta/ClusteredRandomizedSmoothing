@@ -1,4 +1,5 @@
-from .clusters import Cluster, ClusterParameters
+from .clusters import Cluster
+from .dataclasses import SmoothingParameters, ClusteringParameters
 from .distributions import (
     Distribution,
     MultivariateGaussian,
@@ -21,7 +22,7 @@ __all__ = [
     "Distribution",
     # Configuration
     "SmoothingParameters",
-    "ClusterParameters",
+    "ClusteringParameters",
     # Smoothers
     "AlphaTrimmingSmoothing",
     "ClusterizedAlphaTrimmingSmoothing",
