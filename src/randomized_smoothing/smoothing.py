@@ -1,6 +1,4 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional
 import math
 import torch
 
@@ -10,11 +8,8 @@ from .clopper_pearson import ClopperPearsonLowerBound
 from .distributions import Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
 from .utils import (
-    _alpha_trimming_lower_bound,
-    _binomial_cumulative_probability,
-    _clusterized_alpha_trimming_lower_bound,
     _validate_alpha,
-    _compute_probability_given_radius,
+    _binomial_cumulative_probability,
 )
 from .clusters import Cluster
     
@@ -214,6 +209,8 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             radius=radius, 
             sigma=self.smoothing_distribution.sigma
         )
+
+
 
         certified_probs = self.bound(
             p=p_for_radius, 
