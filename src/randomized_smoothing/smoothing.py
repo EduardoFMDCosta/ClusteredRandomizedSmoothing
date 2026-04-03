@@ -68,7 +68,7 @@ class AlphaTrimmingSmoothing(Smoothing):
         
         cluster = self.cluster
         centroids = cluster.centroids
-        weights = cluster.weights
+        probs_partition = cluster.probs_partition
 
         nx, num_samples, _ = outputs.shape
         num_clusters = cluster.num_clusters
@@ -103,7 +103,7 @@ class AlphaTrimmingSmoothing(Smoothing):
                 centroids[:, j, :],
             )
 
-        return MixtureDirac(locs=trimmed_mean, probs=weights)
+        return MixtureDirac(locs=trimmed_mean, probs=probs_partition)
 
 
 class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
@@ -191,15 +191,15 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         return result
 
 
-    def bound(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float, weights: torch.Tensor) -> torch.Tensor:
+    def bound(p: float, p_clusters: torch.Tensor, num_samples: int, alpha: float, probs_partition: torch.Tensor) -> torch.Tensor:
         result = _compute_per_region_factor(p=p, p_clusters=p_clusters, num_samples=num_samples, alpha=alpha)
-        return (weights * result).to(p_clusters.dtype)
+        return (probs_partition * result).to(p_clusters.dtype)
 
 
     def robust_certification(self, radius: float,) -> RobustnessCertificate:
         cp = ClopperPearsonLowerBound(
             coverage=self.parameters.clustering.coverage,
-            partition_probs=self.cluster.weights,
+            partition_probs=self.cluster.probs_partition,
             parameters=self.parameters.confidence,
         )
 
@@ -216,7 +216,7 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             p=p_for_radius, 
             num_samples=self.parameters.smoothing.num_samples, 
             alpha=self.parameters.smoothing.alpha, 
-            weights=self.cluster.weights
+            probs_partition=self.cluster.probs_partition
         )
 
         return RobustnessCertificate(

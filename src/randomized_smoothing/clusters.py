@@ -13,7 +13,7 @@ class Cluster:
     ):
         self.parameters = parameters
         self.centroids, self.assignments = self._compute_centroids(outputs=outputs)
-        self.weights = self._compute_weights()
+        self.probs_partition = self._compute_probs_partition()
 
         self.regions = self._get_regions(outputs=outputs)
 
@@ -39,7 +39,7 @@ class Cluster:
 
         return centroids, assignments
 
-    def _compute_weights(self) -> torch.Tensor:
+    def _compute_probs_partition(self) -> torch.Tensor:
         one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.parameters.num_clusters)
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
     
