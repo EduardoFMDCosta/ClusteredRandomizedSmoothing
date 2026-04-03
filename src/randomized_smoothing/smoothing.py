@@ -4,6 +4,7 @@ from typing import Optional
 import torch
 
 from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
+from randomized_smoothing.regions import HyperRectangle
 
 from .clopper_pearson import ClopperPearsonLowerBound
 from .distributions import Dirac, Distribution, MixtureDirac, MultivariateGaussian
@@ -33,8 +34,8 @@ class Smoothing(ABC):
     # def robust_certification(self, region_coverage: float, p_partition: torch.Tensor, beta: float, num_samples: int, radius: float) -> RobustnessCertificate:
     #     raise NotImplementedError
 
-    def monte_carlo(self, x: torch.Tensor, num_simulations: int) -> torch.Tensor:
-        draws = [self.smooth(x=x).distribution.sample() for _ in range(num_simulations)]
+    def monte_carlo(self, num_simulations: int) -> torch.Tensor:
+        draws = [self.smooth().distribution.sample() for _ in range(num_simulations)]
         return torch.stack(draws, dim=1)
 
 
@@ -42,30 +43,36 @@ class AlphaTrimmingSmoothing(Smoothing):
     def __init__(
             self, 
             stochastic_function: StochasticFunction,
-            smoothing_distribution: Distribution, 
+            x: torch.Tensor,
+            smoothing_distribution: Distribution,
             parameters: Parameters,
         ):
         self.stochastic_function = stochastic_function
+        self.x = x
         self.smoothing_distribution = smoothing_distribution
         
         if _validate_alpha(parameters.smoothing.alpha):
             self.parameters = parameters
 
-    def _generate_noisy_samples_from_stochastic_function(self, x: torch.Tensor, num_samples: int) -> torch.Tensor:
-        nx = x.shape[0]
+    def _generate_noisy_samples_from_stochastic_function(self, num_samples: int) -> torch.Tensor:
+        nx = self.x.shape[0]
         return self.stochastic_function.sample(
-            x.unsqueeze(1) + self.smoothing_distribution.sample(size=(nx, num_samples))
+            self.x.unsqueeze(1) + self.smoothing_distribution.sample(size=(nx, num_samples))
         )  
 
-    def _construct_cluster(self, x: torch.Tensor, num_samples: int) -> Cluster:
-        raw_outputs = self._generate_noisy_samples_from_stochastic_function(x=x, num_samples=num_samples)
+    @property
+    def cluster(self) -> Cluster:
+        raw_outputs = self._generate_noisy_samples_from_stochastic_function(num_samples=self.parameters.confidence.num_samples)
         return Cluster(outputs=raw_outputs, parameters=self.parameters.clustering)
+    
+    @property
+    def regions(self) -> HyperRectangle:
+        return self.cluster.regions
 
-    def smooth(self, x: torch.Tensor) -> Distribution:
+    def smooth(self) -> Distribution:
+        outputs = self._generate_noisy_samples_from_stochastic_function(num_samples=self.parameters.smoothing.N)
         
-        cluster = self._construct_cluster(x=x, num_samples=self.parameters.confidence.num_samples)
-        outputs = self._generate_noisy_samples_from_stochastic_function(x=x, num_samples=self.parameters.smoothing.N)
-        
+        cluster = self.cluster
         centroids = cluster.centroids
         weights = cluster.weights
 
@@ -86,7 +93,7 @@ class AlphaTrimmingSmoothing(Smoothing):
             sorted_cluster_values = cluster_values.sort(dim=1).values
 
             counts = cluster_mask.sum(dim=1)
-            left = torch.floor(self.alpha * counts.to(outputs.dtype)).to(torch.long)
+            left = torch.floor(self.parameters.smoothing.alpha * counts.to(outputs.dtype)).to(torch.long)
             right = counts - left
 
             in_trimmed_core = (positions >= left.view(nx, 1, 1)) & (positions < right.view(nx, 1, 1))
@@ -102,7 +109,10 @@ class AlphaTrimmingSmoothing(Smoothing):
             )
 
         distribution = MixtureDirac(locs=trimmed_mean, probs=weights)
-        return RobustSmoothedOutput(distribution=distribution, certified_probs=None, radii=None)
+        return RobustSmoothedOutput(
+            distribution=distribution,
+            certified_probs=None, 
+            radii=None)
     
     def _clopper_pearson_lower_bound(self) -> torch.Tensor:
         return ClopperPearsonLowerBound(
@@ -111,7 +121,7 @@ class AlphaTrimmingSmoothing(Smoothing):
             parameters=self.parameters.confidence,
         ).lower_bound
 
-    def robust_certification(self, x: torch.Tensor, radius: float,) -> RobustnessCertificate:
+    def robust_certification(self, radius: float,) -> RobustnessCertificate:
         if not isinstance(self.smoothing_distribution, MultivariateGaussian):
             raise ValueError("Robustness certification is only available for MultivariateGaussian")
         

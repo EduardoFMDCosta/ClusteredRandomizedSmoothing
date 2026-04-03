@@ -15,7 +15,11 @@ class Cluster:
         self.centroids, self.assignments = self._compute_centroids(outputs=outputs)
         self.weights = self._compute_weights()
 
-        self.regions = self._get_regions(outputs=outputs, coverage=self.parameters.coverage)
+        self.regions = self._get_regions(outputs=outputs)
+
+    @property
+    def num_clusters(self):
+        return self.parameters.num_clusters
     
     def _compute_centroids(self, outputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         nx, num_samples, output_dim = outputs.shape

@@ -47,7 +47,7 @@ def main():
     )
     clustering_parameters = ClusteringParameters(
         num_clusters=3,
-        region_coverage=0.8,
+        coverage=0.8,
     )
     confidence_parameters = ConfidenceParameters(
         beta=1e-2,
@@ -67,19 +67,20 @@ def main():
     
     alpha_trimming_smoother = AlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
+        x=x,
         smoothing_distribution=smoothing_distribution,
         parameters=parameters,
     )
 
 	# Plot empirical distributions of raw outputs and smoothed outputs
-    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(x=x, num_simulations=5000)
+    alpha_trimming_mc_samples = alpha_trimming_smoother.monte_carlo(num_simulations=5000)
 
     chart_paths = plot_experiment_results(
         x=x,
         outputs=raw_outputs,
         global_trimmed_mc_samples=alpha_trimming_mc_samples,
         clusterized_mc_samples=alpha_trimming_mc_samples, # TODO: FIX
-        region=alpha_trimming_smoother.get_regions(),
+        region=alpha_trimming_smoother.regions,
         output_dir=ROOT / "outputs",
     )
 

@@ -35,7 +35,7 @@ class HyperRectangle:
         return HyperRectangle(lower, upper)
     
     @staticmethod
-    def from_samples(samples: torch.Tensor, centroids: torch.Tensor, region_coverage: float):
+    def from_samples(samples: torch.Tensor, centroids: torch.Tensor, coverage: float):
         nx, _, _ = samples.shape
         k = centroids.shape[1]
 
@@ -56,7 +56,7 @@ class HyperRectangle:
                     int(
                         torch.ceil(
                             torch.tensor(
-                                region_coverage * d_ij.numel(),
+                                coverage * d_ij.numel(),
                                 dtype=d_ij.dtype,
                                 device=d_ij.device,
                             )
