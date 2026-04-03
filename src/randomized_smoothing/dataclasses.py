@@ -9,7 +9,7 @@ class SmoothingParameters:
 @dataclass
 class ClusteringParameters:
     num_clusters: int
-    region_coverage: float
+    coverage: float
     max_iter: int = 1000
     tol: float = 1e-5
 
@@ -23,6 +23,7 @@ class Parameters:
     smoothing: SmoothingParameters
     clustering: ClusteringParameters
     confidence: ConfidenceParameters
+
 
 @dataclass
 class RobustnessCertificate:

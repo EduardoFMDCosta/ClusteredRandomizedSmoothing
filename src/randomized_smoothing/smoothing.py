@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional
 import torch
 
 from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
@@ -15,6 +17,12 @@ from .utils import (
 from .clusters import Cluster
 
 
+@dataclass
+class RobustSmoothedOutput:
+    distribution: Distribution
+    certified_probs: Optional[torch.Tensor]
+    radii: Optional[torch.Tensor]
+    
 
 class Smoothing(ABC):
     @abstractmethod
@@ -26,7 +34,7 @@ class Smoothing(ABC):
     #     raise NotImplementedError
 
     def monte_carlo(self, x: torch.Tensor, num_simulations: int) -> torch.Tensor:
-        draws = [self.smooth(x=x).sample() for _ in range(num_simulations)]
+        draws = [self.smooth(x=x).distribution.sample() for _ in range(num_simulations)]
         return torch.stack(draws, dim=1)
 
 
@@ -41,14 +49,7 @@ class AlphaTrimmingSmoothing(Smoothing):
         self.smoothing_distribution = smoothing_distribution
         
         if _validate_alpha(parameters.smoothing.alpha):
-            self.smoothing_parameters = parameters.smoothing
-        self.clustering_parameters = parameters.clustering
-        self.confidence_parameters = parameters.confidence
-        
-        self.cluster = self._construct_cluster()
-
-    def get_regions(self):
-        return self.cluster.regions
+            self.parameters = parameters
 
     def _generate_noisy_samples_from_stochastic_function(self, x: torch.Tensor, num_samples: int) -> torch.Tensor:
         nx = x.shape[0]
@@ -58,17 +59,18 @@ class AlphaTrimmingSmoothing(Smoothing):
 
     def _construct_cluster(self, x: torch.Tensor, num_samples: int) -> Cluster:
         raw_outputs = self._generate_noisy_samples_from_stochastic_function(x=x, num_samples=num_samples)
-        return Cluster(outputs=raw_outputs, parameters=self.clustering_parameters, coverage=self.clustering_parameters.region_coverage)
+        return Cluster(outputs=raw_outputs, parameters=self.parameters.clustering)
 
     def smooth(self, x: torch.Tensor) -> Distribution:
-        noise = self.smoothing_distribution.sample(size=(x.shape[0], self.N))
-        outputs = self.stochastic_function.sample(x.unsqueeze(1) + noise)
-
-        centroids = self.cluster.centroids
-        weights = self.cluster.weights
+        
+        cluster = self._construct_cluster(x=x, num_samples=self.parameters.confidence.num_samples)
+        outputs = self._generate_noisy_samples_from_stochastic_function(x=x, num_samples=self.parameters.smoothing.N)
+        
+        centroids = cluster.centroids
+        weights = cluster.weights
 
         nx, num_samples, _ = outputs.shape
-        num_clusters = self.cluster.num_clusters
+        num_clusters = cluster.num_clusters
 
         distances = torch.cdist(outputs, centroids)
         assignments = distances.argmin(dim=2)
@@ -99,13 +101,14 @@ class AlphaTrimmingSmoothing(Smoothing):
                 centroids[:, j, :],
             )
 
-        return MixtureDirac(locs=trimmed_mean, probs=weights)
+        distribution = MixtureDirac(locs=trimmed_mean, probs=weights)
+        return RobustSmoothedOutput(distribution=distribution, certified_probs=None, radii=None)
     
     def _clopper_pearson_lower_bound(self) -> torch.Tensor:
         return ClopperPearsonLowerBound(
-            coverage=self.clustering_parameters.region_coverage,
+            coverage=self.parameters.clustering.coverage,
             partition_probs=self.cluster.weights,
-            parameters=self.confidence_parameters,
+            parameters=self.parameters.confidence,
         ).lower_bound
 
     def robust_certification(self, x: torch.Tensor, radius: float,) -> RobustnessCertificate:
@@ -119,10 +122,9 @@ class AlphaTrimmingSmoothing(Smoothing):
             sigma=self.smoothing_distribution.sigma
         )
 
-        certified_probs = _clusterized_alpha_trimming_lower_bound(p=p_for_radius, num_samples=self.smoothing_parameters.num_samples, alpha=self.alpha, weights=self.cluster.weights)
+        certified_probs = _clusterized_alpha_trimming_lower_bound(p=p_for_radius, num_samples=self.parameters.smoothing.num_samples, alpha=self.parameters.smoothing.alpha, weights=self.cluster.weights)
 
         return RobustnessCertificate(
             certified_radius=radius,
             certified_probs=certified_probs
         )
-

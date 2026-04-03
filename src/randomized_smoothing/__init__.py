@@ -1,5 +1,5 @@
 from .clusters import Cluster
-from .dataclasses import SmoothingParameters, ClusteringParameters
+from .dataclasses import SmoothingParameters, ClusteringParameters, RobustnessCertificate
 from .distributions import (
     Distribution,
     MultivariateGaussian,
@@ -8,7 +8,6 @@ from .distributions import (
 )
 from .smoothing import (
     Smoothing,
-    RobustnessCertificate,
     AlphaTrimmingSmoothing,
 )
 from .stochastic import StochasticFunction, ThreeMode1DGaussianMixture
@@ -25,7 +24,6 @@ __all__ = [
     "ClusteringParameters",
     # Smoothers
     "AlphaTrimmingSmoothing",
-    "ClusterizedAlphaTrimmingSmoothing",
     "RobustnessCertificate",
     "ClopperPearsonLowerBound",
     # Clustering
