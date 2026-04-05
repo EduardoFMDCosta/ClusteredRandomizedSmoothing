@@ -70,7 +70,7 @@ def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
     one = torch.tensor(1.0, dtype=k.dtype, device=k.device)
 
     log_comb = log_combination(N, k)
-    log_prob = log_comb + k * torch.log(one - p) + (N - k) * torch.log(p)
+    log_prob = log_comb + k * torch.log(p) + (N - k) * torch.log(one - p)
     return torch.exp(log_prob)
 
 
