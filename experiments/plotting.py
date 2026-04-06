@@ -14,7 +14,7 @@ def _to_numpy(x: torch.Tensor) -> np.ndarray:
 def plot_experiment_results(
 	x: torch.Tensor,
 	outputs: torch.Tensor,
-	global_trimmed_mc_samples: torch.Tensor,
+	rekavandi_mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
 	output_dir: Path,
 	region=None,
@@ -24,7 +24,7 @@ def plot_experiment_results(
 
 	x_np = _to_numpy(x[:, 0])
 	outputs_np = _to_numpy(outputs[:, :, 0])
-	global_mc_np = _to_numpy(global_trimmed_mc_samples[:, :, 0])
+	rekavandi_mc_np = _to_numpy(rekavandi_mc_samples[:, :, 0])
 	clusterized_mc_np = _to_numpy(clusterized_mc_samples[:, :, 0])
 	region_lower_np = _to_numpy(region.lower[:, :, 0]) if region is not None else None
 	region_upper_np = _to_numpy(region.upper[:, :, 0]) if region is not None else None
@@ -52,7 +52,7 @@ def plot_experiment_results(
 			label="Raw stochastic outputs",
 		)
 		ax.hist(
-			global_mc_np[i],
+			rekavandi_mc_np[i],
 			bins=45,
 			density=True,
 			alpha=0.30,

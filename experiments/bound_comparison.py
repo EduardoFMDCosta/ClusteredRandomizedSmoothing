@@ -125,7 +125,7 @@ def main() -> None:
     fig2.suptitle(r"Ours per-region bound across $p_{R} / p_{V}$, $p_{V}$, $\alpha$, and sample size $N$", fontsize=13)
     fig2.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
-    output_path_ours = output_dir / "bound_ours_per_region_grid.png"
+    output_path_ours = output_dir / "bound_clusterized_grid.png"
     fig2.savefig(output_path_ours, dpi=180)
     plt.close(fig2)
 

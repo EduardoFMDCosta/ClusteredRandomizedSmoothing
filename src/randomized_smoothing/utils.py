@@ -4,16 +4,6 @@ import torch.nn.functional as F
 
 
 # -----------------------------------------------------------------------------
-# Parameter validation
-# -----------------------------------------------------------------------------
-def _validate_alpha(alpha: float):
-    if not (0.0 <= alpha < 0.5):
-        raise ValueError("Trimming parameter alpha must satisfy 0 <= alpha < 0.5")
-    else:
-        return True
-
-
-# -----------------------------------------------------------------------------
 # Clustering utilities
 # -----------------------------------------------------------------------------
 def _run_kmeans(

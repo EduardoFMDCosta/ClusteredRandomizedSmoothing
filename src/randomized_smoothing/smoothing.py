@@ -8,7 +8,6 @@ from .clopper_pearson import ClopperPearsonInterval
 from .distributions import Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
 from .utils import (
-    _validate_alpha,
     robustness_bound,
 )
 from .clusters import Cluster
@@ -23,7 +22,7 @@ class Smoothing(ABC):
         if num_simulations <= 0:
             raise ValueError("num_simulations must be positive")
 
-        first_draw = self.smooth().sample()
+        first_draw = self.smooth().sample(size=())
         draws = torch.empty(
             (first_draw.shape[0], num_simulations, *first_draw.shape[1:]),
             dtype=first_draw.dtype,
@@ -31,7 +30,7 @@ class Smoothing(ABC):
         )
         draws[:, 0, ...] = first_draw
         for i in range(1, num_simulations):
-            draws[:, i, ...] = self.smooth().sample()
+            draws[:, i, ...] = self.smooth().sample(size=())
         return draws
 
 
@@ -46,9 +45,7 @@ class AlphaTrimmingSmoothing(Smoothing):
         self.stochastic_function = stochastic_function
         self.x = x
         self.smoothing_distribution = smoothing_distribution
-        
-        if _validate_alpha(parameters.smoothing.alpha):
-            self.parameters = parameters
+        self.parameters = parameters
 
         self.cluster = self._compute_cluster()
         self.regions = self.cluster.regions
@@ -150,7 +147,7 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         )
 
 
-    def robust_certification(self, radius: float,) -> RobustnessCertificate:     
+    def robust_certification(self, radius: torch.Tensor,) -> RobustnessCertificate:
         # Compute Clopper-Pearson lower bound
         cp = ClopperPearsonInterval(
             probs_region=self.cluster.probs_region,
@@ -176,7 +173,7 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         )
 
         # Certify
-        certified_probs = self._compute_bound(
+        certified_probs_per_cluster = self._compute_bound(
             probs_region=probs_region,
             probs_partition=probs_partition,
             num_samples=self.parameters.smoothing.N,
@@ -185,5 +182,5 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
 
         return RobustnessCertificate(
             radius=radius,
-            probs=certified_probs
+            probs=certified_probs_per_cluster
         )
