@@ -12,14 +12,22 @@ SRC = ROOT.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.utils import _bound_ours_per_region, _bound_rekavandi_et_al_2024
+from randomized_smoothing.utils import robustness_bound
 
 
 def compute_curve(p_values: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
-    values = [
-        float(_bound_rekavandi_et_al_2024(p=pi, num_samples=num_samples, alpha=alpha).item())
-        for pi in p_values
-    ]
+    # Rekavandi setting: single cluster with p_partition = 1.
+    values = []
+    for pi in p_values:
+        probs_region = torch.tensor([[float(pi.item())]], dtype=torch.float64)
+        probs_partition = torch.ones((1, 1), dtype=torch.float64)
+        bound = robustness_bound(
+            probs_region=probs_region,
+            probs_partition=probs_partition,
+            num_samples=num_samples,
+            alpha=alpha,
+        )
+        values.append(float(bound.squeeze().item()))
     return torch.tensor(values, dtype=torch.float64)
 
 
@@ -31,9 +39,14 @@ def compute_curve_ours_per_region(
 ) -> torch.Tensor:
     values = []
     for p0 in p0_values:
-        # Build p as a (2, 1) tensor and flatten for the utility function API.
-        p_pair = torch.tensor([[float(p0.item())], [p1]], dtype=torch.float64)
-        bound = _bound_ours_per_region(p=p_pair.reshape(-1), num_samples=num_samples, alpha=alpha)
+        probs_region = torch.tensor([[float(p0.item())]], dtype=torch.float64)
+        probs_partition = torch.tensor([[p1]], dtype=torch.float64)
+        bound = robustness_bound(
+            probs_region=probs_region,
+            probs_partition=probs_partition,
+            num_samples=num_samples,
+            alpha=alpha,
+        )
         values.append(float(bound.squeeze().item()))
     return torch.tensor(values, dtype=torch.float64)
 
