@@ -36,7 +36,7 @@ RandomizedSmoothing/
 - `ClusterizedAlphaTrimmingSmoothing`:
 	trims inside nearest-centroid clusters, computes cluster means, then samples
 	from weighted cluster means.
-- `ClopperPearsonLowerBound` and `lower_bound_clopper_pearson(...)`:
+- `ClopperPearsonInterval`:
 	utilities for the confidence bounds used in certification.
 
 ## Demonstration

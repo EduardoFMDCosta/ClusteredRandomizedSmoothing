@@ -74,14 +74,14 @@ def _binomial(k: torch.Tensor, N: int, p: float) -> torch.Tensor:
     return torch.exp(log_prob)
 
 
-def _binomial_cumulative_probability(from_idx: int, to_idx: int, p: float) -> float:
-    k = torch.arange(from_idx, to_idx + 1)
-    return _binomial(k=k, N=to_idx, p=p).sum().item()
+def _binomial_cumulative_probability(from_k: int, to_k: int, p: float, num_samples: int) -> float:
+    k = torch.arange(from_k, to_k + 1)
+    return _binomial(k=k, N=num_samples, p=p).sum().item()
 
 
 def robustness_bound(
-    coverage: torch.Tensor,
-    p_partition: torch.Tensor | None,
+    probs_region: torch.Tensor,
+    probs_partition: torch.Tensor,
     num_samples: int,
     alpha: float,
     weights: torch.Tensor,
@@ -89,27 +89,26 @@ def robustness_bound(
     if num_samples <= 0:
         raise ValueError("num_samples must be positive")
 
-    if coverage.ndim == 1:
-        coverage = coverage.unsqueeze(1)
-    if coverage.ndim != 2 or coverage.shape[1] != 1:
-        raise ValueError("coverage must have shape (nx, 1) or (nx,)")
+    if probs_region.ndim != 2:
+        raise ValueError("probs_region must have shape (nx, num_clusters)")
 
-    nx = coverage.shape[0]
+    nx, num_clusters = probs_region.shape
     if weights.ndim != 2 or weights.shape[0] != nx:
         raise ValueError("weights must have shape (nx, num_clusters)")
 
-    if p_partition is None:
-        p_partition = weights
-    if p_partition.ndim != 2 or p_partition.shape != weights.shape:
-        raise ValueError("p_partition must have the same shape as weights")
+    if probs_partition.ndim != 2 or probs_partition.shape != weights.shape:
+        raise ValueError("probs_partition must have the same shape as weights")
 
-    output_dtype = coverage.dtype
-    device = coverage.device
+    if weights.shape[1] != num_clusters:
+        raise ValueError("probs_region and weights must have the same shape")
+
+    output_dtype = probs_region.dtype
+    device = probs_region.device
     dtype = torch.float64
     eps = 1e-12
 
-    coverage = coverage.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    p_partition = p_partition.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
+    probs_region = probs_region.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
+    probs_partition = probs_partition.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
     weights = weights.to(device=device, dtype=dtype)
 
     l = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
@@ -126,14 +125,14 @@ def robustness_bound(
         - torch.lgamma(l_row - j_row + 1.0)
     )
 
-    c = coverage.view(nx, 1, 1)
+    c = probs_region.unsqueeze(-1).unsqueeze(-1)
     log_term_j = (
         log_comb_lj
         + j_row * torch.log(1.0 - c)
         + (l_row - j_row) * torch.log(c)
     )
     term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
-    inner_j = term_j.sum(dim=2)
+    inner_j = term_j.sum(dim=-1)
 
     log_comb_nl = (
         torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) + 1.0)
@@ -141,7 +140,7 @@ def robustness_bound(
         - torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) - l + 1.0)
     )
 
-    p = p_partition.unsqueeze(-1)
+    p = probs_partition.unsqueeze(-1)
     log_term_l = (
         log_comb_nl.view(1, 1, num_samples)
         + l.view(1, 1, num_samples) * torch.log(1.0 - p)
@@ -149,5 +148,5 @@ def robustness_bound(
     )
     term_l = torch.exp(log_term_l)
 
-    per_cluster = (inner_j.unsqueeze(1) * term_l).sum(dim=2)
+    per_cluster = (inner_j * term_l).sum(dim=2)
     return (weights * per_cluster).to(dtype=output_dtype)

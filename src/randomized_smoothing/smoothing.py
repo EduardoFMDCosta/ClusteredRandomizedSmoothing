@@ -4,7 +4,7 @@ import torch
 
 from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
 
-from .clopper_pearson import ClopperPearsonLowerBound
+from .clopper_pearson import ClopperPearsonInterval
 from .distributions import Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
 from .utils import (
@@ -137,15 +137,15 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
 
     def _compute_bound(
         self,
-        coverage: torch.Tensor,
-        p_partition: torch.Tensor | None,
+        probs_region: torch.Tensor,
+        probs_partition: torch.Tensor,
         num_samples: int,
         alpha: float,
         weights: torch.Tensor,
     ) -> torch.Tensor:
         return robustness_bound(
-            coverage=coverage,
-            p_partition=p_partition,
+            probs_region=probs_region,
+            probs_partition=probs_partition,
             num_samples=num_samples,
             alpha=alpha,
             weights=weights,
@@ -154,32 +154,31 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
 
     def robust_certification(self, radius: float,) -> RobustnessCertificate:     
         # Compute Clopper-Pearson lower bound
-        cp = ClopperPearsonLowerBound(
-            coverage=self.parameters.clustering.coverage,
-            partition_probs=self.cluster.probs_partition,
+        cp = ClopperPearsonInterval(
+            probs_region=self.cluster.probs_region,
+            probs_partition=self.cluster.probs_partition,
             parameters=self.parameters.confidence,
         )
-        coverage_lb = cp.lower_bound.coverage
-        p_partition_lb = cp.lower_bound.partition_probs
+        probs_region_lb = cp.region.lb
+        probs_partition_lb = cp.partition.lb
 
         # Adjust probabilities for the given radius
-        coverage_lb = self._compute_probability_given_radius(
-            p=coverage_lb, 
+        probs_region_lb = self._compute_probability_given_radius(
+            p=probs_region_lb,
             radius=radius, 
             sigma=self.smoothing_distribution.sigma
         )
 
-        if p_partition_lb is not None:
-            p_partition_lb = self._compute_probability_given_radius(
-                p=p_partition_lb,
-                radius=radius,
-                sigma=self.smoothing_distribution.sigma,
-            )
+        probs_partition_lb = self._compute_probability_given_radius(
+            p=probs_partition_lb,
+            radius=radius,
+            sigma=self.smoothing_distribution.sigma,
+        )
 
         # Certify
         certified_probs = self._compute_bound(
-            coverage=coverage_lb,
-            p_partition=p_partition_lb,
+            probs_region=probs_region_lb,
+            probs_partition=probs_partition_lb,
             num_samples=self.parameters.smoothing.N,
             alpha=self.parameters.smoothing.alpha,
             weights=self.cluster.probs_partition,

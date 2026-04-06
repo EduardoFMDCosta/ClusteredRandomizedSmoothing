@@ -11,7 +11,7 @@ from .smoothing import (
     AlphaTrimmingSmoothing,
 )
 from .stochastic import StochasticFunction, ThreeMode1DGaussianMixture
-from .clopper_pearson import ClopperPearsonLowerBound
+from .clopper_pearson import ClopperPearsonInterval
 
 __all__ = [
     # Core abstractions
@@ -25,7 +25,7 @@ __all__ = [
     # Smoothers
     "AlphaTrimmingSmoothing",
     "RobustnessCertificate",
-    "ClopperPearsonLowerBound",
+    "ClopperPearsonInterval",
     # Clustering
     "Cluster",
     # Noise distributions
