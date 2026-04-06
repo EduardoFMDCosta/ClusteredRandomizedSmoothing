@@ -127,9 +127,9 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         )
 
     @staticmethod
-    def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float) -> torch.Tensor:
+    def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float, is_lb: bool) -> torch.Tensor:
         z = torch.special.ndtri(p)
-        shifted = z - radius / sigma
+        shifted = z - radius / sigma if is_lb else z + radius / sigma
         probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
 
         return probs
@@ -141,14 +141,12 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         probs_partition: torch.Tensor,
         num_samples: int,
         alpha: float,
-        weights: torch.Tensor,
     ) -> torch.Tensor:
         return robustness_bound(
             probs_region=probs_region,
             probs_partition=probs_partition,
             num_samples=num_samples,
             alpha=alpha,
-            weights=weights,
         )
 
 
@@ -159,29 +157,30 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             probs_partition=self.cluster.probs_partition,
             parameters=self.parameters.confidence,
         )
-        probs_region_lb = cp.region.lb
-        probs_partition_lb = cp.partition.lb
+        probs_region = cp.region.lb
+        probs_partition = cp.partition.ub
 
         # Adjust probabilities for the given radius
-        probs_region_lb = self._compute_probability_given_radius(
-            p=probs_region_lb,
+        probs_region = self._compute_probability_given_radius(
+            p=probs_region,
             radius=radius, 
-            sigma=self.smoothing_distribution.sigma
+            sigma=self.smoothing_distribution.sigma,
+            is_lb=True,
         )
 
-        probs_partition_lb = self._compute_probability_given_radius(
-            p=probs_partition_lb,
+        probs_partition = self._compute_probability_given_radius(
+            p=probs_partition,
             radius=radius,
             sigma=self.smoothing_distribution.sigma,
+            is_lb=False,
         )
 
         # Certify
         certified_probs = self._compute_bound(
-            probs_region=probs_region_lb,
-            probs_partition=probs_partition_lb,
+            probs_region=probs_region,
+            probs_partition=probs_partition,
             num_samples=self.parameters.smoothing.N,
             alpha=self.parameters.smoothing.alpha,
-            weights=self.cluster.probs_partition,
         )
 
         return RobustnessCertificate(

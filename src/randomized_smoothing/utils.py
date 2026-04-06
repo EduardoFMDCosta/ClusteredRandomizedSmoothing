@@ -84,7 +84,6 @@ def robustness_bound(
     probs_partition: torch.Tensor,
     num_samples: int,
     alpha: float,
-    weights: torch.Tensor,
 ) -> torch.Tensor:
     if num_samples <= 0:
         raise ValueError("num_samples must be positive")
@@ -92,15 +91,8 @@ def robustness_bound(
     if probs_region.ndim != 2:
         raise ValueError("probs_region must have shape (nx, num_clusters)")
 
-    nx, num_clusters = probs_region.shape
-    if weights.ndim != 2 or weights.shape[0] != nx:
-        raise ValueError("weights must have shape (nx, num_clusters)")
-
-    if probs_partition.ndim != 2 or probs_partition.shape != weights.shape:
-        raise ValueError("probs_partition must have the same shape as weights")
-
-    if weights.shape[1] != num_clusters:
-        raise ValueError("probs_region and weights must have the same shape")
+    if probs_partition.ndim != 2 or probs_partition.shape != probs_region.shape:
+        raise ValueError("probs_partition must have the same shape as probs_region")
 
     output_dtype = probs_region.dtype
     device = probs_region.device
@@ -109,44 +101,46 @@ def robustness_bound(
 
     probs_region = probs_region.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
     probs_partition = probs_partition.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    weights = weights.to(device=device, dtype=dtype)
+    ratio = (probs_region / probs_partition).clamp(eps, 1.0 - eps)
 
-    l = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
+    s = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
     j = torch.arange(0, num_samples + 1, device=device, dtype=dtype)
-    j_max = torch.floor(alpha * l).to(dtype=torch.long)
+    two_alpha_floor = 2 * torch.floor(alpha * s)
+    j_min = (s - two_alpha_floor).to(dtype=torch.long).clamp(min=0)
 
-    l_row = l.view(1, num_samples, 1)
-    j_row = j.view(1, 1, num_samples + 1)
-    valid_j = j_row <= j_max.view(1, num_samples, 1)
+    s_row = s.view(1, 1, num_samples, 1)
+    j_row = j.view(1, 1, 1, num_samples + 1)
+    valid_j = (j_row >= j_min.view(1, 1, num_samples, 1)) & (j_row <= s_row)
 
-    log_comb_lj = (
-        torch.lgamma(l_row + 1.0)
+    log_comb_sj = (
+        torch.lgamma(s_row + 1.0)
         - torch.lgamma(j_row + 1.0)
-        - torch.lgamma(l_row - j_row + 1.0)
+        - torch.lgamma(s_row - j_row + 1.0)
     )
 
-    c = probs_region.unsqueeze(-1).unsqueeze(-1)
+    r = ratio.unsqueeze(-1).unsqueeze(-1)
     log_term_j = (
-        log_comb_lj
-        + j_row * torch.log(1.0 - c)
-        + (l_row - j_row) * torch.log(c)
+        log_comb_sj
+        + j_row * torch.log(r)
+        + (s_row - j_row) * torch.log(1.0 - r)
     )
     term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
     inner_j = term_j.sum(dim=-1)
 
-    log_comb_nl = (
+    log_comb_ns = (
         torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) + 1.0)
-        - torch.lgamma(l + 1.0)
-        - torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) - l + 1.0)
+        - torch.lgamma(s + 1.0)
+        - torch.lgamma(torch.tensor(float(num_samples), device=device, dtype=dtype) - s + 1.0)
     )
 
-    p = probs_partition.unsqueeze(-1)
-    log_term_l = (
-        log_comb_nl.view(1, 1, num_samples)
-        + l.view(1, 1, num_samples) * torch.log(1.0 - p)
-        + (num_samples - l).view(1, 1, num_samples) * torch.log(p)
+    p_v = probs_partition.unsqueeze(-1)
+    log_term_s = (
+        log_comb_ns.view(1, 1, num_samples)
+        + (num_samples - s).view(1, 1, num_samples) * torch.log(1.0 - p_v)
+        + s.view(1, 1, num_samples) * torch.log(p_v)
     )
-    term_l = torch.exp(log_term_l)
+    term_s = torch.exp(log_term_s)
 
-    per_cluster = (inner_j * term_l).sum(dim=2)
-    return (weights * per_cluster).to(dtype=output_dtype)
+    factor_s = (s / float(num_samples)).view(1, 1, num_samples)
+    per_cluster = (factor_s * inner_j * term_s).sum(dim=2)
+    return per_cluster.to(dtype=output_dtype)
