@@ -49,8 +49,6 @@ class Cluster:
         return HyperRectangle.from_samples(samples=outputs, centroids=self.centroids, coverage=self.parameters.coverage)
     
     def _compute_probs_regions(self, outputs: torch.Tensor) -> torch.Tensor:
-        # Compute how many samples fall into each region
-        # Returns a tensor (nx, num_clusters) where each entry is the probability of a sample falling into the corresponding region
         lower = self.regions.lower
         upper = self.regions.upper
 

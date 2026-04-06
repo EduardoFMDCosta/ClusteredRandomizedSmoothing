@@ -24,22 +24,8 @@ class ClopperPearsonInterval:
         probs_partition: torch.Tensor,
         parameters: ConfidenceParameters,
     ):
-        if probs_region.ndim != 2:
-            raise ValueError("probs_region must have shape (nx, num_clusters)")
-
-        if probs_partition.ndim != 2:
-            raise ValueError("probs_partition must have shape (nx, num_clusters)")
-
-        if probs_region.shape != probs_partition.shape:
-            raise ValueError("probs_region and probs_partition must have matching shape")
-
         n = int(parameters.num_samples)
-        if n <= 0:
-            raise ValueError("parameters.num_samples must be positive")
-
         nx, num_clusters = probs_partition.shape
-        if num_clusters <= 0:
-            raise ValueError("probs_partition must contain at least one cluster")
 
         self.num_clusters = int(num_clusters)
         self._confidence_beta = float(parameters.beta)

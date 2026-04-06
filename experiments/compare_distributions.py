@@ -16,9 +16,7 @@ if str(SRC) not in sys.path:
 from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.stochastic import ThreeMode1DGaussianMixture
-from randomized_smoothing.regions import HyperRectangle
 from randomized_smoothing.smoothing import (
-    AlphaTrimmingSmoothing,
     GaussianAlphaTrimmingSmoothing,
 )
 from plotting import plot_experiment_results
@@ -36,13 +34,14 @@ def main():
     )
 
 	# Define parameters
+    coverage = 0.9
     smoothing_parameters = SmoothingParameters(
         N=50,
         alpha=0.45,
     )
     clustering_parameters = ClusteringParameters(
         num_clusters=3,
-        coverage=0.9,
+        coverage=coverage,
     )
     confidence_parameters = ConfidenceParameters(
         beta=1e-2,
@@ -74,14 +73,29 @@ def main():
         parameters=parameters,
     )
 
+    rekavandi_smoother = GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=x,
+        sigma=sigma,
+        parameters=Parameters(
+            smoothing=smoothing_parameters,
+            clustering=ClusteringParameters(
+                num_clusters=1,
+                coverage=coverage,
+            ),
+            confidence=confidence_parameters,
+        ),
+    )
+
 	# Plot empirical distributions of raw outputs and smoothed outputs
     smoother_mc_samples = smoother.monte_carlo(num_simulations=5000)
+    rekavandi_smoother_mc_samples = rekavandi_smoother.monte_carlo(num_simulations=5000)
 
     chart_paths = plot_experiment_results(
         x=x,
         outputs=raw_outputs,
         global_trimmed_mc_samples=smoother_mc_samples,
-        clusterized_mc_samples=smoother_mc_samples, # TODO: FIX
+        clusterized_mc_samples=rekavandi_smoother_mc_samples,
         region=smoother.regions,
         output_dir=ROOT / "outputs",
     )
