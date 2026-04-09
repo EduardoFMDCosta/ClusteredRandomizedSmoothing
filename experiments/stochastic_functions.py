@@ -48,7 +48,7 @@ class TrajFlowMeszarosStochasticFunction(StochasticFunction):
 
     def __init__(self, model=None) -> None:
         if model is None:
-            traj_dir = ROOT / "trajectory_prediction"
+            traj_dir = ROOT / "TrajFlow"
             if str(traj_dir) not in sys.path:
                 sys.path.insert(0, str(traj_dir))
 

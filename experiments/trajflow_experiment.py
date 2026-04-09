@@ -33,7 +33,7 @@ def main():
 
     # Load real trajectory data: (323 samples, 2 agents, 10 timesteps, 5 features)
     # Extract first agent's (x,y) coordinates and reshape to (batch, 20)
-    data = np.load(ROOT / "trajectory_prediction" / "Data" / "Inputs.npy")
+    data = np.load(ROOT / "TrajFlow" / "Data" / "Inputs.npy")
     x_input = data[:4, 0, :, :2]  # Take first 4 samples, first agent, first 2 coords (x,y)
     x = torch.from_numpy(x_input.reshape(4, -1)).float()  # Shape: (4, 20)
 
