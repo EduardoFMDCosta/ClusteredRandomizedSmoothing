@@ -101,7 +101,7 @@ class ClopperPearsonInterval:
             tail_prob = _binomial_cumulative_probability(
                 from_k=count,
                 to_k=num_samples,
-                p=1.0 - mid,
+                p=mid,
                 num_samples=num_samples,
             )
             if tail_prob >= beta:
@@ -126,7 +126,7 @@ class ClopperPearsonInterval:
             cdf = _binomial_cumulative_probability(
                 from_k=0,
                 to_k=count,
-                p=1.0 - mid,
+                p=mid,
                 num_samples=num_samples,
             )
             if cdf >= beta:
