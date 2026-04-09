@@ -17,13 +17,12 @@ from .smoothing import (
     AlphaTrimmingSmoothing,
     GaussianAlphaTrimmingSmoothing,
 )
-from .stochastic import StochasticFunction, ThreeMode1DGaussianMixture
+from .stochastic import StochasticFunction
 from .clopper_pearson import ClopperPearsonInterval
 
 __all__ = [
     # Core abstractions
     "StochasticFunction",
-    "ThreeMode1DGaussianMixture",
     "Smoothing",
     "Distribution",
     # Configuration

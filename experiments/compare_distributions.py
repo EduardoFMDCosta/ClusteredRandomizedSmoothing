@@ -13,10 +13,10 @@ if str(SRC) not in sys.path:
 
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.distributions import MultivariateGaussian
-from randomized_smoothing.stochastic import ThreeMode1DGaussianMixture
 from randomized_smoothing.smoothing import (
     GaussianAlphaTrimmingSmoothing,
 )
+from stochastic_functions import ThreeMode1DGaussianMixture
 from plotting import plot_experiment_results
 
 
