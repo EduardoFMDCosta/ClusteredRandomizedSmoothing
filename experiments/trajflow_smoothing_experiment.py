@@ -17,7 +17,7 @@ from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
 
 
-def main() -> None:
+def main():
     torch.manual_seed(0)
 
     try:
@@ -32,8 +32,8 @@ def main() -> None:
 
     params = Parameters(
         smoothing=SmoothingParameters(N=20, alpha=0.2),
-        clustering=ClusteringParameters(max_num_clusters=3, coverage=0.9),
-        confidence=ConfidenceParameters(num_samples=300, beta=1e-2),
+        clustering=ClusteringParameters(max_num_clusters=10, coverage=0.9),
+        confidence=ConfidenceParameters(num_samples=5000, beta=1e-2),
     )
 
     smoother = GaussianAlphaTrimmingSmoothing(
