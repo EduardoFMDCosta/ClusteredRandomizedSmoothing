@@ -97,3 +97,75 @@ def plot_experiment_results(
 
 	return [fig1_path]
 
+
+def _reshape_trajectory_samples(samples: torch.Tensor, num_timesteps: int = 20) -> np.ndarray:
+	arr = _to_numpy(samples)
+	if arr.ndim != 3:
+		raise ValueError("samples must have shape (nx, num_samples, 2 * num_timesteps)")
+
+	nx, num_samples, flat_dim = arr.shape
+	expected_dim = 2 * num_timesteps
+	if flat_dim != expected_dim:
+		raise ValueError(
+			f"Expected last dimension {expected_dim}, got {flat_dim}. "
+			"Pass the correct num_timesteps."
+		)
+
+	return arr.reshape(nx, num_samples, num_timesteps, 2)
+
+
+def plot_trajectory_samples(
+	mc_samples: torch.Tensor,
+	clusterized_mc_samples: torch.Tensor,
+	output_dir: Path,
+	num_timesteps: int = 20,
+) -> list[Path]:
+	"""Plot trajectory samples for each x point.
+
+	Args:
+		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
+		clusterized_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
+		output_dir: Folder to save charts.
+		num_timesteps: Number of trajectory timesteps encoded in the last dimension.
+	"""
+	output_dir.mkdir(parents=True, exist_ok=True)
+
+	raw = _reshape_trajectory_samples(mc_samples, num_timesteps=num_timesteps)
+	clusterized = _reshape_trajectory_samples(clusterized_mc_samples, num_timesteps=num_timesteps)
+
+	if raw.shape != clusterized.shape:
+		raise ValueError("mc_samples and clusterized_mc_samples must have identical shapes")
+
+	nx, num_samples, _, _ = raw.shape
+	fig, axes = plt.subplots(nx, 2, figsize=(12, 3.2 * nx), sharex=False, sharey=False)
+	if nx == 1:
+		axes = np.array([axes])
+
+	for i in range(nx):
+		ax_raw = axes[i, 0]
+		ax_cluster = axes[i, 1]
+
+		for j in range(num_samples):
+			traj = raw[i, j]
+			ax_raw.plot(traj[:, 0], traj[:, 1], color="#222222", alpha=0.12, linewidth=0.8)
+
+			traj_cluster = clusterized[i, j]
+			ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#1F78B4", alpha=0.12, linewidth=0.8)
+
+		ax_raw.set_title(f"x[{i}] raw MC trajectories")
+		ax_cluster.set_title(f"x[{i}] clusterized MC trajectories")
+
+		for ax in (ax_raw, ax_cluster):
+			ax.set_xlabel("x")
+			ax.set_ylabel("y")
+			ax.grid(alpha=0.25, linestyle=":")
+			ax.set_aspect("equal", adjustable="box")
+
+	fig.suptitle("Trajectory Samples from Stochastic and Clusterized Smoothing", fontsize=13)
+	fig.tight_layout()
+	fig_path = output_dir / "trajectory_samples_comparison.png"
+	fig.savefig(fig_path, dpi=180)
+	plt.close(fig)
+
+	return [fig_path]
+
