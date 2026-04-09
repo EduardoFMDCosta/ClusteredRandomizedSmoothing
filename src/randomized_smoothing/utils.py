@@ -47,6 +47,46 @@ def _run_kmeans(
     return centroids, assignments, inertia
 
 
+def _select_num_clusters(
+        data: torch.Tensor,
+        max_num_clusters: int,
+        max_iter: int,
+        tol: float,
+        elbow_threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Select the optimal number of clusters via the inertia elbow method.
+
+    Runs K-means for k = 1, 2, ... up to min(max_num_clusters, n) and stops as
+    soon as the relative inertia improvement of adding one more cluster falls
+    below ``elbow_threshold * W_1``, where W_1 is the inertia for k = 1.
+
+    Returns
+    -------
+    centroids   : (k_selected, d)
+    assignments : (n,)
+    k_selected  : int
+    """
+    n = data.shape[0]
+    k_max = min(max_num_clusters, n)
+
+    prev_c, prev_a, W_prev = _run_kmeans(data, 1, max_iter, tol)
+    if k_max == 1:
+        return prev_c, prev_a, 1
+
+    W1 = W_prev.item()
+
+    for k in range(2, k_max + 1):
+        c_k, a_k, W_k = _run_kmeans(data, k, max_iter, tol)
+        gain = (W_prev.item() - W_k.item()) / W1 if W1 > 0.0 else 0.0
+        if gain < elbow_threshold:
+            # Adding cluster k does not improve enough; keep k-1 clusters.
+            return prev_c, prev_a, k - 1
+        prev_c, prev_a = c_k, a_k
+        W_prev = W_k
+
+    return prev_c, prev_a, k_max
+
+
 # -----------------------------------------------------------------------------
 # Robustness certification utilities
 # -----------------------------------------------------------------------------

@@ -2,7 +2,7 @@ import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
 from randomized_smoothing.regions import HyperRectangle
-from randomized_smoothing.utils import _run_kmeans
+from randomized_smoothing.utils import _select_num_clusters
 
 
 class Cluster:
@@ -12,7 +12,8 @@ class Cluster:
         parameters: ClusteringParameters,
     ):
         self.parameters = parameters
-        self.centroids, self.assignments = self._compute_centroids(outputs=outputs)
+        self.centroids, self.assignments, self.k_per_row = self._compute_centroids(outputs=outputs)
+        self._k_max: int = int(self.k_per_row.max().item())
         self.probs_partition = self._compute_probs_partition()
 
         self.regions = self._get_regions(outputs=outputs)
@@ -21,28 +22,57 @@ class Cluster:
 
     @property
     def num_clusters(self):
-        return self.parameters.num_clusters
+        return self._k_max
     
-    def _compute_centroids(self, outputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        nx, num_samples, output_dim = outputs.shape
-        k = self.parameters.num_clusters
+    def _compute_centroids(
+        self, outputs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run per-row optimal K-means and pad all rows to the same k_max.
 
-        centroids = torch.empty((nx, k, output_dim), dtype=outputs.dtype, device=outputs.device)
-        assignments = torch.empty((nx, num_samples), dtype=torch.long, device=outputs.device)
+        Phantom centroid slots (indices k_i .. k_max-1 for row i) are filled
+        with a copy of that row's cluster-0 centroid.  Because `torch.argmin`
+        resolves ties by returning the *first* matching index, any sample that
+        is equidistant to the real cluster-0 and a phantom centroid will always
+        be assigned to index 0 — so phantom clusters accumulate zero probability
+        mass without any additional masking in downstream code.
+        """
+        nx, num_samples, output_dim = outputs.shape
+
+        # ---- per-row elbow selection ----------------------------------------
+        k_list: list[int] = []
+        centroids_list: list[torch.Tensor] = []
+        assignments_list: list[torch.Tensor] = []
         for i in range(nx):
-            c_i, a_i, _ = _run_kmeans(
-                outputs[i],
-                num_clusters=k,
+            c_i, a_i, k_i = _select_num_clusters(
+                data=outputs[i],
+                max_num_clusters=self.parameters.max_num_clusters,
                 max_iter=self.parameters.max_iter,
                 tol=self.parameters.tol,
+                elbow_threshold=self.parameters.elbow_threshold,
             )
-            centroids[i] = c_i
-            assignments[i] = a_i
+            k_list.append(k_i)
+            centroids_list.append(c_i)
+            assignments_list.append(a_i)
 
-        return centroids, assignments
+        # ---- pad to k_max ---------------------------------------------------
+        k_max = max(k_list)
+        k_per_row = torch.tensor(k_list, dtype=torch.long, device=outputs.device)
+
+        centroids = torch.empty((nx, k_max, output_dim), dtype=outputs.dtype, device=outputs.device)
+        assignments = torch.empty((nx, num_samples), dtype=torch.long, device=outputs.device)
+        for i in range(nx):
+            k_i = k_list[i]
+            centroids[i, :k_i, :] = centroids_list[i]
+            # Phantom slots: copy cluster-0 centroid so argmin always resolves
+            # to index 0 (the real cluster) when distances tie.
+            if k_i < k_max:
+                centroids[i, k_i:, :] = centroids_list[i][0].unsqueeze(0).expand(k_max - k_i, -1)
+            assignments[i] = assignments_list[i]
+
+        return centroids, assignments, k_per_row
 
     def _compute_probs_partition(self) -> torch.Tensor:
-        one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.parameters.num_clusters)
+        one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.num_clusters)
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
     
     def _get_regions(self, outputs: torch.Tensor) -> HyperRectangle:
