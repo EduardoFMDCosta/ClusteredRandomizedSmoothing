@@ -4,7 +4,7 @@ import torch
 
 class StochasticFunction(ABC):
     @abstractmethod
-    def sample(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """Generate stochastic outputs for each point in x.
 
         Args:
@@ -15,6 +15,11 @@ class StochasticFunction(ABC):
             Tensor with shape (..., q).
         """
         raise NotImplementedError
+    
+    def sample_from_noisy_inputs(self, x: torch.Tensor, smoothing_distribution: torch.distributions.Distribution, num_samples: int) -> torch.Tensor:
+        return self(
+            x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], num_samples))
+        )
 
 
 class ThreeMode1DGaussianMixture(StochasticFunction):
@@ -28,7 +33,7 @@ class ThreeMode1DGaussianMixture(StochasticFunction):
         self.probs = probs
         self.std = std
 
-    def sample(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim < 2:
             raise ValueError("x must have shape (..., d)")
 

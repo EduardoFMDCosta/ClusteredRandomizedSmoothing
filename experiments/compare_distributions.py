@@ -60,8 +60,10 @@ def main():
     )
 
     # Construct cluster and region of high probability mass based on samples from h_w(x + noise)
-    raw_outputs = stochastic_fn.sample(
-        x.unsqueeze(1) + smoothing_distribution.sample(size=(x.shape[0], 5000))
+    raw_outputs = stochastic_fn.sample_from_noisy_inputs(
+        x=x,
+        smoothing_distribution=smoothing_distribution,
+        num_samples=5000
     )
     
     smoother = GaussianAlphaTrimmingSmoothing(

@@ -48,20 +48,22 @@ class AlphaTrimmingSmoothing(Smoothing):
         self.parameters = parameters
 
         self.cluster = self._compute_cluster()
-        self.regions = self.cluster.regions
-
-    def _generate_noisy_samples_from_stochastic_function(self, num_samples: int) -> torch.Tensor:
-        nx = self.x.shape[0]
-        return self.stochastic_function.sample(
-            self.x.unsqueeze(1) + self.smoothing_distribution.sample(size=(nx, num_samples))
-        )  
+        self.regions = self.cluster.regions 
 
     def _compute_cluster(self) -> Cluster:
-        raw_outputs = self._generate_noisy_samples_from_stochastic_function(num_samples=self.parameters.confidence.num_samples)
+        raw_outputs = self.stochastic_function.sample_from_noisy_inputs(
+            x=self.x,
+            smoothing_distribution=self.smoothing_distribution,
+            num_samples=self.parameters.confidence.num_samples
+        )
         return Cluster(outputs=raw_outputs, parameters=self.parameters.clustering)
 
     def smooth(self) -> Distribution:
-        outputs = self._generate_noisy_samples_from_stochastic_function(num_samples=self.parameters.smoothing.N)
+        outputs = self.stochastic_function.sample_from_noisy_inputs(
+            x=self.x,
+            smoothing_distribution=self.smoothing_distribution,
+            num_samples=self.parameters.smoothing.N
+        )
         
         cluster = self.cluster
         centroids = cluster.centroids
