@@ -17,25 +17,29 @@ class SmoothingParameters:
 
 @dataclass
 class ClusteringParameters:
-    num_clusters: int
+    max_num_clusters: int
     coverage: float
     max_iter: int = 1000
     tol: float = 1e-5
+    elbow_threshold: float = 0.05
 
     def __post_init__(self) -> None:
-        self.num_clusters = int(self.num_clusters)
+        self.max_num_clusters = int(self.max_num_clusters)
         self.coverage = float(self.coverage)
         self.max_iter = int(self.max_iter)
         self.tol = float(self.tol)
+        self.elbow_threshold = float(self.elbow_threshold)
 
-        if self.num_clusters <= 0:
-            raise ValueError("num_clusters must be positive")
+        if self.max_num_clusters <= 0:
+            raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")
         if self.tol <= 0:
             raise ValueError("tol must be positive")
+        if not (0.0 < self.elbow_threshold < 1.0):
+            raise ValueError("elbow_threshold must satisfy 0 < elbow_threshold < 1")
 
 @dataclass
 class ConfidenceParameters:

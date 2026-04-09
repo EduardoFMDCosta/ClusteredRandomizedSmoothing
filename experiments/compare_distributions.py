@@ -38,7 +38,7 @@ def main():
         alpha=0.45,
     )
     clustering_parameters = ClusteringParameters(
-        num_clusters=3,
+        max_num_clusters=3,
         coverage=coverage,
     )
     confidence_parameters = ConfidenceParameters(
@@ -80,7 +80,7 @@ def main():
         parameters=Parameters(
             smoothing=smoothing_parameters,
             clustering=ClusteringParameters(
-                num_clusters=1,
+                max_num_clusters=1,
                 coverage=coverage,
             ),
             confidence=confidence_parameters,
