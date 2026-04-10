@@ -8,6 +8,12 @@ import sys
 import importlib
 import types
 from PIL import Image
+from pathlib import Path
+
+TRAJFLOW = Path(__file__).resolve().parent
+if str(TRAJFLOW) not in sys.path:
+    sys.path.insert(0, str(TRAJFLOW))
+
 from TrajFlow.flowModels import TrajFlow, Future_Encoder, Future_Decoder, Future_Seq2Seq, Scene_Encoder, Future_Decoder_Control, Future_Seq2Seq_Control
 
 
@@ -229,163 +235,11 @@ class trajflow_meszaros():
     def load_method(self):        
         fut_model_file = self.model_file[:-4] + '_AE'
         flow_dist_file = self.model_file[:-4] + '_NF'
-        self.fut_model = self._pickle_load_with_map_location(fut_model_file)
-        self.flow_dist = self._pickle_load_with_map_location(flow_dist_file)
-        self._move_model_to_active_device(self.fut_model)
-        self._move_model_to_active_device(self.flow_dist)
-        self._make_gnn_encoder_compatible()
+        self.fut_model = pickle.load(open(fut_model_file, 'rb'))
+        self.flow_dist = pickle.load(open(flow_dist_file, 'rb'))
+        self.fut_model.to(self.device)
+        self.flow_dist.to(self.device)
 
-    def _make_gnn_encoder_compatible(self):
-        encoder = getattr(self.flow_dist, "GNNencoder", None)
-        if encoder is None:
-            return
-
-        try:
-            from torch_geometric.data import Data
-
-            dummy = Data(
-                x=torch.zeros((1, self.flow_dist.obs_encoding_size), dtype=torch.float32, device=self.device),
-                edge_index=torch.zeros((2, 0), dtype=torch.long, device=self.device),
-                edge_attr=torch.zeros((0, self.flow_dist.edge_dim_gnn), dtype=torch.float32, device=self.device),
-                batch=torch.zeros((1,), dtype=torch.long, device=self.device),
-            )
-            encoder(dummy)
-        except Exception:
-            self.flow_dist.GNNencoder = _ZeroSocialEncoder(
-                emb_dim=self.flow_dist.es_gnn,
-                device=self.device,
-            )
-
-    def _move_model_to_active_device(self, model):
-        if isinstance(model, torch.nn.Module):
-            model.to(self.device)
-            for submodule in model.modules():
-                if hasattr(submodule, "device"):
-                    submodule.device = self.device
-                if hasattr(submodule, "propagate"):
-                    submodule.__dict__.setdefault("_explain", False)
-                    submodule.__dict__.setdefault("_decomposed_layers", 1)
-                    if hasattr(submodule, "inspector"):
-                        try:
-                            inspector_cls = importlib.import_module("torch_geometric.inspector").Inspector
-                            submodule.inspector = inspector_cls(submodule.__class__)
-                            for fn_name in (
-                                "message",
-                                "aggregate",
-                                "update",
-                                "edge_update",
-                                "message_and_aggregate",
-                            ):
-                                if hasattr(submodule, fn_name):
-                                    try:
-                                        submodule.inspector.inspect_signature(fn_name)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
-        elif hasattr(model, "device"):
-            model.device = self.device
-
-    @staticmethod
-    def _encode_agent_types(T):
-        # Keep historical one-byte encoding expected by TrajFlow checkpoints.
-        if np.issubdtype(np.asarray(T).dtype, np.number):
-            return np.asarray(T, dtype=np.uint8)
-
-        T_str = np.asarray(T).astype(str)
-        encoded = np.zeros(T_str.shape, dtype=np.uint8)
-        valid = T_str != 'nan'
-        if np.any(valid):
-            encoded[valid] = np.fromiter((ord(s[0]) for s in T_str[valid]), dtype=np.uint8)
-        return encoded
-
-    def _pickle_load_with_map_location(self, file_path):
-        # Pickled torch storages may contain CUDA tensors; remap to active device.
-        original_load_from_bytes = torch.storage._load_from_bytes
-        inspector_alias = "torch_geometric.nn.conv.utils.inspector"
-        added_inspector_alias = False
-        if inspector_alias not in sys.modules:
-            try:
-                sys.modules[inspector_alias] = importlib.import_module("torch_geometric.inspector")
-                added_inspector_alias = True
-            except ModuleNotFoundError:
-                pass
-
-        scatter_module = "torch_scatter"
-        added_scatter_shim = False
-        added_scatter_submodule_shim = False
-        if scatter_module not in sys.modules:
-            try:
-                importlib.import_module(scatter_module)
-            except ModuleNotFoundError:
-                shim = types.ModuleType(scatter_module)
-                shim.__path__ = []
-
-                def _scatter(src, index, dim=0, reduce="sum"):
-                    if reduce not in ("sum", "add"):
-                        raise NotImplementedError("Fallback scatter only supports add/sum")
-                    if dim != 0:
-                        raise NotImplementedError("Fallback scatter currently supports dim=0 only")
-
-                    max_index = int(index.max().item()) + 1 if index.numel() > 0 else 0
-                    out_shape = list(src.shape)
-                    out_shape[dim] = max_index
-                    out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
-
-                    expanded_index = index
-                    while expanded_index.dim() < src.dim():
-                        expanded_index = expanded_index.unsqueeze(-1)
-                    expanded_index = expanded_index.expand_as(src)
-
-                    out.scatter_add_(dim, expanded_index, src)
-                    return out
-
-                shim.scatter = _scatter
-                sys.modules[scatter_module] = shim
-                added_scatter_shim = True
-
-                shim_submodule = types.ModuleType("torch_scatter.scatter")
-                shim_submodule.scatter = _scatter
-                sys.modules["torch_scatter.scatter"] = shim_submodule
-                added_scatter_submodule_shim = True
-
-        torch.storage._load_from_bytes = lambda b: torch.load(
-            io.BytesIO(b),
-            map_location=self.device,
-            weights_only=False,
-        )
-        try:
-            with open(file_path, 'rb') as f:
-                return pickle.load(f)
-        finally:
-            torch.storage._load_from_bytes = original_load_from_bytes
-            if added_inspector_alias:
-                sys.modules.pop(inspector_alias, None)
-            if added_scatter_shim:
-                sys.modules.pop(scatter_module, None)
-            if added_scatter_submodule_shim:
-                sys.modules.pop("torch_scatter.scatter", None)
-        
-    
-    def extract_batch_data(self, X, T, Y = None, img = None):
-        
-        # Get type of agents
-        T_out = self._encode_agent_types(T)
-        T_out = torch.from_numpy(T_out).to(device = self.device)
-        
-        # Standardize positions
-        X /= self.std_pos_veh
-        X = X.float().to(device = self.device)
-        
-        if Y is not None:            
-            # Standardize future positions
-            Y /= self.std_pos_veh
-            Y = Y.float().to(device = self.device)
-        
-        if img is not None:
-            img = img.float().to(device = self.device) / 255
-            
-        return X, T_out, Y, img
         
     def _repeat_rowwise(self, x, n):
         org_dim = x.size(-1)
@@ -537,7 +391,7 @@ class trajflow_meszaros():
         X = x_flat.view(len(x_flat), -1, self.num_timesteps_in, 2)
         # Assume vehicles only
         T = np.full(X.shape[:2], 'V')
-        T = self._encode_agent_types(T)
+        T = np.fromstring(T.reshape(-1), dtype = np.uint32).reshape(*T.shape, int(str(T.astype(str).dtype)[2:])).astype(np.uint8)[:,:,0]
         T = torch.from_numpy(T).to(device = self.device)
 
         # We need to assure that the image is correctly shaped as well

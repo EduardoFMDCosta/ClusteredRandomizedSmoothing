@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from randomized_smoothing.distributions import MultivariateGaussian
 
 
 ROOT = Path(__file__).resolve().parent
@@ -15,6 +15,7 @@ SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
@@ -33,9 +34,14 @@ def main():
 
     # Load real trajectory data: (323 samples, 2 agents, 10 timesteps, 5 features)
     # Extract first agent's (x,y) coordinates and reshape to (batch, 20)
-    data = np.load(ROOT / "TrajFlow" / "Data" / "Inputs.npy")
-    x_input = data[:4, 0, :, :2]  # Take first 4 samples, first agent, first 2 coords (x,y)
-    x = torch.from_numpy(x_input.reshape(4, -1)).float()  # Shape: (4, 20)
+    data_file = str(ROOT) + os.sep + "TrajFlow_exp" + os.sep + "Data" + os.sep + "Inputs.npy"
+    data = np.load(data_file)
+
+    batch_size = 4
+    x_input = data[:batch_size, :, :, :2]  # Take first 4 samples, first agent, first 2 coords (x,y)
+    # make the target agent the predicted agent
+    x_input = x_input[:,[1,0]]
+    x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 20)
 
     sigma = 1.0
     params = Parameters(
