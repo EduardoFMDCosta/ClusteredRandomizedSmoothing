@@ -77,10 +77,10 @@ def main():
     clusterized_mc_samples = smoother.monte_carlo(num_simulations=100)
 
     chart_paths = plot_trajectory_samples(
+        x=x,
         mc_samples=mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         output_dir=ROOT / "outputs",
-        num_timesteps=20,
     )
     
 

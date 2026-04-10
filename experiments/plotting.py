@@ -98,46 +98,51 @@ def plot_experiment_results(
 	return [fig1_path]
 
 
-def _reshape_trajectory_samples(samples: torch.Tensor, num_timesteps: int = 20) -> np.ndarray:
+def _reshape_trajectory_samples(samples: torch.Tensor) -> np.ndarray:
 	arr = _to_numpy(samples)
 	if arr.ndim != 3:
 		raise ValueError("samples must have shape (nx, num_samples, 2 * num_timesteps)")
 
 	nx, num_samples, flat_dim = arr.shape
-	expected_dim = 2 * num_timesteps
-	if flat_dim != expected_dim:
+	if flat_dim % 2 != 0:
 		raise ValueError(
-			f"Expected last dimension {expected_dim}, got {flat_dim}. "
-			"Pass the correct num_timesteps."
+			f"Expected an even last dimension encoding [x1, y1, x2, y2, ...], got {flat_dim}."
 		)
+	num_timesteps = flat_dim // 2
 
 	return arr.reshape(nx, num_samples, num_timesteps, 2)
 
 
 def plot_trajectory_samples(
+	x: torch.Tensor,
 	mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
 	output_dir: Path,
-	num_timesteps: int = 20,
 ) -> list[Path]:
 	"""Plot trajectory samples for each x point.
 
 	Args:
+		x: Tensor (nx, 2 * num_input_timesteps) for dashed input trajectory overlay.
 		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		clusterized_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		output_dir: Folder to save charts.
-		num_timesteps: Number of trajectory timesteps encoded in the last dimension.
 	"""
 	output_dir.mkdir(parents=True, exist_ok=True)
 
-	raw = _reshape_trajectory_samples(mc_samples, num_timesteps=num_timesteps)
-	clusterized = _reshape_trajectory_samples(clusterized_mc_samples, num_timesteps=num_timesteps)
+	raw = _reshape_trajectory_samples(mc_samples)
+	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
+	x_np = _to_numpy(x)
+	if x_np.ndim != 2 or x_np.shape[1] % 2 != 0:
+		raise ValueError("x must have shape (nx, 2 * num_input_timesteps)")
+	x_traj = x_np.reshape(x_np.shape[0], x_np.shape[1] // 2, 2)
 
 	if raw.shape != clusterized.shape:
 		raise ValueError("mc_samples and clusterized_mc_samples must have identical shapes")
+	if raw.shape[0] != x_traj.shape[0]:
+		raise ValueError("x and trajectory samples must have the same first dimension")
 
 	nx, num_samples, _, _ = raw.shape
-	fig, axes = plt.subplots(nx, 2, figsize=(12, 3.2 * nx), sharex=False, sharey=False)
+	fig, axes = plt.subplots(nx, 2, figsize=(12, 3.2 * nx), sharex="row", sharey="row")
 	if nx == 1:
 		axes = np.array([axes])
 
@@ -152,6 +157,20 @@ def plot_trajectory_samples(
 			traj_cluster = clusterized[i, j]
 			ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#1F78B4", alpha=0.12, linewidth=0.8)
 
+		xi = x_traj[i]
+		ax_raw.plot(xi[:, 0], xi[:, 1], color="#FF7F00", linestyle="--", linewidth=1.8)
+		ax_cluster.plot(xi[:, 0], xi[:, 1], color="#FF7F00", linestyle="--", linewidth=1.8)
+
+		all_x = np.concatenate((raw[i, :, :, 0].reshape(-1), clusterized[i, :, :, 0].reshape(-1), xi[:, 0]))
+		all_y = np.concatenate((raw[i, :, :, 1].reshape(-1), clusterized[i, :, :, 1].reshape(-1), xi[:, 1]))
+		x_min, x_max = np.min(all_x), np.max(all_x)
+		y_min, y_max = np.min(all_y), np.max(all_y)
+		x_pad = max((x_max - x_min) * 0.05, 1e-6)
+		y_pad = max((y_max - y_min) * 0.05, 1e-6)
+		for ax in (ax_raw, ax_cluster):
+			ax.set_xlim(x_min - x_pad, x_max + x_pad)
+			ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
 		ax_raw.set_title(f"x[{i}] raw MC trajectories")
 		ax_cluster.set_title(f"x[{i}] clusterized MC trajectories")
 
@@ -159,7 +178,6 @@ def plot_trajectory_samples(
 			ax.set_xlabel("x")
 			ax.set_ylabel("y")
 			ax.grid(alpha=0.25, linestyle=":")
-			ax.set_aspect("equal", adjustable="box")
 
 	fig.suptitle("Trajectory Samples from Stochastic and Clusterized Smoothing", fontsize=13)
 	fig.tight_layout()
