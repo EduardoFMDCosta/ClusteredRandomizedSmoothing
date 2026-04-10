@@ -17,18 +17,11 @@ if str(TRAJFLOW) not in sys.path:
 from TrajFlow.flowModels import TrajFlow, Future_Encoder, Future_Decoder, Future_Seq2Seq, Scene_Encoder, Future_Decoder_Control, Future_Seq2Seq_Control
 
 
-class _ZeroSocialEncoder(torch.nn.Module):
-    def __init__(self, emb_dim, device):
-        super().__init__()
-        self.emb_dim = emb_dim
-        self.device = device
-
-    def forward(self, data):
-        if hasattr(data, "batch") and data.batch.numel() > 0:
-            batch_size = int(data.batch.max().item()) + 1
-        else:
-            batch_size = 1
-        return torch.zeros((batch_size, self.emb_dim), dtype=torch.float32, device=self.device)
+class _CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        return super().find_class(module, name)
 
 class trajflow_meszaros():
     '''
@@ -235,10 +228,14 @@ class trajflow_meszaros():
     def load_method(self):        
         fut_model_file = self.model_file[:-4] + '_AE'
         flow_dist_file = self.model_file[:-4] + '_NF'
-        self.fut_model = pickle.load(open(fut_model_file, 'rb'))
-        self.flow_dist = pickle.load(open(flow_dist_file, 'rb'))
+        self.fut_model = _CPU_Unpickler(open(fut_model_file, 'rb')).load()
+        self.flow_dist = _CPU_Unpickler(open(flow_dist_file, 'rb')).load()
         self.fut_model.to(self.device)
         self.flow_dist.to(self.device)
+        if hasattr(self.fut_model, 'device'):
+            self.fut_model.device = self.device
+        if hasattr(self.flow_dist, 'device'):
+            self.flow_dist.device = self.device
 
         
     def _repeat_rowwise(self, x, n):
@@ -390,8 +387,7 @@ class trajflow_meszaros():
         # get proper shape for the model input
         X = x_flat.view(len(x_flat), -1, self.num_timesteps_in, 2)
         # Assume vehicles only
-        T = np.full(X.shape[:2], 'V')
-        T = np.fromstring(T.reshape(-1), dtype = np.uint32).reshape(*T.shape, int(str(T.astype(str).dtype)[2:])).astype(np.uint8)[:,:,0]
+        T = np.full(X.shape[:2], ord('V'), dtype=np.uint8)
         T = torch.from_numpy(T).to(device = self.device)
 
         # We need to assure that the image is correctly shaped as well

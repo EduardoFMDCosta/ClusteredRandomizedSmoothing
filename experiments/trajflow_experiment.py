@@ -43,7 +43,7 @@ def main():
     x_input = x_input[:,[1,0]]
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 20)
 
-    sigma = 1.0
+    sigma = 0.0001
     params = Parameters(
         smoothing=SmoothingParameters(N=20, alpha=0.2),
         clustering=ClusteringParameters(max_num_clusters=10, coverage=0.9),
