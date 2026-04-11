@@ -137,13 +137,15 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
     def _compute_bound(
         self,
         probs_region: torch.Tensor,
-        probs_partition: torch.Tensor,
+        probs_partition_lb: torch.Tensor,
+        probs_partition_ub: torch.Tensor,
         num_samples: int,
         alpha: float,
     ) -> torch.Tensor:
         return robustness_bound(
             probs_region=probs_region,
-            probs_partition=probs_partition,
+            probs_partition_lb=probs_partition_lb,
+            probs_partition_ub=probs_partition_ub,
             num_samples=num_samples,
             alpha=alpha,
         )
@@ -157,7 +159,8 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             parameters=self.parameters.confidence,
         )
         probs_region = cp.region.lb
-        probs_partition = cp.partition.ub
+        probs_partition_lb = cp.partition.lb
+        probs_partition_ub = cp.partition.ub
 
         # Adjust probabilities for the given radius
         probs_region = self._compute_probability_given_radius(
@@ -167,8 +170,15 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             is_lb=True,
         )
 
-        probs_partition = self._compute_probability_given_radius(
-            p=probs_partition,
+        probs_partition_lb = self._compute_probability_given_radius(
+            p=probs_partition_lb,
+            radius=radius,
+            sigma=self.smoothing_distribution.sigma,
+            is_lb=True,
+        )
+
+        probs_partition_ub = self._compute_probability_given_radius(
+            p=probs_partition_ub,
             radius=radius,
             sigma=self.smoothing_distribution.sigma,
             is_lb=False,
@@ -177,7 +187,8 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         # Certify
         certified_probs_per_cluster = self._compute_bound(
             probs_region=probs_region,
-            probs_partition=probs_partition,
+            probs_partition_lb=probs_partition_lb,
+            probs_partition_ub=probs_partition_ub,
             num_samples=self.parameters.smoothing.N,
             alpha=self.parameters.smoothing.alpha,
         )

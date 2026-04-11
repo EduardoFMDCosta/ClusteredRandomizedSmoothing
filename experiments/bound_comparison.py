@@ -20,10 +20,12 @@ def compute_curve(p_values: torch.Tensor, num_samples: int, alpha: float) -> tor
     values = []
     for pi in p_values:
         probs_region = torch.tensor([[float(pi.item())]], dtype=torch.float64)
-        probs_partition = torch.ones((1, 1), dtype=torch.float64)
+        probs_partition_lb = torch.ones((1, 1), dtype=torch.float64)
+        probs_partition_ub = torch.ones((1, 1), dtype=torch.float64)
         bound = robustness_bound(
             probs_region=probs_region,
-            probs_partition=probs_partition,
+            probs_partition_lb=probs_partition_lb,
+            probs_partition_ub=probs_partition_ub,
             num_samples=num_samples,
             alpha=alpha,
         )
@@ -39,11 +41,13 @@ def compute_curve_ours_per_region(
 ) -> torch.Tensor:
     values = []
     for ratio in ratio_values:
-        probs_partition = torch.tensor([[p_v]], dtype=torch.float64)
-        probs_region = ratio * probs_partition
+        probs_partition_lb = torch.tensor([[p_v]], dtype=torch.float64)
+        probs_partition_ub = torch.tensor([[p_v]], dtype=torch.float64)
+        probs_region = ratio * probs_partition_ub
         bound = robustness_bound(
             probs_region=probs_region,
-            probs_partition=probs_partition,
+            probs_partition_lb=probs_partition_lb,
+            probs_partition_ub=probs_partition_ub,
             num_samples=num_samples,
             alpha=alpha,
         )

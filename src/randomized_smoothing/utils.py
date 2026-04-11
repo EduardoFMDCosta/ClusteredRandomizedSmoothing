@@ -141,7 +141,8 @@ def _binomial_cumulative_probability(
 
 def robustness_bound(
     probs_region: torch.Tensor,
-    probs_partition: torch.Tensor,
+    probs_partition_lb: torch.Tensor,
+    probs_partition_ub: torch.Tensor,
     num_samples: int,
     alpha: float,
 ) -> torch.Tensor:
@@ -151,8 +152,11 @@ def robustness_bound(
     if probs_region.ndim != 2:
         raise ValueError("probs_region must have shape (nx, num_clusters)")
 
-    if probs_partition.ndim != 2 or probs_partition.shape != probs_region.shape:
-        raise ValueError("probs_partition must have the same shape as probs_region")
+    if probs_partition_lb.ndim != 2 or probs_partition_lb.shape != probs_region.shape:
+        raise ValueError("probs_partition_lb must have the same shape as probs_region")
+
+    if probs_partition_ub.ndim != 2 or probs_partition_ub.shape != probs_region.shape:
+        raise ValueError("probs_partition_ub must have the same shape as probs_region")
 
     output_dtype = probs_region.dtype
     device = probs_region.device
@@ -160,8 +164,9 @@ def robustness_bound(
     eps = 1e-12
 
     probs_region = probs_region.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    probs_partition = probs_partition.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    ratio = (probs_region / probs_partition).clamp(eps, 1.0 - eps)
+    probs_partition_lb = probs_partition_lb.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
+    probs_partition_ub = probs_partition_ub.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
+    ratio = (probs_region / probs_partition_ub).clamp(eps, 1.0 - eps)
 
     s = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
     j = torch.arange(0, num_samples + 1, device=device, dtype=dtype)
@@ -183,9 +188,9 @@ def robustness_bound(
     term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
     inner_j = term_j.sum(dim=-1)
 
-    log_comb_ns = log_combination(float(num_samples), s).to(device=device, dtype=dtype)
-
-    term_s = _binomial(k=s, N=float(num_samples), p=probs_partition)
+    term_s_lb = _binomial(k=s, N=float(num_samples), p=probs_partition_lb)
+    term_s_ub = _binomial(k=s, N=float(num_samples), p=probs_partition_ub)
+    term_s = torch.minimum(term_s_lb, term_s_ub)
 
     factor_s = (s / float(num_samples)).view(1, 1, num_samples)
     per_cluster = (factor_s * inner_j * term_s).sum(dim=2)
