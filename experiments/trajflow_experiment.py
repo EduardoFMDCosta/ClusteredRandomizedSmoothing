@@ -32,16 +32,16 @@ def main():
         print(str(exc))
         return
 
-    # Load real trajectory data: (323 samples, 2 agents, 10 timesteps, 5 features)
-    # Extract first agent's (x,y) coordinates and reshape to (batch, 20)
+    # Load real trajectory data: (num_samples, 2 agents, 10 timesteps, 5 features)
+    # Keep the model input layout as 2 agents x 10 timesteps x 2 coordinates (= 40 dims).
     data_file = str(ROOT) + os.sep + "TrajFlow_exp" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
     batch_size = 4
-    x_input = data[:batch_size, :, :, :2]  # Take first 4 samples, first agent, first 2 coords (x,y)
-    # make the target agent the predicted agent
+    x_input = data[:batch_size, :, :, :2]  # Take first 4 samples, both agents, (x, y) coords only.
+    # Put the target agent in index 0 because TrajFlow predicts from agent slot 0.
     x_input = x_input[:,[1,0]]
-    x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 20)
+    x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
 
     sigma = 0.0001
     params = Parameters(
@@ -81,6 +81,7 @@ def main():
         mc_samples=mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         output_dir=ROOT / "outputs",
+        num_input_agents=2,
     )
     
 
