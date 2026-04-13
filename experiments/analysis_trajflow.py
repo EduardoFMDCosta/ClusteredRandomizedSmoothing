@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import itertools
 import json
 import math
@@ -20,14 +19,14 @@ SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.dataclasses import (  # noqa: E402
+from randomized_smoothing.dataclasses import (
     ClusteringParameters,
     ConfidenceParameters,
     Parameters,
     SmoothingParameters,
 )
-from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing  # noqa: E402
-from stochastic_functions import TrajFlowMeszarosStochasticFunction  # noqa: E402
+from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
+from stochastic_functions import TrajFlowMeszarosStochasticFunction
 
 
 @dataclass
@@ -41,7 +40,6 @@ class Setting:
 
 
 def load_inputs(batch_size: int) -> torch.Tensor:
-    """Load TrajFlow inputs and return shape (batch_size, 40)."""
     data_file = ROOT / "TrajFlow_exp" / "Data" / "Inputs.npy"
     data = np.load(str(data_file))
 
@@ -56,11 +54,11 @@ def load_inputs(batch_size: int) -> torch.Tensor:
 
 
 def build_settings() -> list[Setting]:
-    alphas = [0.0, 0.2, 0.4]
-    Ns = [10, 30]
-    max_clusters = [1, 3, 10]
-    coverages = [0.9, 0.99]
-    sigmas = [0.1, 0.5]
+    alphas = [0.0]
+    Ns = [10]
+    max_clusters = [1]
+    coverages = [0.9]
+    sigmas = [0.1]
 
     settings: list[Setting] = []
     for alpha, N, max_num_clusters, coverage, sigma in itertools.product(
@@ -70,7 +68,7 @@ def build_settings() -> list[Setting]:
         coverages,
         sigmas,
     ):
-        for denom in (10, 50):
+        for denom in (10,):
             settings.append(
                 Setting(
                     alpha=alpha,
@@ -117,50 +115,45 @@ def evaluate_setting(
     radius = torch.full((x.shape[0], 1), fill_value=setting.r, dtype=x.dtype, device=x.device)
     certificate = smoother.robust_certification(radius=radius)
 
-    total_certified_prob = certificate.probs.sum(dim=-1)
-    regions = smoother.regions
-    total_volume_per_x = regions.volume.sum(dim=-1)
-    total_volume_all_x = regions.total_volume
+    certified_radius = certificate.radius.squeeze(-1).detach().cpu()    # (nx,)
+    certified_probs = certificate.probs.detach().cpu()                   # (nx, num_clusters)
+    total_certified_prob = certificate.probs.sum(dim=-1).detach().cpu()  # (nx,)
+
+    # The output layout is assumed to be [x1, y1, x2, y2, ..., xT, yT].
+    # Compute area per timestep from even/odd coordinate widths, sum over
+    # clusters, then aggregate over timesteps.
+    widths = smoother.regions.width.to(torch.float64)                           # (nx, k, 2T)
+    if widths.shape[-1] % 2 != 0:
+        raise ValueError("Expected even output dimension arranged as [x1,y1,...,xT,yT]")
+
+    x_widths = widths[..., 0::2]                                                # (nx, k, T)
+    y_widths = widths[..., 1::2]                                                # (nx, k, T)
+    areas_per_cluster = x_widths * y_widths                                     # (nx, k, T)
+    areas_per_timestep = areas_per_cluster.sum(dim=1).detach().cpu()           # (nx, 20)
+    average_area = areas_per_timestep.mean(dim=-1)                             # (nx,)
+    minimum_area = areas_per_timestep.min(dim=-1).values                       # (nx,)
+    maximum_area = areas_per_timestep.max(dim=-1).values                       # (nx,)
+
+    nx = x.shape[0]
+    xs = [
+        {
+            "x_index": i,
+            "certified_radius": float(certified_radius[i].item()),
+            "minimum_prob": float(certified_probs[i].min().item()),
+            "maximum_prob": float(certified_probs[i].max().item()),
+            "total_certified_prob": float(total_certified_prob[i].item()),
+            "average_area": float(average_area[i].item()),
+            "minimum_area": float(minimum_area[i].item()),
+            "maximum_area": float(maximum_area[i].item()),
+        }
+        for i in range(nx)
+    ]
 
     return {
         "setting": asdict(setting),
-        "certified_radius": certificate.radius.squeeze(-1).detach().cpu().tolist(),
-        "certified_probs": certificate.probs.detach().cpu().tolist(),
-        "total_certified_prob": total_certified_prob.detach().cpu().tolist(),
-        "total_volume_per_x": total_volume_per_x.detach().cpu().tolist(),
-        "total_volume_all_x": float(total_volume_all_x.detach().cpu().item()),
+        "xs": xs,
     }
 
-
-def flatten_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert setting-level results to one row per (setting, x_index) for tables."""
-    rows: list[dict[str, Any]] = []
-
-    for setting_id, result in enumerate(results):
-        setting = result["setting"]
-        certified_radius = result["certified_radius"]
-        certified_probs = result["certified_probs"]
-        total_certified_prob = result["total_certified_prob"]
-        total_volume_per_x = result["total_volume_per_x"]
-        total_volume_all_x = result["total_volume_all_x"]
-
-        for x_index in range(len(certified_radius)):
-            total_volume = float(total_volume_per_x[x_index])
-            row = {
-                "setting_id": setting_id,
-                **setting,
-                "x_index": x_index,
-                "certified_radius": float(certified_radius[x_index]),
-                "total_certified_prob": float(total_certified_prob[x_index]),
-                "total_volume": total_volume,
-                "total_volume_all_x": float(total_volume_all_x),
-                "total_volume_is_finite": math.isfinite(total_volume),
-                # Keep cluster-wise probabilities in a JSON-compatible cell.
-                "certified_probs": json.dumps(certified_probs[x_index]),
-            }
-            rows.append(row)
-
-    return rows
 
 
 def _sanitize_json_numbers(obj: Any) -> Any:
@@ -179,18 +172,6 @@ def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(_sanitize_json_numbers(payload), f, indent=2, allow_nan=False)
-
-
-def save_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        raise ValueError("No rows to save")
-
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def main() -> None:
@@ -249,19 +230,14 @@ def main() -> None:
         )
         all_results.append(result)
 
-    rows = flatten_results(all_results)
-
     output_dir = Path(args.output_dir)
-    json_path = output_dir / "results_by_setting.json"
-    csv_path = output_dir / "results_long_table.csv"
+    json_path = output_dir / "results.json"
 
     save_json(json_path, all_results)
-    save_csv(csv_path, rows)
 
     print("")
-    print("Saved files:")
+    print("Saved file:")
     print(json_path)
-    print(csv_path)
 
 
 if __name__ == "__main__":

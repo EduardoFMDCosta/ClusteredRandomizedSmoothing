@@ -23,10 +23,6 @@ class HyperRectangle:
         return torch.exp(self.log_volume)
 
     @property
-    def total_volume(self):
-        return torch.exp(torch.logsumexp(self.log_volume.reshape(-1), dim=0))
-
-    @property
     def center(self):
         return (self.upper + self.lower) / 2
 
