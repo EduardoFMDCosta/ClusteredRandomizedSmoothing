@@ -76,12 +76,36 @@ class Cluster:
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
     
     def _get_regions(self, outputs: torch.Tensor) -> HyperRectangle:
-        return HyperRectangle.from_samples(samples=outputs, centroids=self.centroids, coverage=self.parameters.coverage)
+        return HyperRectangle.from_samples(
+            samples=outputs,
+            centroids=self.centroids,
+            assignments=self.assignments,
+            coverage=self.parameters.coverage,
+        )
     
     def _compute_probs_regions(self, outputs: torch.Tensor) -> torch.Tensor:
+        """Compute probability of samples falling in region j, conditioned on being assigned to cluster j.
+        
+        This ensures by construction that probs_region[i,j] <= probs_partition[i,j],
+        since a sample can only be in region j if it's assigned to cluster j.
+        """
         lower = self.regions.lower
         upper = self.regions.upper
+        nx, num_samples, _ = outputs.shape
+        num_clusters = self.num_clusters
 
+        # Compute which samples are in which regions (shape: nx, num_samples, num_clusters)
         in_region = (outputs.unsqueeze(2) >= lower.unsqueeze(1)) & (outputs.unsqueeze(2) <= upper.unsqueeze(1))
-        in_region = in_region.all(dim=-1)
-        return in_region.to(dtype=outputs.dtype).mean(dim=1)
+        in_region = in_region.all(dim=-1)  # Shape: (nx, num_samples, num_clusters)
+
+        # Get one-hot assignments (shape: nx, num_samples, num_clusters)
+        one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=num_clusters)
+        one_hot_assignments = one_hot_assignments.to(dtype=outputs.dtype)
+
+        # For each cluster j, count samples that are both:
+        # 1. assigned to cluster j
+        # 2. fall within region j
+        in_region_and_assigned = in_region.to(dtype=outputs.dtype) * one_hot_assignments
+
+        # Probability: (samples in region j AND assigned to j) / total samples
+        return in_region_and_assigned.mean(dim=1)
