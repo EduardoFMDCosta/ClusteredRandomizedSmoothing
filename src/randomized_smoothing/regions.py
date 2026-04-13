@@ -7,14 +7,24 @@ class HyperRectangle:
     @property
     def width(self):
         return self.upper - self.lower
+    
+    @property
+    def log_volume(self):
+        widths = self.width.to(torch.float64)
+        log_widths = torch.where(
+            widths > 0,
+            widths.log(),
+            torch.full_like(widths, float("-inf")),
+        )
+        return log_widths.sum(dim=-1)
 
     @property
     def volume(self):
-        return self.width.prod(dim=-1)
+        return torch.exp(self.log_volume)
 
     @property
     def total_volume(self):
-        return self.volume.sum()
+        return torch.exp(torch.logsumexp(self.log_volume.reshape(-1), dim=0))
 
     @property
     def center(self):
