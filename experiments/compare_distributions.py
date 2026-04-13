@@ -22,9 +22,10 @@ from plotting import plot_experiment_results
 
 def main():
     torch.manual_seed(0)
+    plot_region_shading = False
 
     # Define stochastic function and inputs x
-    x = torch.tensor([[0.0], [5.0]], dtype=torch.float64)
+    x = torch.tensor([[0.0]], dtype=torch.float64)
     stochastic_fn = ThreeMode1DGaussianMixture(
         locs=torch.tensor([-5.0, 0.0, 5.0], dtype=torch.float64),
         probs=torch.tensor([0.40, 0.20, 0.40], dtype=torch.float64),
@@ -97,6 +98,7 @@ def main():
         rekavandi_mc_samples=rekavandi_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
+        plot_region_shading=plot_region_shading,
         output_dir=ROOT / "outputs",
     )
 
