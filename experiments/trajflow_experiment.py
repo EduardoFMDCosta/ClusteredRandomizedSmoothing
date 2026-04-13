@@ -43,10 +43,10 @@ def main():
     x_input = x_input[:,[1,0]]
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
 
-    sigma = 0.25
+    sigma = 0.1
     params = Parameters(
-        smoothing=SmoothingParameters(N=10, alpha=0.40),
-        clustering=ClusteringParameters(max_num_clusters=2, coverage=0.99),
+        smoothing=SmoothingParameters(N=10, alpha=0.35),
+        clustering=ClusteringParameters(max_num_clusters=3, coverage=0.99),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
 
@@ -58,7 +58,7 @@ def main():
     )
 
     smoothed_distribution = smoother.smooth()
-    radius = 0.05 * torch.ones((x.shape[0], 1), dtype=x.dtype)
+    radius = 0.001 * torch.ones((x.shape[0], 1), dtype=x.dtype)
     certificate = smoother.robust_certification(radius=radius)
 
 
