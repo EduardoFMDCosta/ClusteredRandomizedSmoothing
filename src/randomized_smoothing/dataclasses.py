@@ -19,6 +19,7 @@ class SmoothingParameters:
 class ClusteringParameters:
     max_num_clusters: int
     coverage: float
+    region_type: str = "hyperrectangle"
     max_iter: int = 1000
     tol: float = 1e-5
     elbow_threshold: float = 0.05
@@ -26,6 +27,7 @@ class ClusteringParameters:
     def __post_init__(self) -> None:
         self.max_num_clusters = int(self.max_num_clusters)
         self.coverage = float(self.coverage)
+        self.region_type = str(self.region_type)
         self.max_iter = int(self.max_iter)
         self.tol = float(self.tol)
         self.elbow_threshold = float(self.elbow_threshold)
@@ -34,6 +36,10 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
+        if self.region_type not in {"hyperrectangle", "ball", "timestep_rectangles"}:
+            raise ValueError(
+                "region_type must be one of {'hyperrectangle', 'ball', 'timestep_rectangles'}"
+            )
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")
         if self.tol <= 0:
