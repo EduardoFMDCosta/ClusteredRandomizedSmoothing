@@ -19,7 +19,7 @@ from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
-from plotting import plot_trajectory_samples
+from plotting import plot_timestep_rectangles_visualization, plot_trajectory_samples
 
 
 def main():
@@ -46,7 +46,11 @@ def main():
     sigma = 0.1
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
-        clustering=ClusteringParameters(max_num_clusters=3, coverage=0.99),
+        clustering=ClusteringParameters(
+            max_num_clusters=3,
+            coverage=0.99,
+            region_type="timestep_rectangles",
+        ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
 
@@ -82,6 +86,16 @@ def main():
         clusterized_mc_samples=clusterized_mc_samples,
         output_dir=ROOT / "outputs",
         num_input_agents=2,
+    )
+
+    chart_paths += plot_timestep_rectangles_visualization(
+        x=x,
+        mc_samples=mc_samples,
+        clusterized_mc_samples=clusterized_mc_samples,
+        region=smoother.regions,
+        output_dir=ROOT / "outputs",
+        num_input_agents=2,
+        x_index=0,
     )
     
 
