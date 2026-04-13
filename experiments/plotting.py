@@ -126,11 +126,6 @@ def _plot_street_marks(ax: plt.Axes, x_extent: float, y_extent: float) -> None:
 	lines_solid.append(np.array([[-x_extent, 4], [-4, 4], [-4, y_extent]]))
 	lines_solid.append(np.array([[x_extent, 4], [4, 4], [4, y_extent]]))
 
-	lines_solid.append(np.array([[-4, -4], [-4, 0], [-6, 0]]))
-	lines_solid.append(np.array([[4, 4], [4, 0], [6, 0]]))
-	lines_solid.append(np.array([[4, -4], [0, -4], [0, -6]]))
-	lines_solid.append(np.array([[-4, 4], [0, 4], [0, 6]]))
-
 	lines_dashed = []
 	lines_dashed.append(np.array([[0, 6], [0, y_extent]]))
 	lines_dashed.append(np.array([[0, -6], [0, -y_extent]]))
@@ -261,63 +256,52 @@ def plot_trajectory_samples(
 			ax_raw.plot(
 				traj[:, 0],
 				traj[:, 1],
-				color="#222222",
-				alpha=0.08,
-				linewidth=0.7,
+				color="#1B5E20",
+				alpha=0.16,
+				linewidth=0.9,
 				zorder=1,
-				label="Raw MC trajectories" if j == 0 else None,
+				label="Samples from original model" if j == 0 else None,
 			)
 
 			traj_cluster = clusterized[i, j]
-			ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#1F78B4", alpha=0.12, linewidth=0.8)
+			ax_cluster.plot(
+				traj_cluster[:, 0],
+				traj_cluster[:, 1],
+				color="#66BB6A",
+				alpha=0.35,
+				linewidth=1.0,
+				zorder=1,
+				label="Samples from smoothed model" if j == 0 else None,
+			)
 
-		agent_colors = ("#FF7F00", "#33A02C")
+		agent_colors = ("#1B5E20", "#0B3C5D")
 		for agent_idx in range(num_input_agents):
 			agent_traj = x_traj[i, agent_idx]
 			color = agent_colors[agent_idx % len(agent_colors)]
-			label = f"Input agent {agent_idx}"
-			# White underlay keeps dashed inputs visible on top of dense MC bundles.
-			ax_raw.plot(
-				agent_traj[:, 0],
-				agent_traj[:, 1],
-				color="#FFFFFF",
-				linestyle="--",
-				linewidth=3.8,
-				zorder=5,
-			)
+			label = "Input (Target agent)" if agent_idx == 0 else "Input (Ego agent)"
 			ax_raw.plot(
 				agent_traj[:, 0],
 				agent_traj[:, 1],
 				color=color,
-				linestyle="--",
-				linewidth=2.4,
+				linestyle="None",
 				marker="o",
-				markersize=3.8,
+				markersize=2.1,
 				markerfacecolor=color,
-				markeredgecolor="#FFFFFF",
-				markeredgewidth=0.5,
+				markeredgecolor=color,
+				markeredgewidth=0.2,
 				zorder=6,
 				label=label,
 			)
 			ax_cluster.plot(
 				agent_traj[:, 0],
 				agent_traj[:, 1],
-				color="#FFFFFF",
-				linestyle="--",
-				linewidth=3.6,
-				zorder=4,
-			)
-			ax_cluster.plot(
-				agent_traj[:, 0],
-				agent_traj[:, 1],
 				color=color,
-				linestyle="--",
-				linewidth=2.3,
+				linestyle="None",
 				marker="o",
-				markersize=3.4,
+				markersize=2.0,
 				markerfacecolor=color,
-				markeredgecolor="#FFFFFF",
-				markeredgewidth=0.5,
+				markeredgecolor=color,
+				markeredgewidth=0.2,
 				zorder=5,
 			)
 
@@ -337,19 +321,20 @@ def plot_trajectory_samples(
 				car_length=car_size,
 			)
 
-		ax_raw.set_title(f"x[{i}] raw MC trajectories")
-		ax_cluster.set_title(f"x[{i}] clusterized MC trajectories")
-
 		for ax in (ax_raw, ax_cluster):
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
 			ax.set_xlabel("x")
-			ax.set_ylabel("y")
 			ax.grid(alpha=0.25, linestyle=":")
 
-		ax_raw.legend(loc="upper left", fontsize=8)
+		ax_raw.set_ylabel("y")
+		ax_cluster.set_ylabel("")
+		ax_cluster.tick_params(axis="y", which="both", left=False, labelleft=False)
 
-	fig.suptitle("Trajectory Samples from Stochastic and Clusterized Smoothing", fontsize=13)
+		if i == 0:
+			ax_raw.legend(loc="upper left", fontsize=8)
+			ax_cluster.legend(loc="upper left", fontsize=8)
+
 	fig.tight_layout()
 	fig_path = output_dir / "trajectory_samples_comparison.png"
 	fig.savefig(fig_path, dpi=180)
