@@ -65,26 +65,26 @@ class ClopperPearsonInterval:
         num_samples: int,
         tail_beta: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        nx, num_clusters = probs.shape
         counts = torch.round(probs.clamp(0.0, 1.0) * num_samples).to(dtype=torch.long)
 
-        lb = torch.empty_like(probs)
-        ub = torch.empty_like(probs)
-        for i in range(nx):
-            for j in range(num_clusters):
-                count = int(counts[i, j].item())
-                lb[i, j] = self._lower_bound_from_count(
-                    count=count,
-                    num_samples=num_samples,
-                    beta=tail_beta,
-                )
-                ub[i, j] = self._upper_bound_from_count(
-                    count=count,
-                    num_samples=num_samples,
-                    beta=tail_beta,
-                )
+        flat_counts = counts.reshape(-1)
+        flat_lb = torch.empty_like(flat_counts, dtype=probs.dtype)
+        flat_ub = torch.empty_like(flat_counts, dtype=probs.dtype)
 
-        return lb, ub
+        for idx, count_tensor in enumerate(flat_counts):
+            count = int(count_tensor.item())
+            flat_lb[idx] = self._lower_bound_from_count(
+                count=count,
+                num_samples=num_samples,
+                beta=tail_beta,
+            )
+            flat_ub[idx] = self._upper_bound_from_count(
+                count=count,
+                num_samples=num_samples,
+                beta=tail_beta,
+            )
+
+        return flat_lb.view_as(probs), flat_ub.view_as(probs)
 
     @staticmethod
     def _lower_bound_from_count(count: int, num_samples: int, beta: float) -> float:

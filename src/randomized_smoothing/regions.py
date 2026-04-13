@@ -18,6 +18,14 @@ def _assigned_diff(
     ).squeeze(2)
 
 
+def _assigned_abs_diff(
+    samples: torch.Tensor,
+    centroids: torch.Tensor,
+    assignments: torch.Tensor,
+) -> torch.Tensor:
+    return _assigned_diff(samples=samples, centroids=centroids, assignments=assignments).abs()
+
+
 def _rect_scale_to_voronoi(
     half_widths: torch.Tensor,
     centroids: torch.Tensor,
@@ -75,40 +83,6 @@ def _ball_scale_to_voronoi(
 
     return scales
 
-def region_from_samples(
-    region_type: str,
-    samples: torch.Tensor,
-    centroids: torch.Tensor,
-    assignments: torch.Tensor,
-    coverage: float,
-    k_per_row: torch.Tensor,
-):
-    if region_type == "hyperrectangle":
-        return HyperRectangle.from_samples(
-            samples=samples,
-            centroids=centroids,
-            assignments=assignments,
-            coverage=coverage,
-            k_per_row=k_per_row,
-        )
-    if region_type == "ball":
-        return Ball.from_samples(
-            samples=samples,
-            centroids=centroids,
-            assignments=assignments,
-            coverage=coverage,
-            k_per_row=k_per_row,
-        )
-    if region_type == "timestep_rectangles":
-        return TimeStepRectangles.from_samples(
-            samples=samples,
-            centroids=centroids,
-            assignments=assignments,
-            coverage=coverage,
-            k_per_row=k_per_row,
-        )
-    raise ValueError(f"Unsupported region_type: {region_type}")
-
 class HyperRectangle:
     def __init__(self, lower, upper):
         self.lower, self.upper = lower, upper
@@ -165,8 +139,11 @@ class HyperRectangle:
         nx, _, output_dim = samples.shape
         k = centroids.shape[1]
 
-        assigned_diff = _assigned_diff(samples=samples, centroids=centroids, assignments=assignments)
-        assigned_abs_diff = assigned_diff.abs()
+        assigned_abs_diff = _assigned_abs_diff(
+            samples=samples,
+            centroids=centroids,
+            assignments=assignments,
+        )
 
         # Cube formulation: L∞ distance (max absolute coordinate difference per point)
         half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
@@ -226,8 +203,10 @@ class Ball:
         nx, _, _ = samples.shape
         k = centroids.shape[1]
 
-        assigned_diff = _assigned_diff(samples=samples, centroids=centroids, assignments=assignments)
-        assigned_l2_distances = torch.linalg.vector_norm(assigned_diff, dim=-1)
+        assigned_l2_distances = torch.linalg.vector_norm(
+            _assigned_diff(samples=samples, centroids=centroids, assignments=assignments),
+            dim=-1,
+        )
 
         radii = torch.zeros((nx, k), dtype=samples.dtype, device=samples.device)
         for i in range(nx):
@@ -303,8 +282,11 @@ class TimeStepRectangles:
         if output_dim % 2 != 0:
             raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
 
-        assigned_diff = _assigned_diff(samples=samples, centroids=centroids, assignments=assignments)
-        assigned_abs_diff = assigned_diff.abs()
+        assigned_abs_diff = _assigned_abs_diff(
+            samples=samples,
+            centroids=centroids,
+            assignments=assignments,
+        )
 
         half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
         for i in range(nx):

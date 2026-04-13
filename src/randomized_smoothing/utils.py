@@ -152,12 +152,6 @@ def robustness_bound(
     if probs_region.ndim != 2:
         raise ValueError("probs_region must have shape (nx, num_clusters)")
 
-    if probs_partition_lb.ndim != 2 or probs_partition_lb.shape != probs_region.shape:
-        raise ValueError("probs_partition_lb must have the same shape as probs_region")
-
-    if probs_partition_ub.ndim != 2 or probs_partition_ub.shape != probs_region.shape:
-        raise ValueError("probs_partition_ub must have the same shape as probs_region")
-
     output_dtype = probs_region.dtype
     device = probs_region.device
     dtype = torch.float64

@@ -1,8 +1,15 @@
 import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import region_from_samples
+from randomized_smoothing.regions import Ball, HyperRectangle, TimeStepRectangles
 from randomized_smoothing.utils import _select_num_clusters
+
+
+_REGION_CLASSES = {
+    "hyperrectangle": HyperRectangle,
+    "ball": Ball,
+    "timestep_rectangles": TimeStepRectangles,
+}
 
 
 class Cluster:
@@ -76,8 +83,11 @@ class Cluster:
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
     
     def _get_regions(self, outputs: torch.Tensor):
-        return region_from_samples(
-            region_type=self.parameters.region_type,
+        region_cls = _REGION_CLASSES.get(self.parameters.region_type)
+        if region_cls is None:
+            raise ValueError(f"Unsupported region_type: {self.parameters.region_type}")
+
+        return region_cls.from_samples(
             samples=outputs,
             centroids=self.centroids,
             assignments=self.assignments,
@@ -91,7 +101,6 @@ class Cluster:
         This ensures by construction that probs_region[i,j] <= probs_partition[i,j],
         since a sample can only be in region j if it's assigned to cluster j.
         """
-        nx, num_samples, _ = outputs.shape
         num_clusters = self.num_clusters
 
         # Compute which samples are in which regions (shape: nx, num_samples, num_clusters)

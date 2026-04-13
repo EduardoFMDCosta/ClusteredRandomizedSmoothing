@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 import torch
 
+
+_ALLOWED_REGION_TYPES = {"hyperrectangle", "ball", "timestep_rectangles"}
+
 @dataclass
 class SmoothingParameters:
     N: int
@@ -36,9 +39,9 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
-        if self.region_type not in {"hyperrectangle", "ball", "timestep_rectangles"}:
+        if self.region_type not in _ALLOWED_REGION_TYPES:
             raise ValueError(
-                "region_type must be one of {'hyperrectangle', 'ball', 'timestep_rectangles'}"
+                f"region_type must be one of {sorted(_ALLOWED_REGION_TYPES)}"
             )
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")
