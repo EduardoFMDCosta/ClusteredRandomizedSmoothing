@@ -43,11 +43,11 @@ def main():
     x_input = x_input[:,[1,0]]
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
 
-    sigma = 0.0001
+    sigma = 0.25
     params = Parameters(
-        smoothing=SmoothingParameters(N=20, alpha=0.2),
-        clustering=ClusteringParameters(max_num_clusters=10, coverage=0.9),
-        confidence=ConfidenceParameters(num_samples=5000, beta=1e-3),
+        smoothing=SmoothingParameters(N=10, alpha=0.40),
+        clustering=ClusteringParameters(max_num_clusters=2, coverage=0.99),
+        confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
 
     smoother = GaussianAlphaTrimmingSmoothing(
@@ -95,6 +95,7 @@ def main():
 
     print(f"certificate radius: {certificate.radius}")
     print(f"certificate probs: {certificate.probs}")
+    print(f"total prob: {certificate.probs.sum(dim=-1)}")
 
     print("")
     print("Saved charts:")
