@@ -6,6 +6,21 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
 
+# Use LaTeX-like typography without requiring a full LaTeX installation.
+plt.rcParams.update(
+	{
+		"font.family": "serif",
+		"mathtext.fontset": "cm",
+		"font.size": 15,
+		"axes.labelsize": 16,
+		"axes.titlesize": 17,
+		"xtick.labelsize": 14,
+		"ytick.labelsize": 14,
+		"legend.fontsize": 14,
+		"legend.framealpha": 0.95,
+	}
+)
+
 # Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT.parent / "src"
@@ -62,10 +77,11 @@ def main() -> None:
     alphas = [0.0, 0.2, 0.4]
     num_samples_list = [10, 25, 50]
 
+    # Professional scientific paper colors
     colors = {
-        10: "#1f77b4",
-        25: "#ff7f0e",
-        50: "#2ca02c",
+        10: "#0173B2",  # Blue
+        25: "#DE8F05",  # Orange
+        50: "#CC78BC",  # Purple
     }
 
     # Per-region bound versus ratio p_R / p_V.
@@ -91,17 +107,17 @@ def main() -> None:
                     label=rf"$N={n}$",
                 )
 
-            ax.set_title(rf"$\alpha={alpha},\ p_{{V}}={p_v}$")
+            ax.set_title(rf"$\alpha={alpha},\ p_{{\mathcal{{V}}}}={p_v}$")
             ax.grid(alpha=0.3, linestyle=":")
             if i == len(alphas) - 1:
-                ax.set_xlabel(r"$p_{R} / p_{V}$")
+                ax.set_xlabel(r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$")
             if j == 0:
                 ax.set_ylabel("Certified probability")
+            # Add legend only to the first subplot
+            if i == 0 and j == 0:
+                ax.legend(loc="upper left", fontsize=14)
 
-    handles, labels = axes2[0, 0].get_legend_handles_labels()
-    fig2.legend(handles, labels, loc="upper center", ncol=3)
-    fig2.suptitle(r"Ours per-region bound across $p_{R} / p_{V}$, $p_{V}$, $\alpha$, and sample size $N$", fontsize=13)
-    fig2.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+    fig2.tight_layout()
 
     output_path_ours = output_dir / "bound_clusterized_grid.png"
     fig2.savefig(output_path_ours, dpi=180)
