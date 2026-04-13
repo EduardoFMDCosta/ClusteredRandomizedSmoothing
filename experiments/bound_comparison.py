@@ -119,7 +119,7 @@ def main() -> None:
 
     fig2.tight_layout()
 
-    output_path_ours = output_dir / "bound_clusterized_grid.png"
+    output_path_ours = output_dir / "bound_clusterized_grid.pdf"
     fig2.savefig(output_path_ours, dpi=180)
     plt.close(fig2)
 

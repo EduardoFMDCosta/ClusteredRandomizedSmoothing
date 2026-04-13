@@ -101,7 +101,7 @@ def plot_experiment_results(
 		ax.legend(loc="upper left", fontsize=9)
 
 	fig1.tight_layout()
-	fig1_path = output_dir / "distribution_comparison.png"
+	fig1_path = output_dir / "distribution_comparison.pdf"
 	fig1.savefig(fig1_path, dpi=180)
 	plt.close(fig1)
 
@@ -344,7 +344,7 @@ def plot_trajectory_samples(
 			ax_cluster.legend(loc="upper left", fontsize=8)
 
 	fig.tight_layout()
-	fig_path = output_dir / "trajectory_samples_comparison.png"
+	fig_path = output_dir / "trajectory_samples_comparison.pdf"
 	fig.savefig(fig_path, dpi=180)
 	plt.close(fig)
 
