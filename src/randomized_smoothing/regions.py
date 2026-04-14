@@ -25,64 +25,6 @@ def _assigned_abs_diff(
 ) -> torch.Tensor:
     return _assigned_diff(samples=samples, centroids=centroids, assignments=assignments).abs()
 
-
-def _rect_scale_to_voronoi(
-    half_widths: torch.Tensor,
-    centroids: torch.Tensor,
-    k_per_row: torch.Tensor,
-) -> torch.Tensor:
-    nx, k, _ = centroids.shape
-    scales = torch.ones((nx, k), dtype=centroids.dtype, device=centroids.device)
-
-    for i in range(nx):
-        active_k = int(k_per_row[i].item())
-        for j in range(active_k):
-            best_scale = 1.0
-            for ell in range(active_k):
-                if ell == j:
-                    continue
-
-                delta = centroids[i, ell] - centroids[i, j]
-                rhs = 0.5 * torch.dot(delta, delta)
-                support = torch.sum(half_widths[i, j] * delta.abs())
-                if support > 0:
-                    best_scale = min(best_scale, float((rhs / support).item()))
-            scales[i, j] = max(0.0, best_scale)
-
-        if active_k < k:
-            scales[i, active_k:] = 0.0
-
-    return scales
-
-
-def _ball_scale_to_voronoi(
-    radii: torch.Tensor,
-    centroids: torch.Tensor,
-    k_per_row: torch.Tensor,
-) -> torch.Tensor:
-    nx, k, _ = centroids.shape
-    scales = torch.ones((nx, k), dtype=centroids.dtype, device=centroids.device)
-
-    for i in range(nx):
-        active_k = int(k_per_row[i].item())
-        for j in range(active_k):
-            best_scale = 1.0
-            for ell in range(active_k):
-                if ell == j:
-                    continue
-
-                delta_norm = torch.linalg.vector_norm(centroids[i, ell] - centroids[i, j])
-                support = radii[i, j] * delta_norm
-                rhs = 0.5 * delta_norm.square()
-                if support > 0:
-                    best_scale = min(best_scale, float((rhs / support).item()))
-            scales[i, j] = max(0.0, best_scale)
-
-        if active_k < k:
-            scales[i, active_k:] = 0.0
-
-    return scales
-
 class HyperRectangle:
     def __init__(self, lower, upper):
         self.lower, self.upper = lower, upper
@@ -134,7 +76,6 @@ class HyperRectangle:
         centroids: torch.Tensor,
         assignments: torch.Tensor,
         coverage: float,
-        k_per_row: torch.Tensor,
     ):
         nx, _, output_dim = samples.shape
         k = centroids.shape[1]
@@ -148,8 +89,7 @@ class HyperRectangle:
         # Cube formulation: L∞ distance (max absolute coordinate difference per point)
         half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
         for i in range(nx):
-            active_k = int(k_per_row[i].item())
-            for j in range(active_k):
+            for j in range(k):
                 mask = assignments[i] == j
                 linf_distances_ij = assigned_abs_diff[i][mask].amax(dim=-1)  # L∞ distance per point
                 if linf_distances_ij.numel() == 0:
@@ -158,9 +98,6 @@ class HyperRectangle:
                 rank = _coverage_rank(linf_distances_ij.shape[0], coverage)
                 radius = linf_distances_ij.kthvalue(rank).values  # scalar radius
                 half_widths[i, j] = radius  # broadcast to all dimensions
-
-        scales = _rect_scale_to_voronoi(half_widths=half_widths, centroids=centroids, k_per_row=k_per_row)
-        half_widths = half_widths * scales.unsqueeze(-1)
 
         lower = centroids - half_widths
         upper = centroids + half_widths
@@ -189,7 +126,6 @@ class TimeStepHyperrectangles(HyperRectangle):
         centroids: torch.Tensor,
         assignments: torch.Tensor,
         coverage: float,
-        k_per_row: torch.Tensor,
     ):
         nx, _, output_dim = samples.shape
         k = centroids.shape[1]
@@ -204,8 +140,7 @@ class TimeStepHyperrectangles(HyperRectangle):
 
         half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
         for i in range(nx):
-            active_k = int(k_per_row[i].item())
-            for j in range(active_k):
+            for j in range(k):
                 mask = assignments[i] == j
                 diff_ij = assigned_abs_diff[i][mask]
                 if diff_ij.numel() == 0:
@@ -214,8 +149,6 @@ class TimeStepHyperrectangles(HyperRectangle):
                 rank = _coverage_rank(diff_ij.shape[0], coverage)
                 half_widths[i, j] = diff_ij.kthvalue(rank, dim=0).values
 
-        scales = _rect_scale_to_voronoi(half_widths=half_widths, centroids=centroids, k_per_row=k_per_row)
-        half_widths = half_widths * scales.unsqueeze(-1)
         lower = centroids - half_widths
         upper = centroids + half_widths
         return TimeStepHyperrectangles(lower=lower, upper=upper)
@@ -253,7 +186,6 @@ class EuclideanBall:
         centroids: torch.Tensor,
         assignments: torch.Tensor,
         coverage: float,
-        k_per_row: torch.Tensor,
     ):
         nx, _, _ = samples.shape
         k = centroids.shape[1]
@@ -265,8 +197,7 @@ class EuclideanBall:
 
         radii = torch.zeros((nx, k), dtype=samples.dtype, device=samples.device)
         for i in range(nx):
-            active_k = int(k_per_row[i].item())
-            for j in range(active_k):
+            for j in range(k):
                 mask = assignments[i] == j
                 d_ij = assigned_l2_distances[i][mask]
                 if d_ij.numel() == 0:
@@ -275,6 +206,4 @@ class EuclideanBall:
                 rank = _coverage_rank(d_ij.numel(), coverage)
                 radii[i, j] = d_ij.kthvalue(rank).values
 
-        scales = _ball_scale_to_voronoi(radii=radii, centroids=centroids, k_per_row=k_per_row)
-        radii = radii * scales
         return EuclideanBall(center=centroids, radius=radii)

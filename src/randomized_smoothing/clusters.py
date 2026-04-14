@@ -92,7 +92,6 @@ class Cluster:
             centroids=self.centroids,
             assignments=self.assignments,
             coverage=self.parameters.coverage,
-            k_per_row=self.k_per_row,
         )
     
     def _compute_probs_regions(self, outputs: torch.Tensor) -> torch.Tensor:
