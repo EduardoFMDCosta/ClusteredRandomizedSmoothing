@@ -5,7 +5,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import numpy as np
 import torch
 
 
@@ -113,31 +112,36 @@ def plot_comparison(
     clusters_by_key: dict[tuple[str, float], Cluster],
     coverages: list[float],
     output_dir: Path,
-) -> Path:
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     samples_np = outputs[0].detach().cpu().numpy()
     x_pad = 0.8
     y_pad = 0.8
 
-    fig, axes = plt.subplots(
-        len(coverages),
-        2,
-        figsize=(11, 4.2 * len(coverages)),
-        sharex=True,
-        sharey=True,
-    )
-    if len(coverages) == 1:
-        axes = np.array([axes])
+    all_x = samples_np[:, 0]
+    all_y = samples_np[:, 1]
+    x_lim = (float(all_x.min() - x_pad), float(all_x.max() + x_pad))
+    y_lim = (float(all_y.min() - y_pad), float(all_y.max() + y_pad))
 
-    region_type_labels = {
-        "HyperRectangle": "Hyperrectangle",
-        "EuclideanBall": "Ball",
-    }
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "serif",
+        "font.serif": ["Computer Modern Roman"],
+    })
+
     colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
+    paths: list[Path] = []
 
-    for row, coverage in enumerate(coverages):
+    for coverage in coverages:
+        fig, axes = plt.subplots(
+            1, 2,
+            figsize=(7, 3.2),
+            sharex=True,
+            sharey=True,
+        )
+
         for col, set_type in enumerate(["HyperRectangle", "EuclideanBall"]):
-            ax = axes[row, col]
+            ax = axes[col]
             cluster = clusters_by_key[(set_type, coverage)]
             assignments = cluster.assignments[0].detach().cpu().numpy()
             active_k = int(cluster.k_per_row[0].item())
@@ -162,35 +166,23 @@ def plot_comparison(
                 )
                 _add_region_patch(ax=ax, cluster=cluster, cluster_index=j, color=colors[j % len(colors)])
 
-            achieved = [stat["achieved_coverage"] for stat in compute_partition_stats(cluster, outputs)]
-            achieved_text = ", ".join(f"{value:.2f}" for value in achieved)
-            ax.set_title(
-                f"{region_type_labels[set_type]} | coverage={coverage:.2f}\n"
-                f"achieved per cluster: [{achieved_text}]"
-            )
-            ax.grid(alpha=0.25, linestyle=":")
+            ax.set_xlim(*x_lim)
+            ax.set_ylim(*y_lim)
             ax.set_aspect("equal", adjustable="box")
+            ax.grid(alpha=0.25, linestyle=":")
 
-    all_x = samples_np[:, 0]
-    all_y = samples_np[:, 1]
-    x_lim = (float(all_x.min() - x_pad), float(all_x.max() + x_pad))
-    y_lim = (float(all_y.min() - y_pad), float(all_y.max() + y_pad))
-    for ax in axes.reshape(-1):
-        ax.set_xlim(*x_lim)
-        ax.set_ylim(*y_lim)
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
+        fig.subplots_adjust(wspace=0.05)
+        output_path = output_dir / f"hyperrectangle_vs_ball_cov{coverage:.2f}.pdf"
+        fig.savefig(output_path, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+        paths.append(output_path)
 
-    fig.tight_layout()
-    output_path = output_dir / "hyperrectangle_vs_ball.pdf"
-    fig.savefig(output_path, dpi=180)
-    plt.close(fig)
-    return output_path
+    return paths
 
 
 def main() -> None:
     outputs = make_samples()
-    coverages = [0.60, 0.80, 0.95]
+    coverages = [0.60, 0.90]
     set_types = ["HyperRectangle", "EuclideanBall"]
 
     clusters_by_key: dict[tuple[str, float], Cluster] = {}
@@ -209,7 +201,7 @@ def main() -> None:
             clusters_by_key[(set_type, coverage)] = cluster
             summary[set_type][f"{coverage:.2f}"] = compute_partition_stats(cluster, outputs)
 
-    chart_path = plot_comparison(
+    chart_paths = plot_comparison(
         outputs=outputs,
         clusters_by_key=clusters_by_key,
         coverages=coverages,
@@ -228,8 +220,9 @@ def main() -> None:
             print(f"  coverage={coverage:.2f} -> {achieved}")
 
     print("")
-    print("Saved chart:")
-    print(chart_path)
+    print("Saved charts:")
+    for path in chart_paths:
+        print(path)
 
 
 if __name__ == "__main__":

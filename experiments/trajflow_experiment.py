@@ -48,7 +48,7 @@ def main():
         smoothing=SmoothingParameters(N=10, alpha=0.35),
         clustering=ClusteringParameters(
             max_num_clusters=3,
-            coverage=0.99,
+            coverage=0.7,
             set_type="TimeStepHyperrectangles",
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
@@ -96,6 +96,18 @@ def main():
         output_dir=ROOT / "outputs",
         num_input_agents=2,
         x_index=0,
+    )
+
+    num_output_timesteps = smoother.regions.lower.shape[-1] // 2
+    chart_paths += plot_timestep_rectangles_visualization(
+        x=x,
+        mc_samples=mc_samples,
+        clusterized_mc_samples=clusterized_mc_samples,
+        region=smoother.regions,
+        output_dir=ROOT / "outputs",
+        num_input_agents=2,
+        x_index=0,
+        timesteps=[0, num_output_timesteps - 1],
     )
     
 

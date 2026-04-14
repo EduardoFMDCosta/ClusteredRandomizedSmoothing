@@ -4,6 +4,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.colors import to_rgba
 import matplotlib.transforms as mtransforms
 import numpy as np
 import torch
@@ -359,8 +360,14 @@ def plot_timestep_rectangles_visualization(
 	output_dir: Path,
 	num_input_agents: int = 2,
 	x_index: int = 0,
+	timesteps: list[int] | None = None,
 ) -> list[Path]:
-	"""Plot timestep-wise certified rectangles for a single input trajectory."""
+	"""Plot timestep-wise certified rectangles for a single input trajectory.
+
+	When *timesteps* is given with exactly two entries, the left panel shows
+	rectangles for the first entry and the right panel for the second.
+	Otherwise both panels show all requested timesteps.
+	"""
 	output_dir.mkdir(parents=True, exist_ok=True)
 
 	raw = _reshape_trajectory_samples(mc_samples)
@@ -389,8 +396,22 @@ def plot_timestep_rectangles_visualization(
 	num_clusters = lower.shape[0]
 	num_timesteps = lower.shape[1]
 
+	if timesteps is None:
+		timesteps_to_plot = list(range(num_timesteps))
+	else:
+		timesteps_to_plot = timesteps
+
+	# Split timesteps across panels when exactly two are requested.
+	split_panels = timesteps is not None and len(timesteps_to_plot) == 2
+
+	plt.rcParams.update({
+		"text.usetex": True,
+		"font.family": "serif",
+		"font.serif": ["Computer Modern Roman"],
+	})
+
 	fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), sharex=True, sharey=True)
-	ax_raw, ax_cluster = axes
+	ax_left, ax_right = axes
 
 	all_x = np.concatenate((raw_i[:, :, 0].reshape(-1), clusterized_i[:, :, 0].reshape(-1), x_traj_i[:, :, 0].reshape(-1)))
 	all_y = np.concatenate((raw_i[:, :, 1].reshape(-1), clusterized_i[:, :, 1].reshape(-1), x_traj_i[:, :, 1].reshape(-1)))
@@ -404,49 +425,62 @@ def plot_timestep_rectangles_visualization(
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
-	_plot_street_marks(ax_raw, x_extent=x_extent, y_extent=y_extent)
-	_plot_street_marks(ax_cluster, x_extent=x_extent, y_extent=y_extent)
+	_plot_street_marks(ax_left, x_extent=x_extent, y_extent=y_extent)
+	_plot_street_marks(ax_right, x_extent=x_extent, y_extent=y_extent)
 
 	for j in range(raw_i.shape[0]):
 		traj = raw_i[j]
-		ax_raw.plot(traj[:, 0], traj[:, 1], color="#1B5E20", alpha=0.09, linewidth=0.8, zorder=1)
+		ax_left.plot(traj[:, 0], traj[:, 1], color="#1B5E20", alpha=0.09, linewidth=0.8, zorder=1)
 		traj_cluster = clusterized_i[j]
-		ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#66BB6A", alpha=0.20, linewidth=0.9, zorder=1)
+		ax_right.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#66BB6A", alpha=0.20, linewidth=0.9, zorder=1)
 
 	cluster_colors = ["#E31A1C", "#1F78B4", "#33A02C", "#FDBF6F", "#FF7F00"]
 	for c in range(num_clusters):
 		color = cluster_colors[c % len(cluster_colors)]
-		for t in range(num_timesteps):
-			x_lo, y_lo = lower[c, t]
-			x_hi, y_hi = upper[c, t]
-			w = x_hi - x_lo
-			h = y_hi - y_lo
-			rect_raw = mpatches.Rectangle((x_lo, y_lo), w, h, edgecolor=color, facecolor=color, alpha=0.10, linewidth=1.0, zorder=2)
-			rect_cluster = mpatches.Rectangle((x_lo, y_lo), w, h, edgecolor=color, facecolor=color, alpha=0.10, linewidth=1.0, zorder=2)
-			ax_raw.add_patch(rect_raw)
-			ax_cluster.add_patch(rect_cluster)
+		if split_panels:
+			# Left panel: first timestep; right panel: second timestep.
+			for panel_ax, t in ((ax_left, timesteps_to_plot[0]), (ax_right, timesteps_to_plot[1])):
+				x_lo, y_lo = lower[c, t]
+				x_hi, y_hi = upper[c, t]
+				w, h = x_hi - x_lo, y_hi - y_lo
+				face = to_rgba(color, alpha=0.10)
+				rect = mpatches.Rectangle(
+					(x_lo, y_lo), w, h,
+					edgecolor=color, facecolor=face,
+					linewidth=1.8, linestyle="-", zorder=2,
+				)
+				panel_ax.add_patch(rect)
+		else:
+			for t in timesteps_to_plot:
+				x_lo, y_lo = lower[c, t]
+				x_hi, y_hi = upper[c, t]
+				w, h = x_hi - x_lo, y_hi - y_lo
+				face = to_rgba(color, alpha=0.10)
+				for ax in (ax_left, ax_right):
+					rect = mpatches.Rectangle(
+						(x_lo, y_lo), w, h,
+						edgecolor=color, facecolor=face,
+						linewidth=1.0, linestyle="-", zorder=2,
+					)
+					ax.add_patch(rect)
 
 	# Input trajectory markers for context.
 	agent_colors = ("#1B5E20", "#0B3C5D")
 	for agent_idx in range(num_input_agents):
 		agent_traj = x_traj_i[agent_idx]
 		color = agent_colors[agent_idx % len(agent_colors)]
-		ax_raw.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
-		ax_cluster.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
+		ax_left.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
+		ax_right.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
 
-	for ax in (ax_raw, ax_cluster):
+	for ax in (ax_left, ax_right):
 		ax.set_xlim(*x_lim)
 		ax.set_ylim(*y_lim)
-		ax.set_xlabel("x")
 		ax.grid(alpha=0.25, linestyle=":")
 
-	ax_raw.set_ylabel("y")
-	ax_raw.set_title(f"Raw Samples + TimeStepHyperrectangles (x={x_index})")
-	ax_cluster.set_title(f"Smoothed Samples + TimeStepHyperrectangles (x={x_index})")
-
 	fig.tight_layout()
-	fig_path = output_dir / "timestep_rectangles_visualization.pdf"
-	fig.savefig(fig_path, dpi=180)
+	suffix = "" if timesteps is None else "_t" + "_".join(str(t) for t in timesteps_to_plot)
+	fig_path = output_dir / f"timestep_rectangles_visualization{suffix}.pdf"
+	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
 	plt.close(fig)
 
 	return [fig_path]
