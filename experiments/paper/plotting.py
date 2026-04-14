@@ -58,7 +58,7 @@ def plot_experiment_results(
 
 	# Figure 1: per-input distribution comparison.
 	_w = 0.80 * TEXTWIDTH
-	fig1, axes = plt.subplots(m, 1, figsize=(_w, 0.65 * _w * m), sharex=False)
+	fig1, axes = plt.subplots(m, 1, figsize=(_w, 0.8 * _w * m), sharex=False)
 	if m == 1:
 		axes = [axes]
 
@@ -70,7 +70,7 @@ def plot_experiment_results(
 			histtype="step",
 			linewidth=2.2,
 			color=colors["raw"],
-			label="Samples from original model",
+			label="Original model",
 		)
 		ax.hist(
 			rekavandi_mc_np[i],
@@ -80,7 +80,7 @@ def plot_experiment_results(
 			color=colors["global_mc"],
 			edgecolor=colors["global_mc"],
 			linewidth=1.4,
-			label=r"Samples from $\alpha$-smoothing (Rekavandi et al, 2024)",
+			label=r"$\alpha$-smoothing (Rekavandi et al, 2024)",
 		)
 		ax.hist(
 			clusterized_mc_np[i],
@@ -90,7 +90,7 @@ def plot_experiment_results(
 			color=colors["cluster_mc"],
 			edgecolor=colors["cluster_mc"],
 			linewidth=1.4,
-			label=r"Samples from our clusterized $\alpha$-smoothing",
+			label=r"Clusterized $\alpha$-smoothing",
 		)
 
 		if plot_region_shading and region_lower_np is not None and region_upper_np is not None:
