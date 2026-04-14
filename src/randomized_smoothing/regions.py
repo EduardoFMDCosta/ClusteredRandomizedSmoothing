@@ -167,6 +167,61 @@ class HyperRectangle:
         return HyperRectangle(lower, upper)
 
 
+
+class TimeStepHyperrectangles(HyperRectangle):
+    def __init__(self, lower: torch.Tensor, upper: torch.Tensor):
+        if lower.shape[-1] % 2 != 0:
+            raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
+        super().__init__(lower, upper)
+
+    @property
+    def timestep_width(self):
+        return self.width.view(*self.width.shape[:-1], self.width.shape[-1] // 2, 2)
+
+    @property
+    def timestep_area(self):
+        timestep_width = self.timestep_width.to(torch.float64)
+        return timestep_width[..., 0] * timestep_width[..., 1]
+
+    @staticmethod
+    def from_samples(
+        samples: torch.Tensor,
+        centroids: torch.Tensor,
+        assignments: torch.Tensor,
+        coverage: float,
+        k_per_row: torch.Tensor,
+    ):
+        nx, _, output_dim = samples.shape
+        k = centroids.shape[1]
+        if output_dim % 2 != 0:
+            raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
+
+        assigned_abs_diff = _assigned_abs_diff(
+            samples=samples,
+            centroids=centroids,
+            assignments=assignments,
+        )
+
+        half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
+        for i in range(nx):
+            active_k = int(k_per_row[i].item())
+            for j in range(active_k):
+                mask = assignments[i] == j
+                diff_ij = assigned_abs_diff[i][mask]
+                if diff_ij.numel() == 0:
+                    continue
+
+                rank = _coverage_rank(diff_ij.shape[0], coverage)
+                half_widths[i, j] = diff_ij.kthvalue(rank, dim=0).values
+
+        scales = _rect_scale_to_voronoi(half_widths=half_widths, centroids=centroids, k_per_row=k_per_row)
+        half_widths = half_widths * scales.unsqueeze(-1)
+        lower = centroids - half_widths
+        upper = centroids + half_widths
+        return TimeStepHyperrectangles(lower=lower, upper=upper)
+    
+
+
 class EuclideanBall:
     def __init__(self, center: torch.Tensor, radius: torch.Tensor):
         self.center = center
@@ -223,56 +278,3 @@ class EuclideanBall:
         scales = _ball_scale_to_voronoi(radii=radii, centroids=centroids, k_per_row=k_per_row)
         radii = radii * scales
         return EuclideanBall(center=centroids, radius=radii)
-
-
-class TimeStepHyperrectangles(HyperRectangle):
-    def __init__(self, lower: torch.Tensor, upper: torch.Tensor):
-        if lower.shape[-1] % 2 != 0:
-            raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
-        super().__init__(lower, upper)
-
-    @property
-    def timestep_width(self):
-        return self.width.view(*self.width.shape[:-1], self.width.shape[-1] // 2, 2)
-
-    @property
-    def timestep_area(self):
-        timestep_width = self.timestep_width.to(torch.float64)
-        return timestep_width[..., 0] * timestep_width[..., 1]
-
-    @staticmethod
-    def from_samples(
-        samples: torch.Tensor,
-        centroids: torch.Tensor,
-        assignments: torch.Tensor,
-        coverage: float,
-        k_per_row: torch.Tensor,
-    ):
-        nx, _, output_dim = samples.shape
-        k = centroids.shape[1]
-        if output_dim % 2 != 0:
-            raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
-
-        assigned_abs_diff = _assigned_abs_diff(
-            samples=samples,
-            centroids=centroids,
-            assignments=assignments,
-        )
-
-        half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
-        for i in range(nx):
-            active_k = int(k_per_row[i].item())
-            for j in range(active_k):
-                mask = assignments[i] == j
-                diff_ij = assigned_abs_diff[i][mask]
-                if diff_ij.numel() == 0:
-                    continue
-
-                rank = _coverage_rank(diff_ij.shape[0], coverage)
-                half_widths[i, j] = diff_ij.kthvalue(rank, dim=0).values
-
-        scales = _rect_scale_to_voronoi(half_widths=half_widths, centroids=centroids, k_per_row=k_per_row)
-        half_widths = half_widths * scales.unsqueeze(-1)
-        lower = centroids - half_widths
-        upper = centroids + half_widths
-        return TimeStepHyperrectangles(lower=lower, upper=upper)
