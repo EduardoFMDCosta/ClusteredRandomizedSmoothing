@@ -18,6 +18,8 @@ if str(SRC) not in sys.path:
 from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.dataclasses import ClusteringParameters
 
+TEXTWIDTH = 5.5  # inches
+
 
 def make_samples() -> torch.Tensor:
     torch.manual_seed(7)
@@ -128,15 +130,22 @@ def plot_comparison(
         "text.usetex": True,
         "font.family": "serif",
         "font.serif": ["Computer Modern Roman"],
+        "font.size": 10,
+        "axes.labelsize": 10,
+        "axes.titlesize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 9,
     })
 
     colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
     paths: list[Path] = []
 
     for coverage in coverages:
+        _w = 0.80 * TEXTWIDTH
         fig, axes = plt.subplots(
             1, 2,
-            figsize=(7, 3.2),
+            figsize=(_w, 0.50 * _w),
             sharex=True,
             sharey=True,
         )

@@ -10,11 +10,18 @@ import numpy as np
 import torch
 
 
-# Use LaTeX-like typography without requiring a full LaTeX installation.
+TEXTWIDTH = 5.5  # inches
+
 plt.rcParams.update(
 	{
 		"font.family": "serif",
 		"mathtext.fontset": "cm",
+		"font.size": 10,
+		"axes.labelsize": 10,
+		"axes.titlesize": 10,
+		"xtick.labelsize": 9,
+		"ytick.labelsize": 9,
+		"legend.fontsize": 9,
 	}
 )
 
@@ -50,7 +57,8 @@ def plot_experiment_results(
 	}
 
 	# Figure 1: per-input distribution comparison.
-	fig1, axes = plt.subplots(m, 1, figsize=(7, 4.5 * m), sharex=False)
+	_w = 0.80 * TEXTWIDTH
+	fig1, axes = plt.subplots(m, 1, figsize=(_w, 0.65 * _w * m), sharex=False)
 	if m == 1:
 		axes = [axes]
 
@@ -99,7 +107,7 @@ def plot_experiment_results(
 		ax.set_xlabel("Output")
 		ax.set_ylabel("Frequency")
 		ax.grid(alpha=0.25, linestyle=":")
-		ax.legend(loc="upper left", fontsize=9)
+		ax.legend(loc="upper left")
 
 	fig1.tight_layout()
 	fig1_path = output_dir / "distribution_comparison.pdf"
@@ -223,7 +231,8 @@ def plot_trajectory_samples(
 		raise ValueError("x and trajectory samples must have the same first dimension")
 
 	nx, num_samples, _, _ = raw.shape
-	fig, axes = plt.subplots(nx, 2, figsize=(12, 3.2 * nx), sharex=True, sharey=True)
+	_w = TEXTWIDTH
+	fig, axes = plt.subplots(nx, 2, figsize=(_w, 0.55 * _w * nx), sharex=True, sharey=True)
 	if nx == 1:
 		axes = np.array([axes])
 
@@ -269,7 +278,7 @@ def plot_trajectory_samples(
 				alpha=0.16,
 				linewidth=0.9,
 				zorder=1,
-				label="Samples from original model" if j == 0 else None,
+				label="Original model" if j == 0 else None,
 			)
 
 			traj_cluster = clusterized[i, j]
@@ -280,14 +289,14 @@ def plot_trajectory_samples(
 				alpha=0.35,
 				linewidth=1.0,
 				zorder=1,
-				label="Samples from smoothed model" if j == 0 else None,
+				label="Smoothed model" if j == 0 else None,
 			)
 
 		agent_colors = ("#1B5E20", "#0B3C5D")
 		for agent_idx in range(num_input_agents):
 			agent_traj = x_traj[i, agent_idx]
 			color = agent_colors[agent_idx % len(agent_colors)]
-			label = "Input (Target agent)" if agent_idx == 0 else "Input (Ego agent)"
+			label = "Target agent" if agent_idx == 0 else "Ego agent"
 			ax_raw.plot(
 				agent_traj[:, 0],
 				agent_traj[:, 1],
@@ -333,20 +342,19 @@ def plot_trajectory_samples(
 		for ax in (ax_raw, ax_cluster):
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
-			ax.set_xlabel("x")
 			ax.grid(alpha=0.25, linestyle=":")
 
-		ax_raw.set_ylabel("y")
-		ax_cluster.set_ylabel("")
 		ax_cluster.tick_params(axis="y", which="both", left=False, labelleft=False)
 
 		if i == 0:
-			ax_raw.legend(loc="upper left", fontsize=8)
-			ax_cluster.legend(loc="upper left", fontsize=8)
+			ax_raw.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
+			ax_cluster.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
 
+	fig.supxlabel("x")
+	fig.supylabel("y")
 	fig.tight_layout()
 	fig_path = output_dir / "trajectory_samples_comparison.pdf"
-	fig.savefig(fig_path, dpi=180)
+	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
 	plt.close(fig)
 
 	return [fig_path]
@@ -410,7 +418,8 @@ def plot_timestep_rectangles_visualization(
 		"font.serif": ["Computer Modern Roman"],
 	})
 
-	fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), sharex=True, sharey=True)
+	_w = 0.80 * TEXTWIDTH
+	fig, axes = plt.subplots(1, 2, figsize=(_w, 0.50 * _w), sharex=True, sharey=True)
 	ax_left, ax_right = axes
 
 	all_x = np.concatenate((raw_i[:, :, 0].reshape(-1), clusterized_i[:, :, 0].reshape(-1), x_traj_i[:, :, 0].reshape(-1)))

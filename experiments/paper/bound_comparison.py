@@ -6,17 +6,18 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
 
-# Use LaTeX-like typography without requiring a full LaTeX installation.
+TEXTWIDTH = 5.5  # inches
+
 plt.rcParams.update(
 	{
 		"font.family": "serif",
 		"mathtext.fontset": "cm",
-		"font.size": 15,
-		"axes.labelsize": 16,
-		"axes.titlesize": 17,
-		"xtick.labelsize": 14,
-		"ytick.labelsize": 14,
-		"legend.fontsize": 14,
+		"font.size": 10,
+		"axes.labelsize": 10,
+		"axes.titlesize": 10,
+		"xtick.labelsize": 9,
+		"ytick.labelsize": 9,
+		"legend.fontsize": 9,
 		"legend.framealpha": 0.95,
 	}
 )
@@ -88,7 +89,8 @@ def main() -> None:
     # Per-region bound versus ratio p_R / p_V.
     p_v_values = [0.2, 0.5, 0.8, 1.0]
     ratio_values = torch.linspace(0.0, 1.0, 300, dtype=torch.float64)
-    fig2, axes2 = plt.subplots(len(alphas), len(p_v_values), figsize=(20, 12), sharex=True, sharey=True)
+    _w = TEXTWIDTH  # full textwidth for the grid
+    fig2, axes2 = plt.subplots(len(alphas), len(p_v_values), figsize=(_w, 0.60 * _w), sharex=True, sharey=True)
 
     for i, alpha in enumerate(alphas):
         for j, p_v in enumerate(p_v_values):
@@ -110,18 +112,25 @@ def main() -> None:
 
             ax.set_title(rf"$\alpha={alpha},\ p_{{\mathcal{{V}}}}={p_v}$")
             ax.grid(alpha=0.3, linestyle=":")
-            if i == len(alphas) - 1:
-                ax.set_xlabel(r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$")
-            if j == 0:
-                ax.set_ylabel("Certified probability")
-            # Add legend only to the first subplot
-            if i == 0 and j == 0:
-                ax.legend(loc="upper left", fontsize=14)
+            ax.set_yticks([0.0, 0.5, 1.0])
+
+    # Single shared axis labels.
+    fig2.supylabel("Certified probability", fontsize=plt.rcParams["axes.labelsize"])
 
     fig2.tight_layout()
+    fig2.subplots_adjust(bottom=0.22)  # room for x-label + legend
+
+    # Place shared x-label and legend at explicit vertical positions so they
+    # don't overlap.  Both use figure-fraction coordinates.
+    fig2.text(0.5, 0.12, r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$",
+              ha="center", va="center", fontsize=plt.rcParams["axes.labelsize"])
+
+    handles, labels = axes2[0, 0].get_legend_handles_labels()
+    fig2.legend(handles, labels, loc="lower center", ncol=len(num_samples_list),
+                bbox_to_anchor=(0.5, 0.0))
 
     output_path_ours = output_dir / "bound_clusterized_grid.pdf"
-    fig2.savefig(output_path_ours, dpi=180)
+    fig2.savefig(output_path_ours, dpi=180, bbox_inches="tight")
     plt.close(fig2)
 
     print(f"Saved plot to: {output_path_ours}")
