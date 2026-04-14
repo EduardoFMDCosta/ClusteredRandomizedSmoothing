@@ -34,7 +34,7 @@ def main():
 
     # Load real trajectory data: (num_samples, 2 agents, 10 timesteps, 5 features)
     # Keep the model input layout as 2 agents x 10 timesteps x 2 coordinates (= 40 dims).
-    data_file = str(ROOT) + os.sep + "TrajFlow_exp" + os.sep + "Data" + os.sep + "Inputs.npy"
+    data_file = str(ROOT) + os.sep + "TrajFlowExperiment" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
     batch_size = 4

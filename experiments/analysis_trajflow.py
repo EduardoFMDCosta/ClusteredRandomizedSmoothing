@@ -40,7 +40,7 @@ class Setting:
 
 
 def load_inputs(batch_size: int) -> torch.Tensor:
-    data_file = ROOT / "TrajFlow_exp" / "Data" / "Inputs.npy"
+    data_file = ROOT / "TrajFlowExperiment" / "Data" / "Inputs.npy"
     data = np.load(str(data_file))
 
     if batch_size <= 0:

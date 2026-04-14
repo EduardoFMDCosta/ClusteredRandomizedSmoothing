@@ -23,7 +23,8 @@ plt.rcParams.update(
 
 # Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
-SRC = ROOT.parent / "src"
+EXPERIMENTS = ROOT.parent
+SRC = EXPERIMENTS.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -71,7 +72,7 @@ def compute_curve_ours_per_region(
 
 
 def main() -> None:
-    output_dir = ROOT / "outputs"
+    output_dir = EXPERIMENTS / "data" / "figures"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     alphas = [0.0, 0.2, 0.4]

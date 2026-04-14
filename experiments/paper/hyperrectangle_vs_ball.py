@@ -9,7 +9,8 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parent
-REPO_ROOT = ROOT.parent
+EXPERIMENTS = ROOT.parent
+REPO_ROOT = EXPERIMENTS.parent
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -205,7 +206,7 @@ def main() -> None:
         outputs=outputs,
         clusters_by_key=clusters_by_key,
         coverages=coverages,
-        output_dir=ROOT / "outputs",
+        output_dir=EXPERIMENTS / "data" / "figures",
     )
 
     print("=== Hyperrectangle vs Ball ===")
