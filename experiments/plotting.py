@@ -441,8 +441,8 @@ def plot_timestep_rectangles_visualization(
 		ax.grid(alpha=0.25, linestyle=":")
 
 	ax_raw.set_ylabel("y")
-	ax_raw.set_title(f"Raw Samples + TimeStepRectangles (x={x_index})")
-	ax_cluster.set_title(f"Smoothed Samples + TimeStepRectangles (x={x_index})")
+	ax_raw.set_title(f"Raw Samples + TimeStepHyperrectangles (x={x_index})")
+	ax_cluster.set_title(f"Smoothed Samples + TimeStepHyperrectangles (x={x_index})")
 
 	fig.tight_layout()
 	fig_path = output_dir / "timestep_rectangles_visualization.pdf"

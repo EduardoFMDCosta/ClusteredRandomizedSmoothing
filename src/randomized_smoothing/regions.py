@@ -167,7 +167,7 @@ class HyperRectangle:
         return HyperRectangle(lower, upper)
 
 
-class Ball:
+class EuclideanBall:
     def __init__(self, center: torch.Tensor, radius: torch.Tensor):
         self.center = center
         self.radius = radius.squeeze(-1) if radius.ndim == center.ndim else radius
@@ -222,24 +222,14 @@ class Ball:
 
         scales = _ball_scale_to_voronoi(radii=radii, centroids=centroids, k_per_row=k_per_row)
         radii = radii * scales
-        return Ball(center=centroids, radius=radii)
+        return EuclideanBall(center=centroids, radius=radii)
 
 
-class TimeStepRectangles:
+class TimeStepHyperrectangles(HyperRectangle):
     def __init__(self, lower: torch.Tensor, upper: torch.Tensor):
-        self.lower = lower
-        self.upper = upper
-
-        if self.lower.shape[-1] % 2 != 0:
+        if lower.shape[-1] % 2 != 0:
             raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
-
-    @property
-    def width(self):
-        return self.upper - self.lower
-
-    @property
-    def center(self):
-        return (self.upper + self.lower) / 2
+        super().__init__(lower, upper)
 
     @property
     def timestep_width(self):
@@ -249,25 +239,6 @@ class TimeStepRectangles:
     def timestep_area(self):
         timestep_width = self.timestep_width.to(torch.float64)
         return timestep_width[..., 0] * timestep_width[..., 1]
-
-    @property
-    def log_volume(self):
-        widths = self.width.to(torch.float64)
-        log_widths = torch.where(
-            widths > 0,
-            widths.log(),
-            torch.full_like(widths, float("-inf")),
-        )
-        return log_widths.sum(dim=-1)
-
-    @property
-    def volume(self):
-        return torch.exp(self.log_volume)
-
-    def contains(self, points: torch.Tensor) -> torch.Tensor:
-        in_lower = points.unsqueeze(2) >= self.lower.unsqueeze(1)
-        in_upper = points.unsqueeze(2) <= self.upper.unsqueeze(1)
-        return (in_lower & in_upper).all(dim=-1)
 
     @staticmethod
     def from_samples(
@@ -304,4 +275,4 @@ class TimeStepRectangles:
         half_widths = half_widths * scales.unsqueeze(-1)
         lower = centroids - half_widths
         upper = centroids + half_widths
-        return TimeStepRectangles(lower=lower, upper=upper)
+        return TimeStepHyperrectangles(lower=lower, upper=upper)

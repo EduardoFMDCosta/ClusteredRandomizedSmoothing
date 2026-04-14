@@ -98,7 +98,7 @@ def evaluate_setting(
         clustering=ClusteringParameters(
             max_num_clusters=setting.max_num_clusters,
             coverage=setting.coverage,
-            region_type="timestep_rectangles",
+            set_type="TimeStepHyperrectangles",
         ),
         confidence=ConfidenceParameters(
             num_samples=confidence_num_samples,

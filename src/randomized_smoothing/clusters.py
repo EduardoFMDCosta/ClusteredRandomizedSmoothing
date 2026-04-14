@@ -1,14 +1,14 @@
 import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import Ball, HyperRectangle, TimeStepRectangles
+from randomized_smoothing.regions import EuclideanBall, HyperRectangle, TimeStepHyperrectangles
 from randomized_smoothing.utils import _select_num_clusters
 
 
-_REGION_CLASSES = {
-    "hyperrectangle": HyperRectangle,
-    "ball": Ball,
-    "timestep_rectangles": TimeStepRectangles,
+_SET_CLASSES = {
+    "HyperRectangle": HyperRectangle,
+    "EuclideanBall": EuclideanBall,
+    "TimeStepHyperrectangles": TimeStepHyperrectangles,
 }
 
 
@@ -83,9 +83,9 @@ class Cluster:
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
     
     def _get_regions(self, outputs: torch.Tensor):
-        region_cls = _REGION_CLASSES.get(self.parameters.region_type)
+        region_cls = _SET_CLASSES.get(self.parameters.set_type)
         if region_cls is None:
-            raise ValueError(f"Unsupported region_type: {self.parameters.region_type}")
+            raise ValueError(f"Unsupported set_type: {self.parameters.set_type}")
 
         return region_cls.from_samples(
             samples=outputs,

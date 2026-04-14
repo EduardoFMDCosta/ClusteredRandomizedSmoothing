@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import torch
 
 
-_ALLOWED_REGION_TYPES = {"hyperrectangle", "ball", "timestep_rectangles"}
+_ALLOWED_SET_TYPES = {"HyperRectangle", "EuclideanBall", "TimeStepHyperrectangles"}
 
 @dataclass
 class SmoothingParameters:
@@ -22,7 +22,7 @@ class SmoothingParameters:
 class ClusteringParameters:
     max_num_clusters: int
     coverage: float
-    region_type: str = "hyperrectangle"
+    set_type: str = "HyperRectangle"
     max_iter: int = 1000
     tol: float = 1e-5
     elbow_threshold: float = 0.05
@@ -30,7 +30,7 @@ class ClusteringParameters:
     def __post_init__(self) -> None:
         self.max_num_clusters = int(self.max_num_clusters)
         self.coverage = float(self.coverage)
-        self.region_type = str(self.region_type)
+        self.set_type = str(self.set_type)
         self.max_iter = int(self.max_iter)
         self.tol = float(self.tol)
         self.elbow_threshold = float(self.elbow_threshold)
@@ -39,9 +39,9 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
-        if self.region_type not in _ALLOWED_REGION_TYPES:
+        if self.set_type not in _ALLOWED_SET_TYPES:
             raise ValueError(
-                f"region_type must be one of {sorted(_ALLOWED_REGION_TYPES)}"
+                f"set_type must be one of {sorted(_ALLOWED_SET_TYPES)}"
             )
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")

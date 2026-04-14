@@ -130,15 +130,15 @@ def plot_comparison(
         axes = np.array([axes])
 
     region_type_labels = {
-        "hyperrectangle": "Hyperrectangle",
-        "ball": "Ball",
+        "HyperRectangle": "Hyperrectangle",
+        "EuclideanBall": "Ball",
     }
     colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
 
     for row, coverage in enumerate(coverages):
-        for col, region_type in enumerate(["hyperrectangle", "ball"]):
+        for col, set_type in enumerate(["HyperRectangle", "EuclideanBall"]):
             ax = axes[row, col]
-            cluster = clusters_by_key[(region_type, coverage)]
+            cluster = clusters_by_key[(set_type, coverage)]
             assignments = cluster.assignments[0].detach().cpu().numpy()
             active_k = int(cluster.k_per_row[0].item())
 
@@ -165,7 +165,7 @@ def plot_comparison(
             achieved = [stat["achieved_coverage"] for stat in compute_partition_stats(cluster, outputs)]
             achieved_text = ", ".join(f"{value:.2f}" for value in achieved)
             ax.set_title(
-                f"{region_type_labels[region_type]} | coverage={coverage:.2f}\n"
+                f"{region_type_labels[set_type]} | coverage={coverage:.2f}\n"
                 f"achieved per cluster: [{achieved_text}]"
             )
             ax.grid(alpha=0.25, linestyle=":")
@@ -191,23 +191,23 @@ def plot_comparison(
 def main() -> None:
     outputs = make_samples()
     coverages = [0.60, 0.80, 0.95]
-    region_types = ["hyperrectangle", "ball"]
+    set_types = ["HyperRectangle", "EuclideanBall"]
 
     clusters_by_key: dict[tuple[str, float], Cluster] = {}
     summary: dict[str, dict[str, list[dict[str, float | int]]]] = {}
-    for region_type in region_types:
-        summary[region_type] = {}
+    for set_type in set_types:
+        summary[set_type] = {}
         for coverage in coverages:
             cluster = Cluster(
                 outputs=outputs,
                 parameters=ClusteringParameters(
                     max_num_clusters=3,
                     coverage=coverage,
-                    region_type=region_type,
+                    set_type=set_type,
                 ),
             )
-            clusters_by_key[(region_type, coverage)] = cluster
-            summary[region_type][f"{coverage:.2f}"] = compute_partition_stats(cluster, outputs)
+            clusters_by_key[(set_type, coverage)] = cluster
+            summary[set_type][f"{coverage:.2f}"] = compute_partition_stats(cluster, outputs)
 
     chart_path = plot_comparison(
         outputs=outputs,
@@ -217,10 +217,10 @@ def main() -> None:
     )
 
     print("=== Hyperrectangle vs Ball ===")
-    for region_type in region_types:
-        print(f"region_type={region_type}")
+    for set_type in set_types:
+        print(f"set_type={set_type}")
         for coverage in coverages:
-            stats = summary[region_type][f"{coverage:.2f}"]
+            stats = summary[set_type][f"{coverage:.2f}"]
             achieved = ", ".join(
                 f"cluster {stat['cluster_index']}: target={stat['target_coverage']:.2f}, achieved={stat['achieved_coverage']:.2f}, n={stat['num_assigned']}"
                 for stat in stats

@@ -49,7 +49,7 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=3,
             coverage=0.99,
-            region_type="timestep_rectangles",
+            set_type="TimeStepHyperrectangles",
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
