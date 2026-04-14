@@ -14,10 +14,13 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parent
-REPO_ROOT = ROOT.parent
+EXPERIMENTS = ROOT.parent
+REPO_ROOT = EXPERIMENTS.parent
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(EXPERIMENTS) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENTS))
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -40,7 +43,7 @@ class Setting:
 
 
 def load_inputs(batch_size: int) -> torch.Tensor:
-    data_file = ROOT / "TrajFlow_exp" / "Data" / "Inputs.npy"
+    data_file = EXPERIMENTS / "TrajFlowExperiment" / "Data" / "Inputs.npy"
     data = np.load(str(data_file))
 
     if batch_size <= 0:
@@ -98,6 +101,7 @@ def evaluate_setting(
         clustering=ClusteringParameters(
             max_num_clusters=setting.max_num_clusters,
             coverage=setting.coverage,
+            set_type="TimeStepHyperrectangles",
         ),
         confidence=ConfidenceParameters(
             num_samples=confidence_num_samples,
@@ -192,7 +196,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=str(ROOT / "outputs" / "analysis"),
+        default=str(EXPERIMENTS / "data" / "analysis"),
         help="Directory where JSON/CSV files are written.",
     )
     parser.add_argument(

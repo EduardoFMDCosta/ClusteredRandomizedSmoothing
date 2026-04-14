@@ -48,7 +48,7 @@ class TrajFlowMeszarosStochasticFunction(StochasticFunction):
 
     def __init__(self, model=None) -> None:
         if model is None:
-            from TrajFlow_exp.trajflow_meszaros import trajflow_meszaros
+            from TrajFlowExperiment.trajflow_meszaros import trajflow_meszaros
             model = trajflow_meszaros()
 
         self.model = model

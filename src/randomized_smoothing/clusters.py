@@ -1,8 +1,15 @@
 import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import HyperRectangle
+from randomized_smoothing.regions import EuclideanBall, HyperRectangle, TimeStepHyperrectangles
 from randomized_smoothing.utils import _select_num_clusters
+
+
+_SET_CLASSES = {
+    "HyperRectangle": HyperRectangle,
+    "EuclideanBall": EuclideanBall,
+    "TimeStepHyperrectangles": TimeStepHyperrectangles,
+}
 
 
 class Cluster:
@@ -75,8 +82,12 @@ class Cluster:
         one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.num_clusters)
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
     
-    def _get_regions(self, outputs: torch.Tensor) -> HyperRectangle:
-        return HyperRectangle.from_samples(
+    def _get_regions(self, outputs: torch.Tensor):
+        region_cls = _SET_CLASSES.get(self.parameters.set_type)
+        if region_cls is None:
+            raise ValueError(f"Unsupported set_type: {self.parameters.set_type}")
+
+        return region_cls.from_samples(
             samples=outputs,
             centroids=self.centroids,
             assignments=self.assignments,
@@ -89,14 +100,10 @@ class Cluster:
         This ensures by construction that probs_region[i,j] <= probs_partition[i,j],
         since a sample can only be in region j if it's assigned to cluster j.
         """
-        lower = self.regions.lower
-        upper = self.regions.upper
-        nx, num_samples, _ = outputs.shape
         num_clusters = self.num_clusters
 
         # Compute which samples are in which regions (shape: nx, num_samples, num_clusters)
-        in_region = (outputs.unsqueeze(2) >= lower.unsqueeze(1)) & (outputs.unsqueeze(2) <= upper.unsqueeze(1))
-        in_region = in_region.all(dim=-1)  # Shape: (nx, num_samples, num_clusters)
+        in_region = self.regions.contains(outputs)
 
         # Get one-hot assignments (shape: nx, num_samples, num_clusters)
         one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=num_clusters)

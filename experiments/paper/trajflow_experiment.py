@@ -10,16 +10,19 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parent
-REPO_ROOT = ROOT.parent
+EXPERIMENTS = ROOT.parent
+REPO_ROOT = EXPERIMENTS.parent
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(EXPERIMENTS) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENTS))
 
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
-from plotting import plot_trajectory_samples
+from plotting import plot_timestep_rectangles_visualization, plot_trajectory_samples
 
 
 def main():
@@ -34,7 +37,7 @@ def main():
 
     # Load real trajectory data: (num_samples, 2 agents, 10 timesteps, 5 features)
     # Keep the model input layout as 2 agents x 10 timesteps x 2 coordinates (= 40 dims).
-    data_file = str(ROOT) + os.sep + "TrajFlow_exp" + os.sep + "Data" + os.sep + "Inputs.npy"
+    data_file = str(EXPERIMENTS) + os.sep + "TrajFlowExperiment" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
     batch_size = 4
@@ -46,7 +49,11 @@ def main():
     sigma = 0.1
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
-        clustering=ClusteringParameters(max_num_clusters=3, coverage=0.99),
+        clustering=ClusteringParameters(
+            max_num_clusters=3,
+            coverage=0.7,
+            set_type="TimeStepHyperrectangles",
+        ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
 
@@ -80,8 +87,30 @@ def main():
         x=x,
         mc_samples=mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
-        output_dir=ROOT / "outputs",
+        output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
+    )
+
+    chart_paths += plot_timestep_rectangles_visualization(
+        x=x,
+        mc_samples=mc_samples,
+        clusterized_mc_samples=clusterized_mc_samples,
+        region=smoother.regions,
+        output_dir=EXPERIMENTS / "data" / "figures",
+        num_input_agents=2,
+        x_index=0,
+    )
+
+    num_output_timesteps = smoother.regions.lower.shape[-1] // 2
+    chart_paths += plot_timestep_rectangles_visualization(
+        x=x,
+        mc_samples=mc_samples,
+        clusterized_mc_samples=clusterized_mc_samples,
+        region=smoother.regions,
+        output_dir=EXPERIMENTS / "data" / "figures",
+        num_input_agents=2,
+        x_index=0,
+        timesteps=[0, num_output_timesteps - 1],
     )
     
 

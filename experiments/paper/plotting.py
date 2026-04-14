@@ -4,6 +4,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.colors import to_rgba
 import matplotlib.transforms as mtransforms
 import numpy as np
 import torch
@@ -346,6 +347,140 @@ def plot_trajectory_samples(
 	fig.tight_layout()
 	fig_path = output_dir / "trajectory_samples_comparison.pdf"
 	fig.savefig(fig_path, dpi=180)
+	plt.close(fig)
+
+	return [fig_path]
+
+
+def plot_timestep_rectangles_visualization(
+	x: torch.Tensor,
+	mc_samples: torch.Tensor,
+	clusterized_mc_samples: torch.Tensor,
+	region,
+	output_dir: Path,
+	num_input_agents: int = 2,
+	x_index: int = 0,
+	timesteps: list[int] | None = None,
+) -> list[Path]:
+	"""Plot timestep-wise certified rectangles for a single input trajectory.
+
+	When *timesteps* is given with exactly two entries, the left panel shows
+	rectangles for the first entry and the right panel for the second.
+	Otherwise both panels show all requested timesteps.
+	"""
+	output_dir.mkdir(parents=True, exist_ok=True)
+
+	raw = _reshape_trajectory_samples(mc_samples)
+	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
+	x_np = _to_numpy(x)
+
+	if not (0 <= x_index < raw.shape[0]):
+		raise ValueError(f"x_index must be in [0, {raw.shape[0] - 1}]")
+	if x_np.ndim != 2 or x_np.shape[1] % (2 * num_input_agents) != 0:
+		raise ValueError("x must have shape (nx, num_input_agents * num_input_timesteps * 2)")
+
+	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
+	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
+
+	if region.lower.shape[-1] % 2 != 0:
+		raise ValueError("Expected region output dimension arranged as [x1,y1,...,xT,yT]")
+
+	# Use one input to keep rectangles readable.
+	raw_i = raw[x_index]
+	clusterized_i = clusterized[x_index]
+	x_traj_i = x_traj[x_index]
+
+	# Region boxes: (k, 2T) -> (k, T, 2)
+	lower = _to_numpy(region.lower[x_index]).reshape(region.lower.shape[1], -1, 2)
+	upper = _to_numpy(region.upper[x_index]).reshape(region.upper.shape[1], -1, 2)
+	num_clusters = lower.shape[0]
+	num_timesteps = lower.shape[1]
+
+	if timesteps is None:
+		timesteps_to_plot = list(range(num_timesteps))
+	else:
+		timesteps_to_plot = timesteps
+
+	# Split timesteps across panels when exactly two are requested.
+	split_panels = timesteps is not None and len(timesteps_to_plot) == 2
+
+	plt.rcParams.update({
+		"text.usetex": True,
+		"font.family": "serif",
+		"font.serif": ["Computer Modern Roman"],
+	})
+
+	fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), sharex=True, sharey=True)
+	ax_left, ax_right = axes
+
+	all_x = np.concatenate((raw_i[:, :, 0].reshape(-1), clusterized_i[:, :, 0].reshape(-1), x_traj_i[:, :, 0].reshape(-1)))
+	all_y = np.concatenate((raw_i[:, :, 1].reshape(-1), clusterized_i[:, :, 1].reshape(-1), x_traj_i[:, :, 1].reshape(-1)))
+	x_min, x_max = np.min(all_x), np.max(all_x)
+	y_min, y_max = np.min(all_y), np.max(all_y)
+	x_pad = max((x_max - x_min) * 0.05, 1e-6)
+	y_pad = max((y_max - y_min) * 0.05, 1e-6)
+	x_lim = (x_min - x_pad, x_max + x_pad)
+	y_lim = (y_min - y_pad, y_max + y_pad)
+
+	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
+	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
+
+	_plot_street_marks(ax_left, x_extent=x_extent, y_extent=y_extent)
+	_plot_street_marks(ax_right, x_extent=x_extent, y_extent=y_extent)
+
+	for j in range(raw_i.shape[0]):
+		traj = raw_i[j]
+		ax_left.plot(traj[:, 0], traj[:, 1], color="#1B5E20", alpha=0.09, linewidth=0.8, zorder=1)
+		traj_cluster = clusterized_i[j]
+		ax_right.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#66BB6A", alpha=0.20, linewidth=0.9, zorder=1)
+
+	cluster_colors = ["#E31A1C", "#1F78B4", "#33A02C", "#FDBF6F", "#FF7F00"]
+	for c in range(num_clusters):
+		color = cluster_colors[c % len(cluster_colors)]
+		if split_panels:
+			# Left panel: first timestep; right panel: second timestep.
+			for panel_ax, t in ((ax_left, timesteps_to_plot[0]), (ax_right, timesteps_to_plot[1])):
+				x_lo, y_lo = lower[c, t]
+				x_hi, y_hi = upper[c, t]
+				w, h = x_hi - x_lo, y_hi - y_lo
+				face = to_rgba(color, alpha=0.10)
+				rect = mpatches.Rectangle(
+					(x_lo, y_lo), w, h,
+					edgecolor=color, facecolor=face,
+					linewidth=1.8, linestyle="-", zorder=2,
+				)
+				panel_ax.add_patch(rect)
+		else:
+			for t in timesteps_to_plot:
+				x_lo, y_lo = lower[c, t]
+				x_hi, y_hi = upper[c, t]
+				w, h = x_hi - x_lo, y_hi - y_lo
+				face = to_rgba(color, alpha=0.10)
+				for ax in (ax_left, ax_right):
+					rect = mpatches.Rectangle(
+						(x_lo, y_lo), w, h,
+						edgecolor=color, facecolor=face,
+						linewidth=1.0, linestyle="-", zorder=2,
+					)
+					ax.add_patch(rect)
+
+	# Input trajectory markers for context.
+	agent_colors = ("#1B5E20", "#0B3C5D")
+	for agent_idx in range(num_input_agents):
+		agent_traj = x_traj_i[agent_idx]
+		color = agent_colors[agent_idx % len(agent_colors)]
+		ax_left.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
+		ax_right.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
+
+	for ax in (ax_left, ax_right):
+		ax.set_xlim(*x_lim)
+		ax.set_ylim(*y_lim)
+		ax.grid(alpha=0.25, linestyle=":")
+
+	fig.tight_layout()
+	suffix = "" if timesteps is None else "_t" + "_".join(str(t) for t in timesteps_to_plot)
+	fig_path = output_dir / f"timestep_rectangles_visualization{suffix}.pdf"
+	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
 	plt.close(fig)
 
 	return [fig_path]

@@ -7,9 +7,12 @@ import torch
 
 # Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
-SRC = ROOT.parent / "src"
+EXPERIMENTS = ROOT.parent
+SRC = EXPERIMENTS.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(EXPERIMENTS) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENTS))
 
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.distributions import MultivariateGaussian
@@ -99,7 +102,7 @@ def main():
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
         plot_region_shading=plot_region_shading,
-        output_dir=ROOT / "outputs",
+        output_dir=EXPERIMENTS / "data" / "figures",
     )
 
     # Robustness certification
