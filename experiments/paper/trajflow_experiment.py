@@ -68,6 +68,25 @@ def main():
     radius = 0.001 * torch.ones((x.shape[0], 1), dtype=x.dtype)
     certificate = smoother.robust_certification(radius=radius)
 
+    # Single-cluster smoother for comparison.
+    params_single = Parameters(
+        smoothing=SmoothingParameters(N=10, alpha=0.35),
+        clustering=ClusteringParameters(
+            max_num_clusters=1,
+            coverage=0.7,
+            set_type="TimeStepHyperrectangles",
+        ),
+        confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
+    )
+
+    smoother_single = GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=x,
+        sigma=sigma,
+        parameters=params_single,
+    )
+    smoother_single.smooth()
+
 
     smoothing_distribution = MultivariateGaussian(
         mean=torch.zeros(x.shape[-1], dtype=x.dtype), 
@@ -81,11 +100,13 @@ def main():
         num_samples=100
     )
 
+    single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=100)
     clusterized_mc_samples = smoother.monte_carlo(num_simulations=100)
 
     chart_paths = plot_trajectory_samples(
         x=x,
         mc_samples=mc_samples,
+        single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
@@ -94,8 +115,10 @@ def main():
     chart_paths += plot_timestep_rectangles_visualization(
         x=x,
         mc_samples=mc_samples,
+        single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
+        single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
         x_index=0,
@@ -105,8 +128,10 @@ def main():
     chart_paths += plot_timestep_rectangles_visualization(
         x=x,
         mc_samples=mc_samples,
+        single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
+        single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
         x_index=0,

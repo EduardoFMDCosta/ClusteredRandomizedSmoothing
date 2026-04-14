@@ -202,6 +202,7 @@ def _plot_car_icon(
 def plot_trajectory_samples(
 	x: torch.Tensor,
 	mc_samples: torch.Tensor,
+	single_cluster_mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
 	output_dir: Path,
 	num_input_agents: int = 2,
@@ -212,6 +213,8 @@ def plot_trajectory_samples(
 		x: Tensor (nx, num_input_agents * num_input_timesteps * 2) containing
 		   flattened input trajectories used for dashed overlays.
 		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
+		single_cluster_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps)
+		   from a smoother with max_num_clusters=1.
 		clusterized_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		output_dir: Folder to save charts.
 		num_input_agents: Number of agents encoded in x.
@@ -219,6 +222,7 @@ def plot_trajectory_samples(
 	output_dir.mkdir(parents=True, exist_ok=True)
 
 	raw = _reshape_trajectory_samples(mc_samples)
+	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
 	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
 	x_np = _to_numpy(x)
 	if num_input_agents < 1:
@@ -237,13 +241,14 @@ def plot_trajectory_samples(
 
 	nx, num_samples, _, _ = raw.shape
 	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 2, figsize=(_w, 0.55 * _w * nx), sharex=True, sharey=True)
+	fig, axes = plt.subplots(nx, 3, figsize=(_w, 0.55 * _w * nx), sharex=True, sharey=True)
 	if nx == 1:
 		axes = np.array([axes])
 
 	all_x = np.concatenate(
 		(
 			raw[:, :, :, 0].reshape(-1),
+			single_cluster[:, :, :, 0].reshape(-1),
 			clusterized[:, :, :, 0].reshape(-1),
 			x_traj[:, :, :, 0].reshape(-1),
 		)
@@ -251,6 +256,7 @@ def plot_trajectory_samples(
 	all_y = np.concatenate(
 		(
 			raw[:, :, :, 1].reshape(-1),
+			single_cluster[:, :, :, 1].reshape(-1),
 			clusterized[:, :, :, 1].reshape(-1),
 			x_traj[:, :, :, 1].reshape(-1),
 		)
@@ -269,9 +275,11 @@ def plot_trajectory_samples(
 
 	for i in range(nx):
 		ax_raw = axes[i, 0]
-		ax_cluster = axes[i, 1]
+		ax_single = axes[i, 1]
+		ax_cluster = axes[i, 2]
 
 		_plot_street_marks(ax_raw, x_extent=x_extent, y_extent=y_extent)
+		_plot_street_marks(ax_single, x_extent=x_extent, y_extent=y_extent)
 		_plot_street_marks(ax_cluster, x_extent=x_extent, y_extent=y_extent)
 
 		for j in range(num_samples):
@@ -284,6 +292,17 @@ def plot_trajectory_samples(
 				linewidth=0.9,
 				zorder=1,
 				label="Original model" if j == 0 else None,
+			)
+
+			traj_single = single_cluster[i, j]
+			ax_single.plot(
+				traj_single[:, 0],
+				traj_single[:, 1],
+				color="#FFA726",
+				alpha=0.35,
+				linewidth=1.0,
+				zorder=1,
+				label="Smoothed (1 cluster)" if j == 0 else None,
 			)
 
 			traj_cluster = clusterized[i, j]
@@ -315,44 +334,41 @@ def plot_trajectory_samples(
 				zorder=6,
 				label=label,
 			)
-			ax_cluster.plot(
-				agent_traj[:, 0],
-				agent_traj[:, 1],
-				color=color,
-				linestyle="None",
-				marker="o",
-				markersize=2.0,
-				markerfacecolor=color,
-				markeredgecolor=color,
-				markeredgewidth=0.2,
-				zorder=5,
-			)
+			for ax_mid in (ax_single, ax_cluster):
+				ax_mid.plot(
+					agent_traj[:, 0],
+					agent_traj[:, 1],
+					color=color,
+					linestyle="None",
+					marker="o",
+					markersize=2.0,
+					markerfacecolor=color,
+					markeredgecolor=color,
+					markeredgewidth=0.2,
+					zorder=5,
+				)
 
 			next_idx = 1 if agent_traj.shape[0] > 1 else 0
-			_plot_car_icon(
-				ax_raw,
-				start=agent_traj[0],
-				next_point=agent_traj[next_idx],
-				color=color,
-				car_length=car_size,
-			)
-			_plot_car_icon(
-				ax_cluster,
-				start=agent_traj[0],
-				next_point=agent_traj[next_idx],
-				color=color,
-				car_length=car_size,
-			)
+			for ax_car in (ax_raw, ax_single, ax_cluster):
+				_plot_car_icon(
+					ax_car,
+					start=agent_traj[0],
+					next_point=agent_traj[next_idx],
+					color=color,
+					car_length=car_size,
+				)
 
-		for ax in (ax_raw, ax_cluster):
+		for ax in (ax_raw, ax_single, ax_cluster):
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
 			ax.grid(alpha=0.25, linestyle=":")
 
+		ax_single.tick_params(axis="y", which="both", left=False, labelleft=False)
 		ax_cluster.tick_params(axis="y", which="both", left=False, labelleft=False)
 
 		if i == 0:
 			ax_raw.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
+			ax_single.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
 			ax_cluster.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
 
 	fig.supxlabel("x")
@@ -368,8 +384,10 @@ def plot_trajectory_samples(
 def plot_timestep_rectangles_visualization(
 	x: torch.Tensor,
 	mc_samples: torch.Tensor,
+	single_cluster_mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
 	region,
+	single_cluster_region,
 	output_dir: Path,
 	num_input_agents: int = 2,
 	x_index: int = 0,
@@ -377,13 +395,14 @@ def plot_timestep_rectangles_visualization(
 ) -> list[Path]:
 	"""Plot timestep-wise certified rectangles for a single input trajectory.
 
-	When *timesteps* is given with exactly two entries, the left panel shows
-	rectangles for the first entry and the right panel for the second.
-	Otherwise both panels show all requested timesteps.
+	Three columns are shown: raw trajectories with multi-cluster rectangles (left),
+	single-cluster smoothed trajectories with single-cluster rectangles (middle),
+	and multi-cluster smoothed trajectories with multi-cluster rectangles (right).
 	"""
 	output_dir.mkdir(parents=True, exist_ok=True)
 
 	raw = _reshape_trajectory_samples(mc_samples)
+	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
 	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
 	x_np = _to_numpy(x)
 
@@ -400,6 +419,7 @@ def plot_timestep_rectangles_visualization(
 
 	# Use one input to keep rectangles readable.
 	raw_i = raw[x_index]
+	single_cluster_i = single_cluster[x_index]
 	clusterized_i = clusterized[x_index]
 	x_traj_i = x_traj[x_index]
 
@@ -409,25 +429,26 @@ def plot_timestep_rectangles_visualization(
 	num_clusters = lower.shape[0]
 	num_timesteps = lower.shape[1]
 
+	sc_lower = _to_numpy(single_cluster_region.lower[x_index]).reshape(single_cluster_region.lower.shape[1], -1, 2)
+	sc_upper = _to_numpy(single_cluster_region.upper[x_index]).reshape(single_cluster_region.upper.shape[1], -1, 2)
+	sc_num_clusters = sc_lower.shape[0]
+
 	if timesteps is None:
 		timesteps_to_plot = list(range(num_timesteps))
 	else:
 		timesteps_to_plot = timesteps
-
-	# Split timesteps across panels when exactly two are requested.
-	split_panels = timesteps is not None and len(timesteps_to_plot) == 2
 
 	plt.rcParams.update({
 		"text.usetex": True,
 		"font.serif": ["Computer Modern Roman"],
 	})
 
-	_w = 0.80 * TEXTWIDTH
-	fig, axes = plt.subplots(1, 2, figsize=(_w, 0.50 * _w), sharex=True, sharey=True)
-	ax_left, ax_right = axes
+	_w = 1.20 * TEXTWIDTH
+	fig, axes = plt.subplots(1, 3, figsize=(_w, 0.33 * _w), sharex=True, sharey=True)
+	ax_left, ax_mid, ax_right = axes
 
-	all_x = np.concatenate((raw_i[:, :, 0].reshape(-1), clusterized_i[:, :, 0].reshape(-1), x_traj_i[:, :, 0].reshape(-1)))
-	all_y = np.concatenate((raw_i[:, :, 1].reshape(-1), clusterized_i[:, :, 1].reshape(-1), x_traj_i[:, :, 1].reshape(-1)))
+	all_x = np.concatenate((raw_i[:, :, 0].reshape(-1), single_cluster_i[:, :, 0].reshape(-1), clusterized_i[:, :, 0].reshape(-1), x_traj_i[:, :, 0].reshape(-1)))
+	all_y = np.concatenate((raw_i[:, :, 1].reshape(-1), single_cluster_i[:, :, 1].reshape(-1), clusterized_i[:, :, 1].reshape(-1), x_traj_i[:, :, 1].reshape(-1)))
 	x_min, x_max = np.min(all_x), np.max(all_x)
 	y_min, y_max = np.min(all_y), np.max(all_y)
 	x_pad = max((x_max - x_min) * 0.05, 1e-6)
@@ -438,54 +459,61 @@ def plot_timestep_rectangles_visualization(
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
-	_plot_street_marks(ax_left, x_extent=x_extent, y_extent=y_extent)
-	_plot_street_marks(ax_right, x_extent=x_extent, y_extent=y_extent)
+	for ax in (ax_left, ax_mid, ax_right):
+		_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
 
 	for j in range(raw_i.shape[0]):
 		traj = raw_i[j]
 		ax_left.plot(traj[:, 0], traj[:, 1], color="#1B5E20", alpha=0.09, linewidth=0.8, zorder=1)
+		traj_single = single_cluster_i[j]
+		ax_mid.plot(traj_single[:, 0], traj_single[:, 1], color="#FFA726", alpha=0.20, linewidth=0.9, zorder=1)
 		traj_cluster = clusterized_i[j]
 		ax_right.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#66BB6A", alpha=0.20, linewidth=0.9, zorder=1)
 
 	cluster_colors = ["#E31A1C", "#1F78B4", "#33A02C", "#FDBF6F", "#FF7F00"]
+
+	# Draw multi-cluster rectangles on left and right panels.
 	for c in range(num_clusters):
 		color = cluster_colors[c % len(cluster_colors)]
-		if split_panels:
-			# Left panel: first timestep; right panel: second timestep.
-			for panel_ax, t in ((ax_left, timesteps_to_plot[0]), (ax_right, timesteps_to_plot[1])):
-				x_lo, y_lo = lower[c, t]
-				x_hi, y_hi = upper[c, t]
-				w, h = x_hi - x_lo, y_hi - y_lo
-				face = to_rgba(color, alpha=0.10)
+		for t in timesteps_to_plot:
+			x_lo, y_lo = lower[c, t]
+			x_hi, y_hi = upper[c, t]
+			w, h = x_hi - x_lo, y_hi - y_lo
+			face = to_rgba(color, alpha=0.10)
+			lw = 1.8 if len(timesteps_to_plot) <= 2 else 1.0
+			for ax in (ax_left, ax_right):
 				rect = mpatches.Rectangle(
 					(x_lo, y_lo), w, h,
 					edgecolor=color, facecolor=face,
-					linewidth=1.8, linestyle="-", zorder=2,
+					linewidth=lw, linestyle="-", zorder=2,
 				)
-				panel_ax.add_patch(rect)
-		else:
-			for t in timesteps_to_plot:
-				x_lo, y_lo = lower[c, t]
-				x_hi, y_hi = upper[c, t]
-				w, h = x_hi - x_lo, y_hi - y_lo
-				face = to_rgba(color, alpha=0.10)
-				for ax in (ax_left, ax_right):
-					rect = mpatches.Rectangle(
-						(x_lo, y_lo), w, h,
-						edgecolor=color, facecolor=face,
-						linewidth=1.0, linestyle="-", zorder=2,
-					)
-					ax.add_patch(rect)
+				ax.add_patch(rect)
+
+	# Draw single-cluster rectangles on middle panel.
+	for c in range(sc_num_clusters):
+		color = cluster_colors[c % len(cluster_colors)]
+		for t in timesteps_to_plot:
+			x_lo, y_lo = sc_lower[c, t]
+			x_hi, y_hi = sc_upper[c, t]
+			w, h = x_hi - x_lo, y_hi - y_lo
+			face = to_rgba(color, alpha=0.10)
+			lw = 1.8 if len(timesteps_to_plot) <= 2 else 1.0
+			rect = mpatches.Rectangle(
+				(x_lo, y_lo), w, h,
+				edgecolor=color, facecolor=face,
+				linewidth=lw, linestyle="-", zorder=2,
+			)
+			ax_mid.add_patch(rect)
 
 	# Input trajectory markers for context.
 	agent_colors = ("#1B5E20", "#0B3C5D")
 	for agent_idx in range(num_input_agents):
 		agent_traj = x_traj_i[agent_idx]
 		color = agent_colors[agent_idx % len(agent_colors)]
-		ax_left.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
-		ax_right.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
+		for ax in (ax_left, ax_mid, ax_right):
+			ax.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
 
-	for ax in (ax_left, ax_right):
+	for ax in (ax_left, ax_mid, ax_right):
 		ax.set_xlim(*x_lim)
 		ax.set_ylim(*y_lim)
 		ax.grid(alpha=0.25, linestyle=":")
