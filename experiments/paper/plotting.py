@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 TEXTWIDTH = 5.5  # inches
+HALFWIDTH = 0.50 * TEXTWIDTH  # for \begin{minipage}{0.50\textwidth}
 
 plt.rcParams.update(
 	{
@@ -24,8 +25,8 @@ plt.rcParams.update(
 		"font.size": 10,
 		"axes.labelsize": 10,
 		"axes.titlesize": 10,
-		"xtick.labelsize": 9,
-		"ytick.labelsize": 9,
+		"xtick.labelsize": 7,
+		"ytick.labelsize": 7,
 		"legend.fontsize": 9,
 	}
 )
@@ -241,7 +242,7 @@ def plot_trajectory_samples(
 
 	nx, num_samples, _, _ = raw.shape
 	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 3, figsize=(_w, 0.55 * _w * nx), sharex=True, sharey=True)
+	fig, axes = plt.subplots(nx, 3, figsize=(_w, 0.30 * _w * nx), sharex=True, sharey=True)
 	if nx == 1:
 		axes = np.array([axes])
 
@@ -287,33 +288,33 @@ def plot_trajectory_samples(
 			ax_raw.plot(
 				traj[:, 0],
 				traj[:, 1],
-				color="#1B5E20",
+				color="#1B2A4A",
 				alpha=0.16,
 				linewidth=0.9,
 				zorder=1,
-				label="Original model" if j == 0 else None,
+				label=None,
 			)
 
 			traj_single = single_cluster[i, j]
 			ax_single.plot(
 				traj_single[:, 0],
 				traj_single[:, 1],
-				color="#FFA726",
+				color="#D55E00",
 				alpha=0.35,
 				linewidth=1.0,
 				zorder=1,
-				label="Smoothed (1 cluster)" if j == 0 else None,
+				label=None,
 			)
 
 			traj_cluster = clusterized[i, j]
 			ax_cluster.plot(
 				traj_cluster[:, 0],
 				traj_cluster[:, 1],
-				color="#66BB6A",
+				color="#009E73",
 				alpha=0.35,
 				linewidth=1.0,
 				zorder=1,
-				label="Smoothed model" if j == 0 else None,
+				label=None,
 			)
 
 		agent_colors = ("#1B5E20", "#0B3C5D")
@@ -361,18 +362,17 @@ def plot_trajectory_samples(
 		for ax in (ax_raw, ax_single, ax_cluster):
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
-			ax.grid(alpha=0.25, linestyle=":")
 
 		ax_single.tick_params(axis="y", which="both", left=False, labelleft=False)
 		ax_cluster.tick_params(axis="y", which="both", left=False, labelleft=False)
 
 		if i == 0:
-			ax_raw.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
-			ax_single.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
-			ax_cluster.legend(loc="upper left", fontsize=7, handlelength=1.5, handletextpad=0.4)
+			ax_raw.set_title("Original", fontsize=8)
+			ax_single.set_title("Rekavandi et al, 2024", fontsize=8)
+			ax_cluster.set_title("Ours", fontsize=8)
 
-	fig.supxlabel("x")
-	fig.supylabel("y")
+	fig.supxlabel("x", fontsize=8)
+	fig.supylabel("y", fontsize=8)
 	fig.tight_layout()
 	fig_path = output_dir / "trajectory_samples_comparison.pdf"
 	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
@@ -441,9 +441,15 @@ def plot_timestep_rectangles_visualization(
 	plt.rcParams.update({
 		"text.usetex": True,
 		"font.serif": ["Computer Modern Roman"],
+		"font.size": 10,
+		"axes.labelsize": 10,
+		"axes.titlesize": 10,
+		"xtick.labelsize": 9,
+		"ytick.labelsize": 9,
+		"legend.fontsize": 9,
 	})
 
-	_w = 1.20 * TEXTWIDTH
+	_w = TEXTWIDTH
 	fig, axes = plt.subplots(1, 3, figsize=(_w, 0.33 * _w), sharex=True, sharey=True)
 	ax_left, ax_mid, ax_right = axes
 
@@ -464,15 +470,15 @@ def plot_timestep_rectangles_visualization(
 
 	for j in range(raw_i.shape[0]):
 		traj = raw_i[j]
-		ax_left.plot(traj[:, 0], traj[:, 1], color="#1B5E20", alpha=0.09, linewidth=0.8, zorder=1)
+		ax_left.plot(traj[:, 0], traj[:, 1], color="#1B2A4A", alpha=0.09, linewidth=0.8, zorder=1)
 		traj_single = single_cluster_i[j]
-		ax_mid.plot(traj_single[:, 0], traj_single[:, 1], color="#FFA726", alpha=0.20, linewidth=0.9, zorder=1)
+		ax_mid.plot(traj_single[:, 0], traj_single[:, 1], color="#D55E00", alpha=0.20, linewidth=0.9, zorder=1)
 		traj_cluster = clusterized_i[j]
-		ax_right.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#66BB6A", alpha=0.20, linewidth=0.9, zorder=1)
+		ax_right.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#009E73", alpha=0.20, linewidth=0.9, zorder=1)
 
 	cluster_colors = ["#E31A1C", "#1F78B4", "#33A02C", "#FDBF6F", "#FF7F00"]
 
-	# Draw multi-cluster rectangles on left and right panels.
+	# Draw multi-cluster rectangles on right panel only.
 	for c in range(num_clusters):
 		color = cluster_colors[c % len(cluster_colors)]
 		for t in timesteps_to_plot:
@@ -481,13 +487,12 @@ def plot_timestep_rectangles_visualization(
 			w, h = x_hi - x_lo, y_hi - y_lo
 			face = to_rgba(color, alpha=0.10)
 			lw = 1.8 if len(timesteps_to_plot) <= 2 else 1.0
-			for ax in (ax_left, ax_right):
-				rect = mpatches.Rectangle(
-					(x_lo, y_lo), w, h,
-					edgecolor=color, facecolor=face,
-					linewidth=lw, linestyle="-", zorder=2,
-				)
-				ax.add_patch(rect)
+			rect = mpatches.Rectangle(
+				(x_lo, y_lo), w, h,
+				edgecolor=color, facecolor=face,
+				linewidth=lw, linestyle="-", zorder=2,
+			)
+			ax_right.add_patch(rect)
 
 	# Draw single-cluster rectangles on middle panel.
 	for c in range(sc_num_clusters):
@@ -516,7 +521,6 @@ def plot_timestep_rectangles_visualization(
 	for ax in (ax_left, ax_mid, ax_right):
 		ax.set_xlim(*x_lim)
 		ax.set_ylim(*y_lim)
-		ax.grid(alpha=0.25, linestyle=":")
 
 	fig.tight_layout()
 	suffix = "" if timesteps is None else "_t" + "_".join(str(t) for t in timesteps_to_plot)
@@ -538,7 +542,7 @@ def _add_region_patch(ax: plt.Axes, cluster: Cluster, cluster_index: int, color:
 			radius=radius,
 			fill=False,
 			edgecolor=color,
-			linewidth=2.0,
+			linewidth=1.4,
 			linestyle="-",
 		)
 	else:
@@ -549,7 +553,7 @@ def _add_region_patch(ax: plt.Axes, cluster: Cluster, cluster_index: int, color:
 			*(upper - lower),
 			fill=False,
 			edgecolor=color,
-			linewidth=2.0,
+			linewidth=1.4,
 			linestyle="-",
 		)
 
@@ -575,16 +579,22 @@ def plot_comparison(
 	plt.rcParams.update({
 		"text.usetex": True,
 		"font.serif": ["Computer Modern Roman"],
+		"font.size": 8,
+		"axes.labelsize": 8,
+		"axes.titlesize": 8,
+		"xtick.labelsize": 7,
+		"ytick.labelsize": 7,
+		"legend.fontsize": 7,
 	})
 
 	colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
 	paths: list[Path] = []
 
 	for coverage in coverages:
-		_w = 0.80 * TEXTWIDTH
+		_w = HALFWIDTH
 		fig, axes = plt.subplots(
 			1, 2,
-			figsize=(_w, 0.50 * _w),
+			figsize=(_w, 0.55 * _w),
 			sharex=True,
 			sharey=True,
 		)
@@ -600,8 +610,8 @@ def plot_comparison(
 				ax.scatter(
 					cluster_points[:, 0],
 					cluster_points[:, 1],
-					s=12,
-					alpha=0.1,
+					s=8,
+					alpha=0.05,
 					color=colors[j % len(colors)],
 				)
 				centroid = cluster.centroids[0, j].detach().cpu().numpy()
@@ -609,7 +619,7 @@ def plot_comparison(
 					centroid[0],
 					centroid[1],
 					marker="x",
-					s=18,
+					s=12,
 					linewidths=1.2,
 					color=colors[j % len(colors)],
 				)
@@ -654,16 +664,16 @@ def plot_bound_clusterized_grid(
 				y = y_data[(alpha, p_v, n)]
 				ax.plot(
 					ratio_values, y,
-					linewidth=2.0,
+					linewidth=1.5,
 					color=colors[n],
 					label=rf"$N={n}$",
 				)
 
-			ax.set_title(rf"$\alpha={alpha},\ p_{{\mathcal{{V}}}}={p_v}$")
+			ax.set_title(rf"$\alpha={alpha},\ p_{{\mathcal{{V}}}}={p_v}$", fontsize=8)
 			ax.grid(alpha=0.3, linestyle=":")
 			ax.set_yticks([0.0, 0.5, 1.0])
 
-	fig.supylabel("Certified probability", fontsize=plt.rcParams["axes.labelsize"])
+	fig.supylabel("Certified probability", fontsize=8)
 
 	fig.tight_layout()
 	fig.subplots_adjust(bottom=0.22)
@@ -672,7 +682,7 @@ def plot_bound_clusterized_grid(
 		0.5, 0.12,
 		r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$",
 		ha="center", va="center",
-		fontsize=plt.rcParams["axes.labelsize"],
+		fontsize=8,
 	)
 
 	handles, labels = axes[0, 0].get_legend_handles_labels()
