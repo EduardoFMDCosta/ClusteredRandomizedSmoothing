@@ -601,7 +601,7 @@ def plot_comparison(
 					cluster_points[:, 0],
 					cluster_points[:, 1],
 					s=12,
-					alpha=0.45,
+					alpha=0.1,
 					color=colors[j % len(colors)],
 				)
 				centroid = cluster.centroids[0, j].detach().cpu().numpy()
@@ -609,8 +609,8 @@ def plot_comparison(
 					centroid[0],
 					centroid[1],
 					marker="x",
-					s=90,
-					linewidths=2.2,
+					s=18,
+					linewidths=1.2,
 					color=colors[j % len(colors)],
 				)
 				_add_region_patch(ax=ax, cluster=cluster, cluster_index=j, color=colors[j % len(colors)])
