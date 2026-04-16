@@ -460,6 +460,7 @@ class TrajFlow(nn.Module):
         raise NotImplementedError
 
     def _encode_conditionals(self, x, T, scene=None):
+        self.t_unique = self.t_unique.to(x.device)
         x_in = x
         if self.rel_coords:
             x_in = x[...,1:,:] - x[...,:-1,:]

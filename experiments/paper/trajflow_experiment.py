@@ -45,8 +45,9 @@ def main():
     # Put the target agent in index 0 because TrajFlow predicts from agent slot 0.
     x_input = x_input[:,[1,0]]
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
+    u, start = stochastic_fn.pos_to_ctrl(x)
 
-    sigma = 0.1
+    sigma = 0.1 # sigma=1 would correspond to the maximum allowable deviation
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
         clustering=ClusteringParameters(
@@ -59,9 +60,10 @@ def main():
 
     smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=x,
+        x=u,
         sigma=sigma,
         parameters=params,
+        h=start,  # Pass the starting positions as helper variables for the stochastic function.
     )
 
     smoothed_distribution = smoother.smooth()
@@ -81,23 +83,25 @@ def main():
 
     smoother_single = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=x,
+        x=u,
         sigma=sigma,
         parameters=params_single,
+        h=start,  # Pass the starting positions as helper variables for the stochastic function.
     )
     smoother_single.smooth()
 
 
     smoothing_distribution = MultivariateGaussian(
-        mean=torch.zeros(x.shape[-1], dtype=x.dtype), 
-        cov=sigma ** 2 * torch.eye(x.shape[-1], dtype=x.dtype)
+        mean=torch.zeros(u.shape[-1], dtype=u.dtype), 
+        cov=sigma ** 2 * torch.eye(u.shape[-1], dtype=u.dtype)
     )
 
     # Monte Carlo simulation
     mc_samples = stochastic_fn.sample_from_noisy_inputs(
-        x=x,
+        x=u,
         smoothing_distribution=smoothing_distribution,
-        num_samples=100
+        num_samples=100,
+        h=start,  # Pass the starting positions as helper variables for the stochastic function.
     )
 
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=100)

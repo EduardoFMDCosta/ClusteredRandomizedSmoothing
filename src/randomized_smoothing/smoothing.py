@@ -41,9 +41,11 @@ class AlphaTrimmingSmoothing(Smoothing):
             x: torch.Tensor,
             smoothing_distribution: Distribution,
             parameters: Parameters,
+            h: list[torch.Tensor] = [],
         ):
         self.stochastic_function = stochastic_function
         self.x = x
+        self.h = h
         self.smoothing_distribution = smoothing_distribution
         self.parameters = parameters
 
@@ -54,7 +56,8 @@ class AlphaTrimmingSmoothing(Smoothing):
         raw_outputs = self.stochastic_function.sample_from_noisy_inputs(
             x=self.x,
             smoothing_distribution=self.smoothing_distribution,
-            num_samples=self.parameters.confidence.num_samples
+            num_samples=self.parameters.confidence.num_samples,
+            h=self.h,
         )
         return Cluster(outputs=raw_outputs, parameters=self.parameters.clustering)
 
@@ -62,7 +65,8 @@ class AlphaTrimmingSmoothing(Smoothing):
         outputs = self.stochastic_function.sample_from_noisy_inputs(
             x=self.x,
             smoothing_distribution=self.smoothing_distribution,
-            num_samples=self.parameters.smoothing.N
+            num_samples=self.parameters.smoothing.N,
+            h=self.h,
         )
         
         cluster = self.cluster
@@ -112,6 +116,7 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             x: torch.Tensor,
             sigma: float,
             parameters: Parameters,
+            h: list[torch.Tensor] = [],
         ):
         dimension = x.shape[-1]
         mean = torch.zeros(dimension, device=x.device, dtype=x.dtype)
@@ -123,10 +128,14 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             x=x,
             smoothing_distribution=smoothing_distribution,
             parameters=parameters,
+            h=h,
         )
 
     @staticmethod
-    def _compute_probability_given_radius(p: torch.Tensor, radius: float, sigma: float, is_lb: bool) -> torch.Tensor:
+    def _compute_probability_given_radius(p: torch.Tensor, radius: float | torch.Tensor, sigma: float, is_lb: bool) -> torch.Tensor:
+        if isinstance(radius, torch.Tensor):
+            radius = radius.to(device=p.device, dtype=p.dtype)
+        
         z = torch.special.ndtri(p)
         shifted = z - radius / sigma if is_lb else z + radius / sigma
         probs = 0.5 * (1.0 + torch.erf(shifted / math.sqrt(2.0)))
