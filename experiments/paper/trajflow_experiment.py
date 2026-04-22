@@ -47,12 +47,14 @@ def main():
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
     u, start = stochastic_fn.pos_to_ctrl(x)
 
-    sigma = 0.1 # sigma=1 would correspond to the maximum allowable deviation
+    sigma = 0.5 # sigma=1 would correspond to the maximum allowable deviation
+    coverage = 0.95
+
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
         clustering=ClusteringParameters(
             max_num_clusters=3,
-            coverage=0.7,
+            coverage=coverage,
             set_type="TimeStepHyperrectangles",
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
@@ -67,7 +69,7 @@ def main():
     )
 
     smoothed_distribution = smoother.smooth()
-    radius = 0.001 * torch.ones((x.shape[0], 1), dtype=x.dtype)
+    radius = 0.05 * torch.ones((x.shape[0], 1), dtype=x.dtype)
     certificate = smoother.robust_certification(radius=radius)
 
     # Single-cluster smoother for comparison.
@@ -75,7 +77,7 @@ def main():
         smoothing=SmoothingParameters(N=10, alpha=0.35),
         clustering=ClusteringParameters(
             max_num_clusters=1,
-            coverage=0.7,
+            coverage=coverage,
             set_type="TimeStepHyperrectangles",
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),

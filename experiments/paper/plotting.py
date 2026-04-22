@@ -453,8 +453,9 @@ def plot_timestep_rectangles_visualization(
 	fig, axes = plt.subplots(1, 3, figsize=(_w, 0.33 * _w), sharex=True, sharey=True)
 	ax_left, ax_mid, ax_right = axes
 
-	all_x = np.concatenate((raw_i[:, :, 0].reshape(-1), single_cluster_i[:, :, 0].reshape(-1), clusterized_i[:, :, 0].reshape(-1), x_traj_i[:, :, 0].reshape(-1)))
-	all_y = np.concatenate((raw_i[:, :, 1].reshape(-1), single_cluster_i[:, :, 1].reshape(-1), clusterized_i[:, :, 1].reshape(-1), x_traj_i[:, :, 1].reshape(-1)))
+	# Compute limits using all data (not just x_index) to match trajectory_samples figure
+	all_x = np.concatenate((raw[:, :, :, 0].reshape(-1), single_cluster[:, :, :, 0].reshape(-1), clusterized[:, :, :, 0].reshape(-1), x_traj[:, :, :, 0].reshape(-1)))
+	all_y = np.concatenate((raw[:, :, :, 1].reshape(-1), single_cluster[:, :, :, 1].reshape(-1), clusterized[:, :, :, 1].reshape(-1), x_traj[:, :, :, 1].reshape(-1)))
 	x_min, x_max = np.min(all_x), np.max(all_x)
 	y_min, y_max = np.min(all_y), np.max(all_y)
 	x_pad = max((x_max - x_min) * 0.05, 1e-6)
