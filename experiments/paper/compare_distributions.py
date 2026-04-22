@@ -14,13 +14,22 @@ if str(SRC) not in sys.path:
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
+from plotting import plot_experiment_results
+from stochastic_functions import (
+    AdditiveThreeMode1DGaussianMixture,
+    MultiplicativeThreeMode1DGaussianMixture,
+)
+
+from randomized_smoothing.dataclasses import (
+    ClusteringParameters,
+    ConfidenceParameters,
+    Parameters,
+    SmoothingParameters,
+)
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.smoothing import (
     GaussianAlphaTrimmingSmoothing,
 )
-from stochastic_functions import ThreeMode1DGaussianMixture
-from plotting import plot_experiment_results
 
 
 def main():
@@ -28,11 +37,11 @@ def main():
     plot_region_shading = False
 
     # Define stochastic function and inputs x
-    x = torch.tensor([[0.0]], dtype=torch.float64)
-    stochastic_fn = ThreeMode1DGaussianMixture(
-        locs=torch.tensor([-5.0, 0.0, 5.0], dtype=torch.float64),
-        probs=torch.tensor([0.40, 0.20, 0.40], dtype=torch.float64),
-        std=0.5,
+    x = torch.tensor([[2.0]], dtype=torch.float64)
+    stochastic_fn = MultiplicativeThreeMode1DGaussianMixture(
+        locs=torch.tensor([1.0, 0.0, 2.0], dtype=torch.float64),
+        probs=torch.tensor([0.20, 0.20, 0.60], dtype=torch.float64),
+        stds=torch.tensor([0.1, 0.1, 0.1], dtype=torch.float64),
     )
 
     # Define parameters
@@ -42,7 +51,7 @@ def main():
         alpha=0.45,
     )
     clustering_parameters = ClusteringParameters(
-        max_num_clusters=3,
+        max_num_clusters=2,
         coverage=coverage,
     )
     confidence_parameters = ConfidenceParameters(
