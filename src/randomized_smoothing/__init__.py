@@ -19,6 +19,7 @@ from .smoothing import (
 )
 from .stochastic import StochasticFunction
 from .clopper_pearson import ClopperPearsonInterval
+from .optimization import compute_total_prob_lower_bound, eval_f_m, robustness_bound
 
 __all__ = [
     # Core abstractions
@@ -35,6 +36,9 @@ __all__ = [
     "GaussianAlphaTrimmingSmoothing",
     "RobustnessCertificate",
     "ClopperPearsonInterval",
+    "compute_total_prob_lower_bound",
+    "eval_f_m",
+    "robustness_bound",
     # Clustering
     "Cluster",
     # Noise distributions

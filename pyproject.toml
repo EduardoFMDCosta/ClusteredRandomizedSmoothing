@@ -9,6 +9,8 @@ description = "Scientific prototype for stochastic smoothing with alpha trimming
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "cvxpy>=1.5",
+    "numpy>=2.0",
     "torch>=2.2",
 ]
 

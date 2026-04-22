@@ -121,7 +121,7 @@ def evaluate_setting(
 
     certified_radius = certificate.radius.squeeze(-1).detach().cpu()    # (nx,)
     certified_probs = certificate.probs.detach().cpu()                   # (nx, num_clusters)
-    total_certified_prob = certificate.probs.sum(dim=-1).detach().cpu()  # (nx,)
+    total_certified_prob = certificate.total_probs.detach().cpu()         # (nx,)
 
     # The output layout is assumed to be [x1, y1, x2, y2, ..., xT, yT].
     # Compute area per timestep from even/odd coordinate widths, sum over

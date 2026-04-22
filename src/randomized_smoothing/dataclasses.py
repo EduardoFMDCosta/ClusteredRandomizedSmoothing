@@ -75,3 +75,4 @@ class Parameters:
 class RobustnessCertificate:
     radius: torch.Tensor
     probs: torch.Tensor
+    total_probs: torch.Tensor

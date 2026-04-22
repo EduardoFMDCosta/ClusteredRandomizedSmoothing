@@ -3,13 +3,11 @@ import math
 import torch
 
 from randomized_smoothing.dataclasses import Parameters, RobustnessCertificate
+from randomized_smoothing.optimization import compute_total_prob_lower_bound, robustness_bound
 
 from .clopper_pearson import ClopperPearsonInterval
 from .distributions import Distribution, MixtureDirac, MultivariateGaussian
 from .stochastic import StochasticFunction
-from .utils import (
-    robustness_bound,
-)
 from .clusters import Cluster
     
 
@@ -160,6 +158,34 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
         )
 
 
+    def _compute_total_bound(
+        self,
+        probs_region: torch.Tensor,
+        probs_partition_lb: torch.Tensor,
+        probs_partition_ub: torch.Tensor,
+        num_samples: int,
+        alpha: float,
+    ) -> torch.Tensor:
+        probs_region_np = probs_region.detach().cpu().to(torch.float64).numpy()
+        probs_partition_lb_np = probs_partition_lb.detach().cpu().to(torch.float64).numpy()
+        probs_partition_ub_np = probs_partition_ub.detach().cpu().to(torch.float64).numpy()
+
+        total_bounds: list[float] = []
+        for p_R, p_lower, p_upper in zip(probs_region_np, probs_partition_lb_np, probs_partition_ub_np):
+            lower_bound, _, _ = compute_total_prob_lower_bound(
+                M=probs_region.shape[1],
+                N=num_samples,
+                alpha=alpha,
+                p_R=p_R,
+                p_V_lower=p_lower,
+                p_V_upper=p_upper,
+                K=5,
+            )
+            total_bounds.append(lower_bound)
+
+        return torch.tensor(total_bounds, device=probs_region.device, dtype=probs_region.dtype)
+
+
     def robust_certification(self, radius: torch.Tensor,) -> RobustnessCertificate:
         # Compute Clopper-Pearson lower bound
         cp = ClopperPearsonInterval(
@@ -202,7 +228,16 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             alpha=self.parameters.smoothing.alpha,
         )
 
+        total_probs = self._compute_total_bound(
+            probs_region=probs_region,
+            probs_partition_lb=probs_partition_lb,
+            probs_partition_ub=probs_partition_ub,
+            num_samples=self.parameters.smoothing.N,
+            alpha=self.parameters.smoothing.alpha,
+        )
+
         return RobustnessCertificate(
             radius=radius,
-            probs=certified_probs_per_cluster
+            probs=certified_probs_per_cluster,
+            total_probs=total_probs,
         )

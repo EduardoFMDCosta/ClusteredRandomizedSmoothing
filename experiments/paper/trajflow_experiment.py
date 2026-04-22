@@ -153,7 +153,7 @@ def main():
 
     print(f"certificate radius: {certificate.radius}")
     print(f"certificate probs: {certificate.probs}")
-    print(f"total prob: {certificate.probs.sum(dim=-1)}")
+    print(f"total prob: {certificate.total_probs}")
 
     print("")
     print("Saved charts:")

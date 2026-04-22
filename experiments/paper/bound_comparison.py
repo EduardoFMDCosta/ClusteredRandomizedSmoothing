@@ -12,7 +12,7 @@ SRC = EXPERIMENTS.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.utils import robustness_bound
+from randomized_smoothing.optimization import robustness_bound
 from plotting import plot_bound_clusterized_grid
 
 
