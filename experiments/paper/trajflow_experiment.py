@@ -23,6 +23,7 @@ from randomized_smoothing.dataclasses import ClusteringParameters, ConfidencePar
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
 from plotting import plot_timestep_rectangles_visualization, plot_trajectory_samples
+from plotting import plot_final_timestep_density
 
 
 def main():
@@ -40,8 +41,9 @@ def main():
     data_file = str(EXPERIMENTS) + os.sep + "TrajFlowExperiment" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
-    batch_size = 4
-    x_input = data[:batch_size, :, :, :2]  # Take first 4 samples, both agents, (x, y) coords only.
+    selected_indices = np.array([3, 4, 5, 50], dtype=int)
+    batch_size = selected_indices.shape[0]
+    x_input = data[selected_indices, :, :, :2]  # Take selected samples, both agents, (x, y) coords only.
     # Put the target agent in index 0 because TrajFlow predicts from agent slot 0.
     x_input = x_input[:,[1,0]]
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
@@ -56,6 +58,8 @@ def main():
             max_num_clusters=3,
             coverage=coverage,
             set_type="TimeStepHyperrectangles",
+            dbscan_eps=1.5,
+            dbscan_min_samples=100,
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
@@ -79,6 +83,8 @@ def main():
             max_num_clusters=1,
             coverage=coverage,
             set_type="TimeStepHyperrectangles",
+            dbscan_eps=1.5,
+            dbscan_min_samples=100,
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
@@ -98,7 +104,7 @@ def main():
         cov=sigma ** 2 * torch.eye(u.shape[-1], dtype=u.dtype)
     )
 
-    # Monte Carlo simulation
+    # Monte Carlo simulation for the two smoothed methods.
     mc_samples = stochastic_fn.sample_from_noisy_inputs(
         x=u,
         smoothing_distribution=smoothing_distribution,
@@ -106,41 +112,60 @@ def main():
         h=start,  # Pass the starting positions as helper variables for the stochastic function.
     )
 
+    # Original column should visualize f(x), not f(x + epsilon): repeat clean outputs.
+    original_clean = stochastic_fn(u, h=start)
+    original_mc_samples = original_clean.unsqueeze(1).expand(-1, 100, -1)
+
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=100)
     clusterized_mc_samples = smoother.monte_carlo(num_simulations=100)
 
     chart_paths = plot_trajectory_samples(
         x=x,
-        mc_samples=mc_samples,
+        mc_samples=original_mc_samples,
         single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
     )
 
+    chart_paths += plot_final_timestep_density(
+        x=x,
+        mc_samples=original_mc_samples,
+        single_cluster_mc_samples=single_cluster_mc_samples,
+        clusterized_mc_samples=clusterized_mc_samples,
+        output_dir=EXPERIMENTS / "data" / "figures",
+        num_input_agents=2,
+        # DBSCAN in 2-D endpoint space: eps in metres, separates distinct
+        # manoeuvre endpoints while grouping near-identical ones.
+        dbscan_eps=0.5,
+        dbscan_min_samples=5,
+        # Draw 1-sigma and 2-sigma confidence ellipses per cluster.
+        ellipse_sigmas=(1.0, 2.0),
+    )
+
     chart_paths += plot_timestep_rectangles_visualization(
         x=x,
-        mc_samples=mc_samples,
+        mc_samples=original_mc_samples,
         single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-        x_index=0,
+        x_index=3,
     )
 
     num_output_timesteps = smoother.regions.lower.shape[-1] // 2
     chart_paths += plot_timestep_rectangles_visualization(
         x=x,
-        mc_samples=mc_samples,
+        mc_samples=original_mc_samples,
         single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-        x_index=0,
+        x_index=3,
         timesteps=[0, num_output_timesteps - 1],
     )
     
