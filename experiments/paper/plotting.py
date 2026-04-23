@@ -138,6 +138,215 @@ def _reshape_trajectory_samples(samples: torch.Tensor) -> np.ndarray:
 	return arr.reshape(nx, num_samples, num_timesteps, 2)
 
 
+def _fit_gaussian_ellipses(
+	points: np.ndarray,
+	ax: plt.Axes,
+	color: str,
+	sigmas: tuple[float, ...] = (1.0, 2.0),
+) -> None:
+	"""Fit a 2-D Gaussian to ``points`` and overlay nested confidence ellipses.
+
+	For each value in ``sigmas`` an ellipse at that many standard deviations is
+	drawn. The ellipse axes are the principal axes of the sample covariance,
+	obtained via eigendecomposition.
+	"""
+	if points.shape[0] < 3:
+		return
+	mean = points.mean(axis=0)
+	cov = np.cov(points, rowvar=False)
+	if not np.all(np.isfinite(cov)) or np.linalg.matrix_rank(cov) < 2:
+		# Degenerate (e.g. all points collinear): skip ellipse.
+		return
+	eigenvalues, eigenvectors = np.linalg.eigh(cov)
+	eigenvalues = np.maximum(eigenvalues, 0.0)
+	# eigh returns eigenvalues in ascending order; index 1 = major axis.
+	angle = float(np.degrees(np.arctan2(eigenvectors[1, 1], eigenvectors[0, 1])))
+	for k, sigma in enumerate(sigmas):
+		width = 2.0 * sigma * float(np.sqrt(eigenvalues[1]))
+		height = 2.0 * sigma * float(np.sqrt(eigenvalues[0]))
+		ellipse = mpatches.Ellipse(
+			xy=mean,
+			width=width,
+			height=height,
+			angle=angle,
+			edgecolor=color,
+			facecolor=to_rgba(color, alpha=max(0.12 - 0.04 * k, 0.0)),
+			linewidth=1.6 - 0.3 * k,
+			linestyle="-",
+			zorder=3,
+		)
+		ax.add_patch(ellipse)
+	ax.plot(mean[0], mean[1], marker="+", markersize=7, color=color, linewidth=1.4, zorder=4)
+
+
+def plot_final_timestep_density(
+	x: torch.Tensor,
+	mc_samples: torch.Tensor,
+	single_cluster_mc_samples: torch.Tensor,
+	clusterized_mc_samples: torch.Tensor,
+	output_dir: Path,
+	num_input_agents: int = 2,
+	dbscan_eps: float = 0.5,
+	dbscan_min_samples: int = 5,
+	ellipse_sigmas: tuple[float, ...] = (1.0, 2.0),
+) -> list[Path]:
+	"""Plot per-cluster Gaussian density ellipses at the final prediction timestep.
+
+	For each input row and each smoother column (Original / single-cluster /
+	clusterized), the predicted endpoint cloud (last x,y position) is clustered
+	with DBSCAN in 2-D.  For every cluster a Gaussian is fitted and drawn as
+	nested confidence ellipses at ``ellipse_sigmas`` standard-deviation levels.
+
+	Args:
+		x: Tensor (nx, num_input_agents * num_input_timesteps * 2) – input
+		   trajectory context, used only for spatial reference markers.
+		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps) – raw samples.
+		single_cluster_mc_samples: same shape, single-cluster smoother.
+		clusterized_mc_samples: same shape, multi-cluster smoother.
+		output_dir: Directory to save the chart.
+		num_input_agents: Number of agents encoded in x.
+		dbscan_eps: DBSCAN neighbourhood radius in metres, applied in the 2-D
+		   endpoint space (much smaller than the 40-D trajectory eps).
+		dbscan_min_samples: Minimum neighbourhood size for a DBSCAN core point.
+		ellipse_sigmas: Standard-deviation levels for the confidence ellipses.
+	"""
+	from randomized_smoothing.utils import (
+		_assign_to_nearest_centroid,
+		_compute_centroids_from_assignments,
+		_run_dbscan,
+	)
+
+	output_dir.mkdir(parents=True, exist_ok=True)
+
+	raw = _reshape_trajectory_samples(mc_samples)       # (nx, N, T, 2)
+	single = _reshape_trajectory_samples(single_cluster_mc_samples)
+	clust = _reshape_trajectory_samples(clusterized_mc_samples)
+	x_np = _to_numpy(x)
+	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
+	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
+
+	# Last-timestep endpoints: (nx, N, 2)
+	raw_end = raw[:, :, -1, :]
+	single_end = single[:, :, -1, :]
+	clust_end = clust[:, :, -1, :]
+
+	nx = raw.shape[0]
+
+	# Shared axis limits derived from all endpoints and input trajectories.
+	all_x_coords = np.concatenate([
+		raw_end[..., 0].reshape(-1),
+		single_end[..., 0].reshape(-1),
+		clust_end[..., 0].reshape(-1),
+		x_traj[..., 0].reshape(-1),
+	])
+	all_y_coords = np.concatenate([
+		raw_end[..., 1].reshape(-1),
+		single_end[..., 1].reshape(-1),
+		clust_end[..., 1].reshape(-1),
+		x_traj[..., 1].reshape(-1),
+	])
+	x_pad = max((float(all_x_coords.max()) - float(all_x_coords.min())) * 0.12, 0.5)
+	y_pad = max((float(all_y_coords.max()) - float(all_y_coords.min())) * 0.12, 0.5)
+	x_lim = (float(all_x_coords.min()) - x_pad, float(all_x_coords.max()) + x_pad)
+	y_lim = (float(all_y_coords.min()) - y_pad, float(all_y_coords.max()) + y_pad)
+	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
+	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
+
+	cluster_colors = ["#1B2A4A", "#E31A1C", "#1F78B4", "#33A02C", "#FF7F00"]
+	col_base_colors = ("#1B2A4A", "#D55E00", "#009E73")
+	col_titles = ("Original", "Rekavandi et al, 2024", "Ours")
+	agent_colors = ("#1B5E20", "#0B3C5D")
+
+	_w = TEXTWIDTH
+	fig, axes = plt.subplots(nx, 3, figsize=(_w, 0.33 * _w * nx), sharex=True, sharey=True)
+	if nx == 1:
+		axes = np.array([axes])
+
+	for i in range(nx):
+		for col_idx, (endpoints, base_color) in enumerate(
+			zip((raw_end[i], single_end[i], clust_end[i]), col_base_colors)
+		):
+			ax = axes[i, col_idx]
+			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
+
+			# Cluster the 2-D endpoint cloud with DBSCAN.
+			pts = torch.from_numpy(endpoints.astype(np.float64))
+			labels = _run_dbscan(data=pts, eps=dbscan_eps, min_samples=dbscan_min_samples)
+			noise_mask = labels == -1
+
+			if (~noise_mask).sum().item() == 0:
+				# All noise: treat as single cluster.
+				labels = torch.zeros(pts.shape[0], dtype=torch.long)
+				noise_mask = torch.zeros(pts.shape[0], dtype=torch.bool)
+
+			if noise_mask.any():
+				core_labels = labels[~noise_mask]
+				num_cls_core = int(core_labels.max().item()) + 1
+				core_centroids = _compute_centroids_from_assignments(
+					pts[~noise_mask], core_labels, num_cls_core
+				)
+				labels[noise_mask] = _assign_to_nearest_centroid(pts[noise_mask], core_centroids)
+
+			num_cls = int(labels.max().item()) + 1
+			labels_np = labels.numpy()
+
+			for j in range(num_cls):
+				mask_j = labels_np == j
+				color_j = cluster_colors[j % len(cluster_colors)]
+				# Light scatter of raw endpoints.
+				ax.scatter(
+					endpoints[mask_j, 0],
+					endpoints[mask_j, 1],
+					s=5,
+					alpha=0.20,
+					color=color_j,
+					linewidths=0,
+					zorder=2,
+				)
+				# Fitted Gaussian ellipses.
+				_fit_gaussian_ellipses(
+					points=endpoints[mask_j],
+					ax=ax,
+					color=color_j,
+					sigmas=ellipse_sigmas,
+				)
+
+			# Input-trajectory markers for spatial context.
+			for agent_idx in range(num_input_agents):
+				agent_traj = x_traj[i, agent_idx]
+				color = agent_colors[agent_idx % len(agent_colors)]
+				ax.plot(
+					agent_traj[:, 0],
+					agent_traj[:, 1],
+					color=color,
+					linestyle="None",
+					marker="o",
+					markersize=2.0,
+					markerfacecolor=color,
+					markeredgecolor=color,
+					markeredgewidth=0.2,
+					zorder=6,
+				)
+
+			ax.set_xlim(*x_lim)
+			ax.set_ylim(*y_lim)
+
+			axes[i, 1].tick_params(axis="y", which="both", left=False, labelleft=False)
+			axes[i, 2].tick_params(axis="y", which="both", left=False, labelleft=False)
+
+			if i == 0:
+				ax.set_title(col_titles[col_idx], fontsize=8)
+
+	fig.supxlabel("x (m)", fontsize=8)
+	fig.supylabel("y (m)", fontsize=8)
+	fig.tight_layout()
+	fig_path = output_dir / "final_timestep_density.pdf"
+	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
+	plt.close(fig)
+
+	return [fig_path]
+
+
 def _plot_street_marks(ax: plt.Axes, x_extent: float, y_extent: float) -> None:
 	"""Overlay static street boundaries and lane center lines."""
 	x_extent = max(float(x_extent), 12.0)
