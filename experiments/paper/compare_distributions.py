@@ -44,6 +44,8 @@ def main():
     clustering_parameters = ClusteringParameters(
         max_num_clusters=3,
         coverage=coverage,
+        dbscan_eps=0.2,
+        dbscan_min_samples=80,
     )
     confidence_parameters = ConfidenceParameters(
         beta=1e-2,
@@ -75,6 +77,13 @@ def main():
         x=x,
         sigma=sigma,
         parameters=parameters,
+    )
+    print(
+        "DBSCAN cluster summary:",
+        {
+            "k_per_row": smoother.cluster.k_per_row.tolist(),
+            "probs_partition": smoother.cluster.probs_partition[0].detach().cpu().tolist(),
+        },
     )
 
     rekavandi_smoother = GaussianAlphaTrimmingSmoothing(
