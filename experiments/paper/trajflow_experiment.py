@@ -41,7 +41,7 @@ def main():
     data_file = str(EXPERIMENTS) + os.sep + "TrajFlowExperiment" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
-    selected_indices = np.array([3, 4, 5, 50], dtype=int)
+    selected_indices = np.array([3, 4, 50, 51], dtype=int)
     batch_size = selected_indices.shape[0]
     x_input = data[selected_indices, :, :, :2]  # Take selected samples, both agents, (x, y) coords only.
     # Put the target agent in index 0 because TrajFlow predicts from agent slot 0.
