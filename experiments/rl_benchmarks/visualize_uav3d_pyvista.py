@@ -9,8 +9,13 @@ import numpy as np
 import pyvista as pv
 import torch
 from dynamics import UAV3D
-from torch.distributions import Normal
-from train_vi_bnn_rl import VariationalPolicy, normalize_state, scale_action_for_env
+from train_vi_bnn_rl import VariationalPolicy, normalize_state
+
+# State where the trained K=2 policy is sharply bimodal: right at the west
+# face of the central tower obstacle (x in [-1, 3], y in [-3, 1], z in [-7, 7]),
+# where the two mixture components encode "go around the tower on the north
+# side" vs "go around on the south side". Zero initial velocity.
+BIMODAL_START_STATE = np.array([-3.5, 0.0, -0.35, 0.0, 0.7, 0.0], dtype=np.float32)
 
 
 def _create_box(bounds):
@@ -25,7 +30,7 @@ def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]
     if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
         raise ValueError("Expected checkpoint dict with model_state_dict (legacy checkpoints are not supported).")
 
-    required_fields = ["state_dim", "action_dim", "hidden_dim", "prior_std", "state_dependent_std", "env_type", "action_scale"]
+    required_fields = ["state_dim", "action_dim", "hidden_dim", "prior_std", "env_type", "action_scale"]
     missing_fields = [field for field in required_fields if field not in checkpoint]
     if missing_fields:
         raise ValueError(f"Checkpoint missing required fields: {missing_fields}")
@@ -39,15 +44,16 @@ def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]
     action_dim = int(checkpoint["action_dim"])
     hidden_dim = int(checkpoint["hidden_dim"])
     prior_std = float(checkpoint["prior_std"])
-    state_dependent_std = bool(checkpoint["state_dependent_std"])
     action_scale = float(checkpoint["action_scale"])
+    num_components = int(checkpoint.get("num_components", 1))
 
     policy = VariationalPolicy(
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=hidden_dim,
         prior_std=prior_std,
-        state_dependent_std=state_dependent_std,
+        action_scale=action_scale,
+        num_components=num_components,
     )
     policy.load_state_dict(model_state_dict)
     policy.eval()
@@ -61,7 +67,12 @@ def _sample_uav3d_trajectories(
     horizon: int,
     seed: int,
 ) -> tuple[list[np.ndarray], list[str], dict[str, int]]:
-    """Roll out sampled trajectories in UAV3D and return position traces."""
+    """Roll out trajectories from the bimodal start state.
+
+    All rollouts begin at ``BIMODAL_START_STATE``; the visible spread between
+    trajectories reflects the policy's stochasticity (mixture-component
+    sampling + Gaussian noise) and the environment's process noise.
+    """
     np.random.seed(seed)
     torch.manual_seed(seed)
 
@@ -69,30 +80,39 @@ def _sample_uav3d_trajectories(
     outcomes: list[str] = []
     outcome_counts = {"goal": 0, "collision": 0, "timeout": 0}
 
+    env = UAV3D(gaussian_noise=True, noise_std=0.05)
+    start_pos = np.array(
+        [BIMODAL_START_STATE[0], BIMODAL_START_STATE[2], BIMODAL_START_STATE[4]],
+        dtype=np.float32,
+    )
     for _ in range(num_trajectories):
-        env = UAV3D(gaussian_noise=True, noise_std=0.15)
-        state = env.reset()
-        trace = [np.array([state[0], state[2], state[4]], dtype=np.float32)]
+        env._state = BIMODAL_START_STATE.copy()
+        env._step_count = 0
+        env._done = False
+        env._prev_dist = float(np.linalg.norm(start_pos - env.goal_center))
+        state = env._state.copy()
+        trace = [start_pos.copy()]
 
         outcome = "timeout"
         for _step in range(horizon):
             if policy is not None:
-                state_t = torch.tensor(normalize_state(state, "uav_3d"), dtype=torch.float32).unsqueeze(0)
+                state_t = torch.tensor(
+                    normalize_state(state, "uav_3d"), dtype=torch.float32
+                ).unsqueeze(0)
                 with torch.no_grad():
-                    mean, std = policy(state_t)
-                    raw_action = Normal(mean, std).sample()
-                    normalized_action = torch.tanh(raw_action).squeeze(0).cpu().numpy().astype(np.float32)
-                    action = scale_action_for_env(normalized_action, "uav_3d", action_scale=action_scale)
+                    action_t, _raw, _lp = policy.sample(state_t)
+                action = action_t.squeeze(0).cpu().numpy().astype(np.float32)
             else:
                 action = np.random.uniform(-action_scale, action_scale, size=(3,)).astype(np.float32)
 
-            _, reward, state = env.step(action)
+            _, _reward, state = env.step(action)
             trace.append(np.array([state[0], state[2], state[4]], dtype=np.float32))
 
             if env.is_done():
-                if reward >= 0.9:
+                final_pos = np.array([state[0], state[2], state[4]], dtype=np.float32)
+                if env._check_goal(final_pos):
                     outcome = "goal"
-                elif reward <= -0.9:
+                elif env._check_obstacle_collision(final_pos) or env._outside_corridor(final_pos):
                     outcome = "collision"
                 else:
                     outcome = "timeout"
@@ -123,11 +143,14 @@ def visualize_uav3d_with_pyvista():
     else:
         print(f"Warning: checkpoint not found at {checkpoint_path}. Falling back to random actions.")
 
+    # All trajectories start from the bimodal state so that the two mixture
+    # modes (north- vs south-route around the central tower) naturally show
+    # up as separated trajectory bundles under normal mixture sampling.
     trajectories, outcomes, outcome_counts = _sample_uav3d_trajectories(
         policy=policy,
         action_scale=action_scale,
-        num_trajectories=12,
-        horizon=32,
+        num_trajectories=100,
+        horizon=48,
         seed=42,
     )
 
@@ -170,34 +193,35 @@ def visualize_uav3d_with_pyvista():
     print("Goal region drawn.")
 
     # Draw start position as a sphere
-    start_pos = env.start_state
-    start_center = (float(start_pos[0]), float(start_pos[2]), float(start_pos[4]))
+    start_center = (
+        float(BIMODAL_START_STATE[0]),
+        float(BIMODAL_START_STATE[2]),
+        float(BIMODAL_START_STATE[4]),
+    )
     start_marker = pv.Sphere(radius=0.5, center=start_center, theta_resolution=24, phi_resolution=24)
     plotter.add_mesh(start_marker, color="royalblue", opacity=1.0)
 
     print("Start position marked.")
 
-    # Draw sampled trajectories.
+    # Draw sampled trajectories, coloured by episode outcome.
     print(f"Drawing {len(trajectories)} sampled trajectories...")
+    outcome_colors = {"goal": "seagreen", "collision": "orangered", "timeout": "goldenrod"}
     for points, outcome in zip(trajectories, outcomes):
-        if outcome == "goal":
-            color = "seagreen"
-        elif outcome == "collision":
-            color = "orangered"
-        else:
-            color = "goldenrod"
-
+        color = outcome_colors[outcome]
         line = pv.lines_from_points(points, close=False)
-        plotter.add_mesh(line, color=color, line_width=3)
+        plotter.add_mesh(line, color=color, line_width=1.5, opacity=0.8)
 
-        end_marker = pv.Sphere(radius=0.18, center=tuple(points[-1]), theta_resolution=16, phi_resolution=16)
+        end_marker = pv.Sphere(
+            radius=0.18, center=tuple(points[-1]),
+            theta_resolution=16, phi_resolution=16,
+        )
         plotter.add_mesh(end_marker, color=color, opacity=0.95)
 
     plotter.add_legend(
         labels=[
-            ["Goal-reaching", "seagreen"],
-            ["Obstacle collision", "orangered"],
-            ["Timeout", "goldenrod"],
+            ["Goal-reaching",      outcome_colors["goal"]],
+            ["Obstacle collision", outcome_colors["collision"]],
+            ["Timeout",            outcome_colors["timeout"]],
         ],
         bcolor=(1.0, 1.0, 1.0),
     )

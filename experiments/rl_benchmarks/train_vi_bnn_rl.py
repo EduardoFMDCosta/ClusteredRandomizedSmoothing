@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from dynamics import UAV3D
 from torch import nn
-from torch.distributions import Normal
+from torch.distributions import Categorical, Normal
 
 EPS = 1e-8
 LOG_STD_MIN = -5.0
@@ -19,16 +19,20 @@ LOG_STD_MAX = 2.0
 
 class VariationalPolicy(nn.Module):
     """
-    Gaussian policy over raw (pre-tanh) actions.
+    Tanh-squashed Gaussian-mixture policy.
 
-    The output mean is passed through tanh and scaled by ``action_scale`` so
-    that the executed action lies in [-action_scale, action_scale]. The
-    log_prob is corrected for the tanh change of variables so that the
-    gradient matches the actually-executed action.
+    At state s the policy is
+        z ~ Categorical(softmax(gate(s)))
+        raw ~ N(mean_z(s), exp(log_std_z))
+        action = tanh(raw) * action_scale
 
-    ``state_dependent_std`` toggles between a homoscedastic global log_std
-    parameter (simpler, more stable) and a heteroscedastic network that
-    produces a state-dependent log_std (richer uncertainty model).
+    State-dependent means and gating allow multi-modal behaviour that varies
+    with the state (e.g. near an obstacle the gate can place mass on two
+    components corresponding to going left vs right). ``log_std`` is a global
+    per-component parameter (shape [K, A]) - simpler and more stable than a
+    state-dependent std network.
+
+    With ``num_components = 1`` this reduces to a single-Gaussian policy.
     """
 
     def __init__(
@@ -37,101 +41,149 @@ class VariationalPolicy(nn.Module):
         action_dim: int,
         hidden_dim: int = 128,
         prior_std: float = 1.0,
-        state_dependent_std: bool = False,
         action_scale: float = 1.0,
-        init_log_std: float = -0.5,
+        num_components: int = 1,
+        init_log_std: float = -1.2,
     ):
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.prior_std = prior_std
-        self.state_dependent_std = state_dependent_std
         self.action_scale = float(action_scale)
+        self.num_components = int(num_components)
+        assert self.num_components >= 1
 
-        self.fc1_mean = nn.Linear(state_dim, hidden_dim)
-        self.fc2_mean = nn.Linear(hidden_dim, hidden_dim)
-        self.out_mean = nn.Linear(hidden_dim, action_dim)
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.mean_head = nn.Linear(hidden_dim, self.num_components * action_dim)
+        if self.num_components > 1:
+            self.gate_head = nn.Linear(hidden_dim, self.num_components)
 
-        nn.init.orthogonal_(self.fc1_mean.weight, gain=math.sqrt(2))
-        nn.init.zeros_(self.fc1_mean.bias)
-        nn.init.orthogonal_(self.fc2_mean.weight, gain=math.sqrt(2))
-        nn.init.zeros_(self.fc2_mean.bias)
-        # Small last-layer init: near-zero mean output at the start so the
-        # initial policy is close to "no force" rather than biased in some
-        # random direction.
-        nn.init.orthogonal_(self.out_mean.weight, gain=0.01)
-        nn.init.zeros_(self.out_mean.bias)
+        nn.init.orthogonal_(self.fc1.weight, gain=math.sqrt(2))
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.orthogonal_(self.fc2.weight, gain=math.sqrt(2))
+        nn.init.zeros_(self.fc2.bias)
+        # Small last-layer init: near-zero initial component means, but
+        # orthogonal rows make the K components start with different random
+        # biases so they do not collapse into a single mode.
+        nn.init.orthogonal_(self.mean_head.weight, gain=0.01)
+        nn.init.zeros_(self.mean_head.bias)
+        if self.num_components > 1:
+            nn.init.orthogonal_(self.gate_head.weight, gain=0.01)
+            nn.init.zeros_(self.gate_head.bias)
 
-        if state_dependent_std:
-            self.fc1_std = nn.Linear(state_dim, hidden_dim)
-            self.fc2_std = nn.Linear(hidden_dim, hidden_dim)
-            self.out_std = nn.Linear(hidden_dim, action_dim)
-            nn.init.orthogonal_(self.fc1_std.weight, gain=math.sqrt(2))
-            nn.init.zeros_(self.fc1_std.bias)
-            nn.init.orthogonal_(self.fc2_std.weight, gain=math.sqrt(2))
-            nn.init.zeros_(self.fc2_std.bias)
-            nn.init.orthogonal_(self.out_std.weight, gain=0.01)
-            nn.init.constant_(self.out_std.bias, init_log_std)
+        # Global per-component log_std, shape [K, A].
+        self.log_std = nn.Parameter(
+            torch.full((self.num_components, action_dim), float(init_log_std))
+        )
+
+    def _features(self, state: torch.Tensor) -> torch.Tensor:
+        x = F.tanh(self.fc1(state))
+        x = F.tanh(self.fc2(x))
+        return x
+
+    def distribution_params(
+        self,
+        state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (means, log_stds, log_mix_weights).
+
+        means: [B, K, A]
+        log_stds: [B, K, A] (broadcast from the global parameter)
+        log_mix_weights: [B, K] (log-softmax of gate logits; all zeros for K=1)
+        """
+        h = self._features(state)
+        B = state.shape[0]
+        K, A = self.num_components, self.action_dim
+        means = self.mean_head(h).view(B, K, A)
+        log_stds_clamped = self.log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
+        log_stds = log_stds_clamped.unsqueeze(0).expand(B, K, A)
+        if K == 1:
+            log_mix_weights = torch.zeros(B, 1, device=state.device, dtype=means.dtype)
         else:
-            self.log_std = nn.Parameter(
-                torch.full((action_dim,), float(init_log_std))
-            )
+            log_mix_weights = F.log_softmax(self.gate_head(h), dim=-1)
+        return means, log_stds, log_mix_weights
 
     def forward(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = F.tanh(self.fc1_mean(state))
-        x = F.tanh(self.fc2_mean(x))
-        mean = self.out_mean(x)
+        """Back-compat: return (mean, log_std) of the most-likely component."""
+        means, log_stds, log_mix_w = self.distribution_params(state)
+        if self.num_components == 1:
+            return means.squeeze(1), log_stds.squeeze(1)
+        idx = log_mix_w.argmax(dim=-1)
+        batch_idx = torch.arange(state.shape[0], device=state.device)
+        return means[batch_idx, idx], log_stds[batch_idx, idx]
 
-        if self.state_dependent_std:
-            h = F.tanh(self.fc1_std(state))
-            h = F.tanh(self.fc2_std(h))
-            log_std = self.out_std(h)
-        else:
-            log_std = self.log_std.expand_as(mean)
+    def _tanh_correction(self, raw: torch.Tensor) -> torch.Tensor:
+        """log|d action / d raw| summed over the action dimension.
 
-        log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        return mean, log_std
-
-    def _tanh_log_prob(
-        self,
-        dist: Normal,
-        raw_action: torch.Tensor,
-    ) -> torch.Tensor:
-        # log p(a) where a = action_scale * tanh(raw):
-        #   log p(a) = log p(raw) - log|d a/d raw|
-        # log(1 - tanh^2) computed in a numerically stable way.
-        log_prob_raw = dist.log_prob(raw_action)
-        log_det = 2.0 * (math.log(2.0) - raw_action - F.softplus(-2.0 * raw_action))
+        Same for all mixture components because they share ``raw``.
+        """
+        log_det = 2.0 * (math.log(2.0) - raw - F.softplus(-2.0 * raw))
         log_scale = math.log(self.action_scale) if self.action_scale > 0 else 0.0
-        return (log_prob_raw - log_det - log_scale).sum(dim=-1)
+        return log_det.sum(dim=-1) + log_scale * self.action_dim
+
+    def _mixture_log_prob(
+        self,
+        raw: torch.Tensor,         # [B, A]
+        means: torch.Tensor,       # [B, K, A]
+        stds: torch.Tensor,        # [B, K, A]
+        log_mix_weights: torch.Tensor,  # [B, K]
+    ) -> torch.Tensor:
+        raw_expanded = raw.unsqueeze(1)  # [B, 1, A]
+        comp_log_prob = Normal(means, stds + EPS).log_prob(raw_expanded).sum(dim=-1)
+        log_prob_raw = torch.logsumexp(log_mix_weights + comp_log_prob, dim=-1)
+        return log_prob_raw - self._tanh_correction(raw)
 
     def sample(self, state: torch.Tensor):
-        """Sample an action, returning (action, raw_action, log_prob)."""
-        mean, log_std = self.forward(state)
-        std = torch.exp(log_std)
-        dist = Normal(mean, std + EPS)
-        raw_action = dist.rsample()
-        action = torch.tanh(raw_action) * self.action_scale
-        log_prob = self._tanh_log_prob(dist, raw_action)
-        return action, raw_action, log_prob
+        """Sample a tanh-squashed action. Returns (action, raw, mixture_log_prob)."""
+        means, log_stds, log_mix_w = self.distribution_params(state)
+        stds = log_stds.exp()
+        B = state.shape[0]
+        if self.num_components == 1:
+            mean_sel = means.squeeze(1)
+            std_sel = stds.squeeze(1)
+        else:
+            z = Categorical(logits=log_mix_w).sample()  # [B]
+            batch_idx = torch.arange(B, device=state.device)
+            mean_sel = means[batch_idx, z]
+            std_sel = stds[batch_idx, z]
+        dist = Normal(mean_sel, std_sel + EPS)
+        raw = dist.rsample()
+        action = torch.tanh(raw) * self.action_scale
+        log_prob = self._mixture_log_prob(raw, means, stds, log_mix_w)
+        return action, raw, log_prob
 
     def log_prob_and_entropy(
         self,
         state: torch.Tensor,
         raw_action: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        mean, log_std = self.forward(state)
-        std = torch.exp(log_std)
-        dist = Normal(mean, std + EPS)
-        log_prob = self._tanh_log_prob(dist, raw_action)
-        # Entropy of the underlying Gaussian (the tanh-corrected entropy has
-        # no closed form; this is the standard surrogate used by PPO).
-        entropy = dist.entropy().sum(dim=-1)
+        means, log_stds, log_mix_w = self.distribution_params(state)
+        stds = log_stds.exp()
+        log_prob = self._mixture_log_prob(raw_action, means, stds, log_mix_w)
+        # Lower bound on mixture entropy: H(cat) + sum_k pi_k H(N_k).
+        # Using Gaussian entropy in raw-space (no tanh correction) is what the
+        # existing single-Gaussian code does and is standard for PPO entropy
+        # regularisation.
+        comp_entropy = Normal(means, stds + EPS).entropy().sum(dim=-1)  # [B, K]
+        if self.num_components == 1:
+            entropy = comp_entropy.squeeze(-1)
+        else:
+            mix_w = log_mix_w.exp()
+            cat_entropy = -(mix_w * log_mix_w).sum(dim=-1)
+            entropy = cat_entropy + (mix_w * comp_entropy).sum(dim=-1)
         return log_prob, entropy
 
     def deterministic(self, state: torch.Tensor) -> torch.Tensor:
-        mean, _ = self.forward(state)
+        """Most-likely component's mean action (tanh-squashed)."""
+        means, _, log_mix_w = self.distribution_params(state)
+        if self.num_components == 1:
+            mean = means.squeeze(1)
+        else:
+            idx = log_mix_w.argmax(dim=-1)
+            batch_idx = torch.arange(state.shape[0], device=state.device)
+            mean = means[batch_idx, idx]
         return torch.tanh(mean) * self.action_scale
 
 
@@ -167,7 +219,7 @@ class TrainConfig:
     lr: float = 3e-4
     hidden_dim: int = 128
     prior_std: float = 1.0
-    state_dependent_std: bool = False
+    num_components: int = 2
     init_log_std: float = -1.2
     action_scale: float = 4.0
 
@@ -459,8 +511,8 @@ def train(config: TrainConfig) -> tuple[VariationalPolicy, dict[str, list[float]
         action_dim=action_dim,
         hidden_dim=config.hidden_dim,
         prior_std=config.prior_std,
-        state_dependent_std=config.state_dependent_std,
         action_scale=config.action_scale,
+        num_components=config.num_components,
         init_log_std=config.init_log_std,
     )
     critic = ValueNetwork(state_dim=state_dim, hidden_dim=config.hidden_dim)
@@ -566,7 +618,8 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--prior-std", type=float, default=1.0)
-    parser.add_argument("--state-dependent-std", action="store_true")
+    parser.add_argument("--num-components", type=int, default=2,
+                        help="Number of Gaussian components in the policy mixture.")
     parser.add_argument("--init-log-std", type=float, default=-1.2)
     parser.add_argument("--action-scale", type=float, default=4.0)
 
@@ -601,7 +654,7 @@ def parse_args() -> TrainConfig:
         lr=args.lr,
         hidden_dim=args.hidden_dim,
         prior_std=args.prior_std,
-        state_dependent_std=args.state_dependent_std,
+        num_components=args.num_components,
         init_log_std=args.init_log_std,
         action_scale=args.action_scale,
         batch_episodes=args.batch_episodes,
@@ -633,7 +686,7 @@ def main() -> None:
         "action_dim": policy.action_dim,
         "hidden_dim": config.hidden_dim,
         "prior_std": config.prior_std,
-        "state_dependent_std": config.state_dependent_std,
+        "num_components": config.num_components,
         "action_scale": config.action_scale,
     }
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)

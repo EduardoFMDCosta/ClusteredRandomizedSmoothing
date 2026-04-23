@@ -28,11 +28,18 @@ class UAV3D:
         gaussian_noise: bool = True,
         noise_std: float = 0.15,
         max_steps: int = 64,
+        substeps: int = 16,
     ):
         self.max_steps = max_steps
         self.gaussian_noise = gaussian_noise
         self.noise_std = noise_std
+        assert substeps >= 1
+        self.substeps = int(substeps)
 
+        # Full-logical-step matrices from the JAIR 2022 paper (dt = 1). Kept
+        # for reference; the actual integration uses the sub-step matrices
+        # below so we don't tunnel through obstacles when the velocity is
+        # high relative to obstacle thickness.
         self.A = np.array([
             [1, 1, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0],
@@ -50,6 +57,32 @@ class UAV3D:
             [0.0, 0.0, 0.5],
             [0.0, 0.0, 1.0],
         ], dtype=np.float32)
+
+        # Sub-step matrices for the same continuous-time double integrator
+        # with dt = 1 / substeps. One logical env.step() applies these
+        # ``substeps`` times with the same action, checking collision/goal at
+        # every sub-step.
+        dt = 1.0 / self.substeps
+        self.A_sub = np.array([
+            [1.0, dt, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, dt, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0, dt],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        ], dtype=np.float32)
+        self.B_sub = np.array([
+            [0.5 * dt * dt, 0.0, 0.0],
+            [dt, 0.0, 0.0],
+            [0.0, 0.5 * dt * dt, 0.0],
+            [0.0, dt, 0.0],
+            [0.0, 0.0, 0.5 * dt * dt],
+            [0.0, 0.0, dt],
+        ], dtype=np.float32)
+        # Per-sub-step velocity noise std. Scaled so that the sum of N
+        # independent sub-step noises per logical step has the original
+        # variance noise_std^2.
+        self._sub_noise_std = float(self.noise_std) / float(np.sqrt(self.substeps))
 
         self.u_min = -4.0
         self.u_max = 4.0
@@ -90,19 +123,21 @@ class UAV3D:
         # Previous distance to goal, used for dense progress reward.
         self._prev_dist = None
 
-    def _sample_noise(self) -> np.ndarray:
+    def _sample_noise(self, std: float | None = None) -> np.ndarray:
+        """Sample velocity-component noise with the given std (defaults to
+        the logical-step std, ``self.noise_std``)."""
+        sigma = float(self.noise_std if std is None else std)
+        w = np.zeros(6, dtype=np.float32)
         if self.gaussian_noise:
-            w = np.zeros(6)
-            w[1] = np.random.normal(0, self.noise_std)
-            w[3] = np.random.normal(0, self.noise_std)
-            w[5] = np.random.normal(0, self.noise_std)
+            w[1] = np.random.normal(0.0, sigma)
+            w[3] = np.random.normal(0.0, sigma)
+            w[5] = np.random.normal(0.0, sigma)
         else:
-            w = np.zeros(6)
-            for i in [1, 3, 5]:
+            for i in (1, 3, 5):
                 if np.random.rand() < 0.5:
-                    w[i] = np.random.normal(0, self.noise_std)
+                    w[i] = np.random.normal(0.0, sigma)
                 else:
-                    w[i] = np.random.normal(0, 2.0 * self.noise_std)
+                    w[i] = np.random.normal(0.0, 2.0 * sigma)
         return w
 
     def _check_obstacle_collision(self, pos: np.ndarray) -> bool:
@@ -214,45 +249,57 @@ class UAV3D:
         return self._state.copy()
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray]:
-        action = np.clip(action, self.u_min, self.u_max)
+        """Advance the simulation by one logical step.
+
+        Internally integrates the double-integrator dynamics in
+        ``self.substeps`` sub-steps of size dt = 1/substeps so that the
+        displacement within a single sub-step stays small relative to
+        obstacle dimensions. Collision, goal, and corridor-exit checks run
+        at every sub-step, preventing tunneling through thin obstacles.
+        """
+        action = np.clip(action, self.u_min, self.u_max).astype(np.float32)
         old_state = self._state.copy()
 
-        w = self._sample_noise()
-        self._state = self.A @ self._state + self.B @ action + w
+        terminal_reward: float | None = None
+        for _ in range(self.substeps):
+            w = self._sample_noise(self._sub_noise_std)
+            self._state = self.A_sub @ self._state + self.B_sub @ action + w
+            self._state[1] = np.clip(self._state[1], -7.0, 7.0)
+            self._state[3] = np.clip(self._state[3], -7.0, 7.0)
+            self._state[5] = np.clip(self._state[5], -7.0, 7.0)
 
-        self._state[1] = np.clip(self._state[1], -7.0, 7.0)
-        self._state[3] = np.clip(self._state[3], -7.0, 7.0)
-        self._state[5] = np.clip(self._state[5], -7.0, 7.0)
+            pos = np.array([self._state[0], self._state[2], self._state[4]])
+            if self._outside_corridor(pos):
+                terminal_reward = -5.0
+                self._done = True
+                break
+            if self._check_obstacle_collision(pos):
+                terminal_reward = -5.0
+                self._done = True
+                break
+            if self._check_goal(pos):
+                terminal_reward = 10.0
+                self._done = True
+                break
 
-        pos = np.array([self._state[0], self._state[2], self._state[4]])
         self._step_count += 1
 
-        new_dist = float(np.linalg.norm(pos - self.goal_center))
-        progress = (self._prev_dist if self._prev_dist is not None else new_dist) - new_dist
-        self._prev_dist = new_dist
-
-        if self._outside_corridor(pos):
-            reward = -5.0
-            self._done = True
-        elif self._check_obstacle_collision(pos):
-            reward = -5.0
-            self._done = True
-        elif self._check_goal(pos):
-            reward = 10.0
-            self._done = True
-        elif self._step_count >= self.max_steps:
-            # Strong shaping-free terminal: distance-based penalty so that
-            # timing out far from the goal is clearly worse than timing out
-            # close to it.
-            reward = -0.05 * new_dist
-            self._done = True
+        if terminal_reward is not None:
+            reward = terminal_reward
         else:
-            # Dense progress reward - scaled large enough that several good
-            # steps offset a single step in the wrong direction. No per-step
-            # "alive" cost: with sparse terminal penalties, a time cost can
-            # push the policy toward deliberate self-termination when it
-            # cannot yet see the goal.
-            reward = 0.5 * progress - 0.01
+            pos = np.array([self._state[0], self._state[2], self._state[4]])
+            new_dist = float(np.linalg.norm(pos - self.goal_center))
+            progress = (self._prev_dist if self._prev_dist is not None else new_dist) - new_dist
+            self._prev_dist = new_dist
+            if self._step_count >= self.max_steps:
+                # Distance-based timeout so that timing out far from the goal
+                # is clearly worse than timing out close to it.
+                reward = -0.05 * new_dist
+                self._done = True
+            else:
+                # Dense progress reward - scaled large enough that several
+                # good steps offset a single step in the wrong direction.
+                reward = 0.5 * progress - 0.01
 
         new_state = self._state.copy()
         return old_state, reward, new_state

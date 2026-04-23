@@ -32,20 +32,17 @@ def load_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, str]:
     hidden_dim = int(checkpoint.get("hidden_dim", 128))
     prior_std = float(checkpoint.get("prior_std", 1.0))
     action_scale = float(checkpoint.get("action_scale", 4.0))
+    num_components = int(checkpoint.get("num_components", 1))
     env_type = checkpoint.get("env_type", "uav_3d")
     model_state_dict = checkpoint["model_state_dict"]
-    state_dependent_std = bool(checkpoint.get(
-        "state_dependent_std",
-        "out_std.weight" in model_state_dict,
-    ))
 
     policy = VariationalPolicy(
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=hidden_dim,
         prior_std=prior_std,
-        state_dependent_std=state_dependent_std,
         action_scale=action_scale,
+        num_components=num_components,
     )
     policy.load_state_dict(model_state_dict)
     policy.eval()
@@ -69,18 +66,20 @@ def policy_uncertainty_grid(policy: VariationalPolicy, env_type: str = "uav_3d",
                 state = np.array([x, 0.0, y, 0.0, -6.0, 0.0], dtype=np.float32)
                 state_t = torch.tensor(normalize_state(state, env_type), dtype=torch.float32).unsqueeze(0)
 
-                means = []
-                variances = []
-                for _ in range(num_samples):
-                    mean, log_std = policy(state_t)
-                    std = torch.exp(log_std)
-                    means.append((torch.tanh(mean) * policy.action_scale).squeeze(0).cpu().numpy())
-                    variances.append((std.squeeze(0) ** 2).cpu().numpy())
+                # Component-level parameters: exact expected mean & variance
+                # of the mixture can be computed without Monte Carlo.
+                component_means, component_log_stds, log_mix_w = policy.distribution_params(state_t)
+                component_means = (torch.tanh(component_means) * policy.action_scale).squeeze(0).cpu().numpy()  # [K, A]
+                component_vars = (torch.exp(component_log_stds) ** 2).squeeze(0).cpu().numpy()  # [K, A]
+                mix_w = log_mix_w.exp().squeeze(0).cpu().numpy()  # [K]
 
-                means_arr = np.stack(means, axis=0)
-                vars_arr = np.stack(variances, axis=0)
-                epistemic[yi, xi] = float(np.mean(np.var(means_arr, axis=0)))
-                aleatoric[yi, xi] = float(np.mean(np.mean(vars_arr, axis=0)))
+                mixture_mean = (mix_w[:, None] * component_means).sum(axis=0)  # [A]
+                # Epistemic-ish: spread of component means weighted by gate.
+                epistemic[yi, xi] = float(
+                    (mix_w[:, None] * (component_means - mixture_mean) ** 2).sum(axis=0).mean()
+                )
+                # Aleatoric: gate-weighted expected within-component variance.
+                aleatoric[yi, xi] = float((mix_w[:, None] * component_vars).sum(axis=0).mean())
 
     return xs, ys, epistemic, aleatoric
 
@@ -408,11 +407,8 @@ def build_action_sampler(policy_source: str, policy: VariationalPolicy | None, e
         def vi_bnn_action(state: np.ndarray, _rng: np.random.Generator) -> np.ndarray:
             state_t = torch.tensor(normalize_state(state, env_type), dtype=torch.float32).unsqueeze(0)
             with torch.no_grad():
-                mean, log_std = policy(state_t)
-                std = torch.exp(log_std)
-                raw_action = Normal(mean, std).sample()
-                action = (torch.tanh(raw_action) * policy.action_scale).squeeze(0).cpu().numpy().astype(np.float32)
-            return action
+                action, _raw, _log_prob = policy.sample(state_t)
+            return action.squeeze(0).cpu().numpy().astype(np.float32)
 
         return vi_bnn_action
 

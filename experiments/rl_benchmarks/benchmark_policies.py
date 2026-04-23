@@ -41,7 +41,7 @@ def load_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, str, float]:
     if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
         raise ValueError("Expected checkpoint dict with model_state_dict (legacy checkpoints are not supported).")
 
-    required_fields = ["state_dim", "action_dim", "hidden_dim", "prior_std", "state_dependent_std", "env_type", "action_scale"]
+    required_fields = ["state_dim", "action_dim", "hidden_dim", "prior_std", "env_type", "action_scale"]
     missing_fields = [field for field in required_fields if field not in checkpoint]
     if missing_fields:
         raise ValueError(f"Checkpoint missing required fields: {missing_fields}")
@@ -50,7 +50,7 @@ def load_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, str, float]:
     action_dim = int(checkpoint["action_dim"])
     hidden_dim = int(checkpoint["hidden_dim"])
     prior_std = float(checkpoint["prior_std"])
-    state_dependent_std = bool(checkpoint["state_dependent_std"])
+    num_components = int(checkpoint.get("num_components", 1))
     env_type = str(checkpoint["env_type"])
     action_scale = float(checkpoint["action_scale"])
     state_dict = checkpoint["model_state_dict"]
@@ -60,8 +60,8 @@ def load_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, str, float]:
         action_dim=action_dim,
         hidden_dim=hidden_dim,
         prior_std=prior_std,
-        state_dependent_std=state_dependent_std,
         action_scale=action_scale,
+        num_components=num_components,
     )
     policy.load_state_dict(state_dict)
     policy.eval()
