@@ -1,64 +1,119 @@
-import math
 import torch
-import torch.nn.functional as F
 
 
 # -----------------------------------------------------------------------------
 # Clustering utilities
 # -----------------------------------------------------------------------------
-def _run_kmeans(
-        data: torch.Tensor,
-        num_clusters: int,
-        max_iter: int,
-        tol: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _compute_centroids_from_assignments(
+    data: torch.Tensor,
+    assignments: torch.Tensor,
+    num_clusters: int,
+) -> torch.Tensor:
+    centroids = torch.empty((num_clusters, data.shape[1]), dtype=data.dtype, device=data.device)
+    for j in range(num_clusters):
+        cluster_points = data[assignments == j]
+        centroids[j] = cluster_points.mean(dim=0)
+    return centroids
 
+
+def _assign_to_nearest_centroid(data: torch.Tensor, centroids: torch.Tensor) -> torch.Tensor:
+    diff = data.unsqueeze(1) - centroids.unsqueeze(0)
+    squared_distances = (diff * diff).sum(dim=-1)
+    return squared_distances.argmin(dim=1)
+
+
+def _run_dbscan(
+    data: torch.Tensor,
+    eps: float,
+    min_samples: int,
+) -> torch.Tensor:
+    """Return DBSCAN labels for one row of samples.
+
+    Labels are contiguous cluster ids ``0..k-1`` and ``-1`` for noise.
+    """
     n = data.shape[0]
+    if n == 0:
+        return torch.empty((0,), dtype=torch.long, device=data.device)
 
-    generator = torch.Generator(device=data.device)
-    generator.manual_seed(0)
-    init_idx = torch.randperm(n, generator=generator, device=data.device)[:num_clusters]
-    centroids = data[init_idx].clone()
+    eps2 = float(eps) * float(eps)
+    diff = data.unsqueeze(1) - data.unsqueeze(0)
+    squared_distances = (diff * diff).sum(dim=-1)
+    neighbor_mask = squared_distances <= eps2
 
-    assignments = torch.zeros(n, dtype=torch.long, device=data.device)
-    for _ in range(max_iter):
-        diff = data.unsqueeze(1) - centroids.unsqueeze(0)
-        squared_distances = (diff * diff).sum(dim=-1)
-        new_assignments = squared_distances.argmin(dim=1)
+    unassigned = -2
+    noise = -1
+    labels = torch.full((n,), unassigned, dtype=torch.long, device=data.device)
+    cluster_id = 0
 
-        new_centroids = centroids.clone()
-        one_hot = F.one_hot(new_assignments, num_classes=num_clusters).to(dtype=data.dtype)
-        counts = one_hot.sum(dim=0)
-        non_empty = counts > 0
-        if non_empty.any():
-            sums = one_hot.transpose(0, 1) @ data
-            new_centroids[non_empty] = sums[non_empty] / counts[non_empty].unsqueeze(1)
+    for i in range(n):
+        if labels[i].item() != unassigned:
+            continue
 
-        shift = torch.norm(new_centroids - centroids, dim=1).max()
-        centroids = new_centroids
-        assignments = new_assignments
-        if shift.item() < tol:
-            break
+        neighbors = torch.where(neighbor_mask[i])[0]
+        if int(neighbors.numel()) < min_samples:
+            labels[i] = noise
+            continue
 
-    final_diff = data.unsqueeze(1) - centroids.unsqueeze(0)
-    final_squared_distances = (final_diff * final_diff).sum(dim=-1)
-    sq_min_dist = final_squared_distances.gather(1, assignments.unsqueeze(1)).squeeze(1)
-    inertia = sq_min_dist.sum()
-    return centroids, assignments, inertia
+        labels[i] = cluster_id
+        seeds = neighbors.tolist()
+        in_seeds = torch.zeros(n, dtype=torch.bool, device=data.device)
+        in_seeds[neighbors] = True
+
+        idx = 0
+        while idx < len(seeds):
+            q = seeds[idx]
+            idx += 1
+
+            if labels[q].item() == noise:
+                labels[q] = cluster_id
+            if labels[q].item() != unassigned:
+                continue
+
+            labels[q] = cluster_id
+            q_neighbors = torch.where(neighbor_mask[q])[0]
+            if int(q_neighbors.numel()) >= min_samples:
+                candidates = q_neighbors[~in_seeds[q_neighbors]]
+                if candidates.numel() > 0:
+                    in_seeds[candidates] = True
+                    seeds.extend(candidates.tolist())
+
+        cluster_id += 1
+
+    labels[labels == unassigned] = noise
+    return labels
+
+
+def _merge_to_max_clusters(
+    data: torch.Tensor,
+    assignments: torch.Tensor,
+    max_num_clusters: int,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    num_clusters = int(assignments.max().item()) + 1
+    if num_clusters <= max_num_clusters:
+        centroids = _compute_centroids_from_assignments(data, assignments, num_clusters)
+        return centroids, assignments, num_clusters
+
+    counts = torch.bincount(assignments, minlength=num_clusters)
+    keep = torch.topk(counts, k=max_num_clusters, largest=True, sorted=False).indices
+    keep = keep.sort().values
+
+    reduced_centroids = _compute_centroids_from_assignments(data, assignments, num_clusters)[keep]
+    reduced_assignments = _assign_to_nearest_centroid(data, reduced_centroids)
+    reduced_centroids = _compute_centroids_from_assignments(
+        data,
+        reduced_assignments,
+        max_num_clusters,
+    )
+    return reduced_centroids, reduced_assignments, max_num_clusters
 
 
 def _select_num_clusters(
-        data: torch.Tensor,
-        max_num_clusters: int,
-        max_iter: int,
-        tol: float,
-        elbow_threshold: float,
+    data: torch.Tensor,
+    max_num_clusters: int,
+    dbscan_eps: float,
+    dbscan_min_samples: int,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Select the optimal number of clusters via the inertia elbow method.
-
-    Runs K-means for k = 1, 2, ... up to min(max_num_clusters, n) and stops as
-    soon as the relative inertia improvement of adding one more cluster falls
-    below ``elbow_threshold * W_1``, where W_1 is the inertia for k = 1.
+    """Cluster one row with DBSCAN and cap clusters to ``max_num_clusters``.
 
     Returns
     -------
@@ -67,125 +122,37 @@ def _select_num_clusters(
     k_selected  : int
     """
     n = data.shape[0]
-    k_max = min(max_num_clusters, n)
+    if n == 0:
+        raise ValueError("data must contain at least one sample")
 
-    prev_c, prev_a, W_prev = _run_kmeans(data, 1, max_iter, tol)
-    if k_max == 1:
-        return prev_c, prev_a, 1
+    if max_num_clusters == 1:
+        assignments = torch.zeros(n, dtype=torch.long, device=data.device)
+        centroids = data.mean(dim=0, keepdim=True)
+        return centroids, assignments, 1
 
-    W1 = W_prev.item()
+    labels = _run_dbscan(data=data, eps=dbscan_eps, min_samples=dbscan_min_samples)
+    noise_mask = labels == -1
 
-    for k in range(2, k_max + 1):
-        c_k, a_k, W_k = _run_kmeans(data, k, max_iter, tol)
-        gain = (W_prev.item() - W_k.item()) / W1 if W1 > 0.0 else 0.0
-        if gain < elbow_threshold:
-            # Adding cluster k does not improve enough; keep k-1 clusters.
-            return prev_c, prev_a, k - 1
-        prev_c, prev_a = c_k, a_k
-        W_prev = W_k
+    if (~noise_mask).sum().item() == 0:
+        assignments = torch.zeros(n, dtype=torch.long, device=data.device)
+        centroids = data.mean(dim=0, keepdim=True)
+        return centroids, assignments, 1
 
-    return prev_c, prev_a, k_max
+    core_labels = labels[~noise_mask]
+    num_clusters = int(core_labels.max().item()) + 1
+    assignments = labels.clone()
 
-
-# -----------------------------------------------------------------------------
-# Robustness certification utilities
-# -----------------------------------------------------------------------------
-def log_combination(N: torch.Tensor | int | float, k: torch.Tensor | int | float) -> torch.Tensor:
-    if isinstance(N, torch.Tensor):
-        device = N.device
-    elif isinstance(k, torch.Tensor):
-        device = k.device
-    else:
-        device = None
-
-    N_t = torch.as_tensor(N, dtype=torch.float64, device=device)
-    k_t = torch.as_tensor(k, dtype=torch.float64, device=device)
-    return torch.lgamma(N_t + 1.0) - torch.lgamma(k_t + 1.0) - torch.lgamma(N_t - k_t + 1.0)
-
-
-def _binomial(
-    k: torch.Tensor | int | float,
-    N: torch.Tensor | int | float,
-    p: torch.Tensor | float,
-) -> torch.Tensor:
-    p_t = torch.as_tensor(p, dtype=torch.float64)
-    k_t = torch.as_tensor(k, dtype=torch.float64, device=p_t.device)
-    N_t = torch.as_tensor(N, dtype=torch.float64, device=p_t.device)
-
-    # Common vectorized use: k is a 1-D support and p is batched.
-    # Expand p on the last axis so outputs have shape (..., len(k)).
-    if k_t.ndim == 1 and p_t.ndim > 0:
-        p_t = p_t.unsqueeze(-1)
-        if N_t.ndim > 0:
-            N_t = N_t.unsqueeze(-1)
-
-    one = torch.tensor(1.0, dtype=p_t.dtype, device=p_t.device)
-    log_comb = log_combination(N_t, k_t)
-    log_prob = log_comb + k_t * torch.log(p_t) + (N_t - k_t) * torch.log(one - p_t)
-    return torch.exp(log_prob)
-
-
-def _binomial_cumulative_probability(
-    from_k: int,
-    to_k: int,
-    p: torch.Tensor | float,
-    num_samples: int,
-) -> float | torch.Tensor:
-    p_t = torch.as_tensor(p, dtype=torch.float64)
-    k = torch.arange(from_k, to_k + 1, device=p_t.device, dtype=torch.float64)
-    cumulative = _binomial(k=k, N=num_samples, p=p_t).sum(dim=-1)
-    if cumulative.ndim == 0:
-        return float(cumulative.item())
-    return cumulative
-
-
-def robustness_bound(
-    probs_region: torch.Tensor,
-    probs_partition_lb: torch.Tensor,
-    probs_partition_ub: torch.Tensor,
-    num_samples: int,
-    alpha: float,
-) -> torch.Tensor:
-    if num_samples <= 0:
-        raise ValueError("num_samples must be positive")
-
-    if probs_region.ndim != 2:
-        raise ValueError("probs_region must have shape (nx, num_clusters)")
-
-    output_dtype = probs_region.dtype
-    device = probs_region.device
-    dtype = torch.float64
-    eps = 1e-12
-
-    probs_region = probs_region.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    probs_partition_lb = probs_partition_lb.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    probs_partition_ub = probs_partition_ub.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
-    ratio = (probs_region / probs_partition_ub).clamp(eps, 1.0 - eps)
-
-    s = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
-    j = torch.arange(0, num_samples + 1, device=device, dtype=dtype)
-    two_alpha_floor = 2 * torch.floor(alpha * s)
-    j_min = (s - two_alpha_floor).to(dtype=torch.long).clamp(min=0)
-
-    s_row = s.view(1, 1, num_samples, 1)
-    j_row = j.view(1, 1, 1, num_samples + 1)
-    valid_j = (j_row >= j_min.view(1, 1, num_samples, 1)) & (j_row <= s_row)
-
-    log_comb_sj = log_combination(s_row, j_row)
-
-    r = ratio.unsqueeze(-1).unsqueeze(-1)
-    log_term_j = (
-        log_comb_sj
-        + j_row * torch.log(r)
-        + (s_row - j_row) * torch.log(1.0 - r)
+    centroids = _compute_centroids_from_assignments(
+        data=data[~noise_mask],
+        assignments=core_labels,
+        num_clusters=num_clusters,
     )
-    term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
-    inner_j = term_j.sum(dim=-1)
 
-    term_s_lb = _binomial(k=s, N=float(num_samples), p=probs_partition_lb)
-    term_s_ub = _binomial(k=s, N=float(num_samples), p=probs_partition_ub)
-    term_s = torch.minimum(term_s_lb, term_s_ub)
+    if noise_mask.any():
+        assignments[noise_mask] = _assign_to_nearest_centroid(data[noise_mask], centroids)
 
-    factor_s = (s / float(num_samples)).view(1, 1, num_samples)
-    per_cluster = (factor_s * inner_j * term_s).sum(dim=2)
-    return per_cluster.to(dtype=output_dtype)
+    return _merge_to_max_clusters(
+        data=data,
+        assignments=assignments,
+        max_num_clusters=max_num_clusters,
+    )

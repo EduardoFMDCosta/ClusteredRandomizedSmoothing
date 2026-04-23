@@ -2,7 +2,7 @@ import torch
 from dataclasses import dataclass
 
 from randomized_smoothing.dataclasses import ConfidenceParameters
-from .utils import _binomial_cumulative_probability
+from .optimization import _binomial_cumulative_probability
 
 
 @dataclass

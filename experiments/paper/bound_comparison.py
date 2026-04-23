@@ -3,24 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import torch
-
-TEXTWIDTH = 5.5  # inches
-
-plt.rcParams.update(
-	{
-		"font.family": "serif",
-		"mathtext.fontset": "cm",
-		"font.size": 10,
-		"axes.labelsize": 10,
-		"axes.titlesize": 10,
-		"xtick.labelsize": 9,
-		"ytick.labelsize": 9,
-		"legend.fontsize": 9,
-		"legend.framealpha": 0.95,
-	}
-)
 
 # Make src/ importable when running this script from the repository root.
 ROOT = Path(__file__).resolve().parent
@@ -29,7 +12,8 @@ SRC = EXPERIMENTS.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from randomized_smoothing.utils import robustness_bound
+from randomized_smoothing.optimization import robustness_bound
+from plotting import plot_bound_clusterized_grid
 
 
 def compute_curve(p_values: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
@@ -89,12 +73,10 @@ def main() -> None:
     # Per-region bound versus ratio p_R / p_V.
     p_v_values = [0.2, 0.5, 0.8, 1.0]
     ratio_values = torch.linspace(0.0, 1.0, 300, dtype=torch.float64)
-    _w = TEXTWIDTH  # full textwidth for the grid
-    fig2, axes2 = plt.subplots(len(alphas), len(p_v_values), figsize=(_w, 0.60 * _w), sharex=True, sharey=True)
 
-    for i, alpha in enumerate(alphas):
-        for j, p_v in enumerate(p_v_values):
-            ax = axes2[i, j]
+    y_data: dict[tuple[float, float, int], list[float]] = {}
+    for alpha in alphas:
+        for p_v in p_v_values:
             for n in num_samples_list:
                 y = compute_curve_ours_per_region(
                     ratio_values=ratio_values,
@@ -102,36 +84,17 @@ def main() -> None:
                     num_samples=n,
                     alpha=alpha,
                 )
-                ax.plot(
-                    ratio_values.numpy(),
-                    y.numpy(),
-                    linewidth=2.0,
-                    color=colors[n],
-                    label=rf"$N={n}$",
-                )
+                y_data[(alpha, p_v, n)] = y.numpy()
 
-            ax.set_title(rf"$\alpha={alpha},\ p_{{\mathcal{{V}}}}={p_v}$")
-            ax.grid(alpha=0.3, linestyle=":")
-            ax.set_yticks([0.0, 0.5, 1.0])
-
-    # Single shared axis labels.
-    fig2.supylabel("Certified probability", fontsize=plt.rcParams["axes.labelsize"])
-
-    fig2.tight_layout()
-    fig2.subplots_adjust(bottom=0.22)  # room for x-label + legend
-
-    # Place shared x-label and legend at explicit vertical positions so they
-    # don't overlap.  Both use figure-fraction coordinates.
-    fig2.text(0.5, 0.12, r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$",
-              ha="center", va="center", fontsize=plt.rcParams["axes.labelsize"])
-
-    handles, labels = axes2[0, 0].get_legend_handles_labels()
-    fig2.legend(handles, labels, loc="lower center", ncol=len(num_samples_list),
-                bbox_to_anchor=(0.5, 0.0))
-
-    output_path_ours = output_dir / "bound_clusterized_grid.pdf"
-    fig2.savefig(output_path_ours, dpi=180, bbox_inches="tight")
-    plt.close(fig2)
+    output_path_ours = plot_bound_clusterized_grid(
+        ratio_values=ratio_values.numpy(),
+        alphas=alphas,
+        p_v_values=p_v_values,
+        num_samples_list=num_samples_list,
+        y_data=y_data,
+        colors=colors,
+        output_dir=output_dir,
+    )
 
     print(f"Saved plot to: {output_path_ours}")
 

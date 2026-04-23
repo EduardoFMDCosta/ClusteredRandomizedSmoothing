@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import torch
 
 
@@ -17,8 +15,7 @@ if str(SRC) not in sys.path:
 
 from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.dataclasses import ClusteringParameters
-
-TEXTWIDTH = 5.5  # inches
+from plotting import plot_comparison
 
 
 def make_samples() -> torch.Tensor:
@@ -79,115 +76,6 @@ def compute_partition_stats(cluster: Cluster, outputs: torch.Tensor) -> list[dic
         )
 
     return stats
-
-
-def _add_region_patch(ax: plt.Axes, cluster: Cluster, cluster_index: int, color: str) -> None:
-    region = cluster.regions
-    centroid = cluster.centroids[0, cluster_index].detach().cpu().numpy()
-
-    if hasattr(region, "radius"):
-        radius = float(region.radius[0, cluster_index].detach().cpu().item())
-        patch = mpatches.Circle(
-            centroid,
-            radius=radius,
-            fill=False,
-            edgecolor=color,
-            linewidth=2.0,
-            linestyle="-",
-        )
-    else:
-        lower = region.lower[0, cluster_index].detach().cpu().numpy()
-        upper = region.upper[0, cluster_index].detach().cpu().numpy()
-        patch = mpatches.Rectangle(
-            lower,
-            *(upper - lower),
-            fill=False,
-            edgecolor=color,
-            linewidth=2.0,
-            linestyle="-",
-        )
-
-    ax.add_patch(patch)
-
-
-def plot_comparison(
-    outputs: torch.Tensor,
-    clusters_by_key: dict[tuple[str, float], Cluster],
-    coverages: list[float],
-    output_dir: Path,
-) -> list[Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    samples_np = outputs[0].detach().cpu().numpy()
-    x_pad = 0.8
-    y_pad = 0.8
-
-    all_x = samples_np[:, 0]
-    all_y = samples_np[:, 1]
-    x_lim = (float(all_x.min() - x_pad), float(all_x.max() + x_pad))
-    y_lim = (float(all_y.min() - y_pad), float(all_y.max() + y_pad))
-
-    plt.rcParams.update({
-        "text.usetex": True,
-        "font.family": "serif",
-        "font.serif": ["Computer Modern Roman"],
-        "font.size": 10,
-        "axes.labelsize": 10,
-        "axes.titlesize": 10,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "legend.fontsize": 9,
-    })
-
-    colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
-    paths: list[Path] = []
-
-    for coverage in coverages:
-        _w = 0.80 * TEXTWIDTH
-        fig, axes = plt.subplots(
-            1, 2,
-            figsize=(_w, 0.50 * _w),
-            sharex=True,
-            sharey=True,
-        )
-
-        for col, set_type in enumerate(["HyperRectangle", "EuclideanBall"]):
-            ax = axes[col]
-            cluster = clusters_by_key[(set_type, coverage)]
-            assignments = cluster.assignments[0].detach().cpu().numpy()
-            active_k = int(cluster.k_per_row[0].item())
-
-            for j in range(active_k):
-                cluster_points = samples_np[assignments == j]
-                ax.scatter(
-                    cluster_points[:, 0],
-                    cluster_points[:, 1],
-                    s=12,
-                    alpha=0.45,
-                    color=colors[j % len(colors)],
-                )
-                centroid = cluster.centroids[0, j].detach().cpu().numpy()
-                ax.scatter(
-                    centroid[0],
-                    centroid[1],
-                    marker="x",
-                    s=90,
-                    linewidths=2.2,
-                    color=colors[j % len(colors)],
-                )
-                _add_region_patch(ax=ax, cluster=cluster, cluster_index=j, color=colors[j % len(colors)])
-
-            ax.set_xlim(*x_lim)
-            ax.set_ylim(*y_lim)
-            ax.set_aspect("equal", adjustable="box")
-            ax.grid(alpha=0.25, linestyle=":")
-
-        fig.subplots_adjust(wspace=0.05)
-        output_path = output_dir / f"hyperrectangle_vs_ball_cov{coverage:.2f}.pdf"
-        fig.savefig(output_path, dpi=180, bbox_inches="tight")
-        plt.close(fig)
-        paths.append(output_path)
-
-    return paths
 
 
 def main() -> None:
