@@ -23,6 +23,8 @@ class ClusteringParameters:
     max_num_clusters: int
     coverage: float
     set_type: str = "HyperRectangle"
+    dbscan_eps: float = 0.5
+    dbscan_min_samples: int = 10
     max_iter: int = 1000
     tol: float = 1e-5
     elbow_threshold: float = 0.05
@@ -31,6 +33,8 @@ class ClusteringParameters:
         self.max_num_clusters = int(self.max_num_clusters)
         self.coverage = float(self.coverage)
         self.set_type = str(self.set_type)
+        self.dbscan_eps = float(self.dbscan_eps)
+        self.dbscan_min_samples = int(self.dbscan_min_samples)
         self.max_iter = int(self.max_iter)
         self.tol = float(self.tol)
         self.elbow_threshold = float(self.elbow_threshold)
@@ -43,6 +47,10 @@ class ClusteringParameters:
             raise ValueError(
                 f"set_type must be one of {sorted(_ALLOWED_SET_TYPES)}"
             )
+        if self.dbscan_eps <= 0.0:
+            raise ValueError("dbscan_eps must be positive")
+        if self.dbscan_min_samples <= 0:
+            raise ValueError("dbscan_min_samples must be positive")
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")
         if self.tol <= 0:

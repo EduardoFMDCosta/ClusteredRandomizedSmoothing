@@ -34,7 +34,7 @@ class Cluster:
     def _compute_centroids(
         self, outputs: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run per-row optimal K-means and pad all rows to the same k_max.
+        """Run per-row DBSCAN clustering and pad rows to shared ``k_max``.
 
         Phantom centroid slots (indices k_i .. k_max-1 for row i) are filled
         with a copy of that row's cluster-0 centroid.  Because `torch.argmin`
@@ -53,9 +53,8 @@ class Cluster:
             c_i, a_i, k_i = _select_num_clusters(
                 data=outputs[i],
                 max_num_clusters=self.parameters.max_num_clusters,
-                max_iter=self.parameters.max_iter,
-                tol=self.parameters.tol,
-                elbow_threshold=self.parameters.elbow_threshold,
+                dbscan_eps=self.parameters.dbscan_eps,
+                dbscan_min_samples=self.parameters.dbscan_min_samples,
             )
             k_list.append(k_i)
             centroids_list.append(c_i)
