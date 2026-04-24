@@ -71,6 +71,37 @@ class MultiplicativeThreeMode1DGaussianMixture(StochasticFunction):
         return y.unsqueeze(-1)
 
 
+class UAV3DPolicyStochasticFunction(StochasticFunction):
+    """Wrap a ``VariationalPolicy`` so that sampling an action at a (possibly
+    noisy) state is exposed as a ``StochasticFunction``.
+
+    Input ``x`` is a *normalized* UAV3D state (shape ``(..., state_dim)``);
+    output is a tanh-squashed action sample from the policy's Gaussian
+    mixture (shape ``(..., action_dim)``). Passing noisy copies of a base
+    state through this function and smoothing the action outputs is the
+    "robustified action distribution" we visualize.
+    """
+
+    def __init__(self, policy) -> None:
+        self.policy = policy
+        self.policy.eval()
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim < 2:
+            raise ValueError("x must have shape (..., state_dim)")
+
+        leading_shape = x.shape[:-1]
+        state_dim = x.shape[-1]
+        device = next(self.policy.parameters()).device
+        dtype = next(self.policy.parameters()).dtype
+
+        x_flat = x.reshape(-1, state_dim).to(device=device, dtype=dtype)
+        with torch.no_grad():
+            action, _, _ = self.policy.sample(x_flat)
+        action_dim = action.shape[-1]
+        return action.reshape(*leading_shape, action_dim).to(device=x.device, dtype=x.dtype)
+
+
 class TrajFlowMeszarosStochasticFunction(StochasticFunction):
     """Experiment-specific adapter exposing trajflow_meszaros as StochasticFunction."""
 
