@@ -41,7 +41,7 @@ def main():
     data_file = str(EXPERIMENTS) + os.sep + "TrajFlowExperiment" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
-    selected_indices = np.array([3, 4, 50, 51], dtype=int)
+    selected_indices = np.array([772], dtype=int)
     batch_size = selected_indices.shape[0]
     x_input = data[selected_indices, :, :, :2]  # Take selected samples, both agents, (x, y) coords only.
     # Put the target agent in index 0 because TrajFlow predicts from agent slot 0.
@@ -112,9 +112,9 @@ def main():
         h=start,  # Pass the starting positions as helper variables for the stochastic function.
     )
 
-    # Original column should visualize f(x), not f(x + epsilon): repeat clean outputs.
-    original_clean = stochastic_fn(u, h=start)
-    original_mc_samples = original_clean.unsqueeze(1).expand(-1, 100, -1)
+    # Original means f(x), not f(x + epsilon), for comparison in the plots
+    original = stochastic_fn(u, h=start)
+    original_mc_samples = original.unsqueeze(1).expand(-1, 100, -1)
 
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=100)
     clusterized_mc_samples = smoother.monte_carlo(num_simulations=100)
@@ -135,11 +135,8 @@ def main():
         clusterized_mc_samples=clusterized_mc_samples,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-        # DBSCAN in 2-D endpoint space: eps in metres, separates distinct
-        # manoeuvre endpoints while grouping near-identical ones.
         dbscan_eps=0.5,
         dbscan_min_samples=5,
-        # Draw 1-sigma and 2-sigma confidence ellipses per cluster.
         ellipse_sigmas=(1.0, 2.0),
     )
 
@@ -152,7 +149,7 @@ def main():
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-        x_index=3,
+        x_index=0,
     )
 
     num_output_timesteps = smoother.regions.lower.shape[-1] // 2
@@ -165,7 +162,7 @@ def main():
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-        x_index=3,
+        x_index=0,
         timesteps=[0, num_output_timesteps - 1],
     )
     

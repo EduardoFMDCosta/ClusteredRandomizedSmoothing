@@ -42,6 +42,12 @@ class ClopperPearsonInterval:
             tail_beta=per_tail_beta,
         )
 
+        # If clustering produces exactly one partition set, that set must be the
+        # entire space, so its probability is 1.
+        if self.num_clusters == 1:
+            partition_lb = torch.ones_like(probs_partition)
+            partition_ub = torch.ones_like(probs_partition)
+
         self.intervals = _ClopperPearsonIntervals(
             region=_Interval(lb=region_lb, ub=region_ub),
             partition=_Interval(lb=partition_lb, ub=partition_ub),

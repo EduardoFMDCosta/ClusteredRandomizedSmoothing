@@ -395,7 +395,7 @@ def _plot_car_icon(
 ) -> None:
 	"""Draw a simple rotated rectangle to indicate vehicle pose at trajectory start."""
 	heading = float(np.arctan2(next_point[1] - start[1], next_point[0] - start[0]))
-	car_width = car_length * 0.55
+	car_width = car_length * 0.40
 	rect = mpatches.Rectangle(
 		(start[0] - 0.5 * car_length, start[1] - 0.5 * car_width),
 		car_length,
@@ -476,12 +476,12 @@ def plot_trajectory_samples(
 	x_pad = max((x_max - x_min) * 0.05, 1e-6)
 	y_pad = max((y_max - y_min) * 0.05, 1e-6)
 	x_lim = (x_min - x_pad, x_max + x_pad)
-	y_lim = (y_min - y_pad, y_max + y_pad)
+	y_lim = (y_min - y_pad - 5.0, y_max + y_pad + 5.0)
 
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
-	car_size = 0.018 * max(x_lim[1] - x_lim[0], y_lim[1] - y_lim[0])
-	car_size = max(car_size, 0.2)
+	car_size = 0.022 * max(x_lim[1] - x_lim[0], y_lim[1] - y_lim[0])
+	car_size = max(car_size, 0.25)
 
 	for i in range(nx):
 		ax_raw = axes[i, 0]
@@ -670,7 +670,7 @@ def plot_timestep_rectangles_visualization(
 	x_pad = max((x_max - x_min) * 0.05, 1e-6)
 	y_pad = max((y_max - y_min) * 0.05, 1e-6)
 	x_lim = (x_min - x_pad, x_max + x_pad)
-	y_lim = (y_min - y_pad, y_max + y_pad)
+	y_lim = (y_min - y_pad - 5.0, y_max + y_pad + 5.0)
 
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
