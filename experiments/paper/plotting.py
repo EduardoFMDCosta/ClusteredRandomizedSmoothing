@@ -601,6 +601,8 @@ def plot_timestep_rectangles_visualization(
 	num_input_agents: int = 2,
 	x_index: int = 0,
 	timesteps: list[int] | None = None,
+	active_clusters: torch.Tensor | None = None,
+	single_active_clusters: torch.Tensor | None = None,
 ) -> list[Path]:
 	"""Plot timestep-wise certified rectangles for a single input trajectory.
 
@@ -642,10 +644,16 @@ def plot_timestep_rectangles_visualization(
 	sc_upper = _to_numpy(single_cluster_region.upper[x_index]).reshape(single_cluster_region.upper.shape[1], -1, 2)
 	sc_num_clusters = sc_lower.shape[0]
 
+	active_num_clusters = num_clusters if active_clusters is None else int(active_clusters[x_index].item())
+	active_sc_num_clusters = sc_num_clusters if single_active_clusters is None else int(single_active_clusters[x_index].item())
+
 	if timesteps is None:
 		timesteps_to_plot = list(range(num_timesteps))
 	else:
-		timesteps_to_plot = timesteps
+		timesteps_to_plot = sorted(set(int(t) for t in timesteps))
+	for t in timesteps_to_plot:
+		if t < 0 or t >= num_timesteps:
+			raise ValueError(f"timestep {t} is out of bounds for num_timesteps={num_timesteps}")
 
 	plt.rcParams.update({
 		"text.usetex": True,
@@ -689,7 +697,7 @@ def plot_timestep_rectangles_visualization(
 	cluster_colors = ["#E31A1C", "#1F78B4", "#33A02C", "#FDBF6F", "#FF7F00"]
 
 	# Draw multi-cluster rectangles on right panel only.
-	for c in range(num_clusters):
+	for c in range(active_num_clusters):
 		color = cluster_colors[c % len(cluster_colors)]
 		for t in timesteps_to_plot:
 			x_lo, y_lo = lower[c, t]
@@ -705,7 +713,7 @@ def plot_timestep_rectangles_visualization(
 			ax_right.add_patch(rect)
 
 	# Draw single-cluster rectangles on middle panel.
-	for c in range(sc_num_clusters):
+	for c in range(active_sc_num_clusters):
 		color = cluster_colors[c % len(cluster_colors)]
 		for t in timesteps_to_plot:
 			x_lo, y_lo = sc_lower[c, t]
