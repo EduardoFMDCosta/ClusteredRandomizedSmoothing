@@ -1,14 +1,15 @@
 import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import EuclideanBall, HyperRectangle, TimeStepHyperrectangles
-from randomized_smoothing.utils import _select_num_clusters
+from randomized_smoothing.regions import EuclideanBall, FinalStepHyperrectangle, HyperRectangle, TimeStepHyperrectangles
+from randomized_smoothing.utils import _compute_centroids_from_assignments, _select_num_clusters
 
 
 _SET_CLASSES = {
     "HyperRectangle": HyperRectangle,
     "EuclideanBall": EuclideanBall,
     "TimeStepHyperrectangles": TimeStepHyperrectangles,
+    "FinalStepHyperrectangle": FinalStepHyperrectangle,
 }
 
 
@@ -25,6 +26,33 @@ class Cluster:
 
         self.regions = self._get_regions(outputs=outputs)
         self.probs_region = self._compute_probs_regions(outputs=outputs)
+
+    def _build_clustering_features(self, outputs: torch.Tensor) -> torch.Tensor:
+        feature_mode = self.parameters.cluster_feature
+        if feature_mode == "trajectory":
+            return outputs
+
+        if outputs.shape[-1] % 2 != 0:
+            raise ValueError("Expected output dimension arranged as [x1,y1,...,xT,yT]")
+
+        traj = outputs.view(*outputs.shape[:-1], outputs.shape[-1] // 2, 2)
+        start = traj[..., 0, :]
+        end = traj[..., -1, :]
+        final_displacement = torch.linalg.vector_norm(end - start, dim=-1, keepdim=True)
+
+        if feature_mode == "final_displacement":
+            return final_displacement
+
+        step_vectors = traj[..., 1:, :] - traj[..., :-1, :]
+        average_progress = torch.linalg.vector_norm(step_vectors, dim=-1).mean(dim=-1, keepdim=True)
+
+        if feature_mode == "average_progress":
+            return average_progress
+
+        if feature_mode == "final_displacement_and_progress":
+            return torch.cat((final_displacement, average_progress), dim=-1)
+
+        raise ValueError(f"Unsupported cluster_feature: {feature_mode}")
 
 
     @property
@@ -44,17 +72,23 @@ class Cluster:
         mass without any additional masking in downstream code.
         """
         nx, num_samples, output_dim = outputs.shape
+        clustering_data = self._build_clustering_features(outputs=outputs)
 
         # ---- per-row elbow selection ----------------------------------------
         k_list: list[int] = []
         centroids_list: list[torch.Tensor] = []
         assignments_list: list[torch.Tensor] = []
         for i in range(nx):
-            c_i, a_i, k_i = _select_num_clusters(
-                data=outputs[i],
+            _, a_i, k_i = _select_num_clusters(
+                data=clustering_data[i],
                 max_num_clusters=self.parameters.max_num_clusters,
                 dbscan_eps=self.parameters.dbscan_eps,
                 dbscan_min_samples=self.parameters.dbscan_min_samples,
+            )
+            c_i = _compute_centroids_from_assignments(
+                data=outputs[i],
+                assignments=a_i,
+                num_clusters=k_i,
             )
             k_list.append(k_i)
             centroids_list.append(c_i)
@@ -86,12 +120,21 @@ class Cluster:
         if region_cls is None:
             raise ValueError(f"Unsupported set_type: {self.parameters.set_type}")
 
-        return region_cls.from_samples(
-            samples=outputs,
-            centroids=self.centroids,
-            assignments=self.assignments,
-            coverage=self.parameters.coverage,
-        )
+        kwargs = {
+            "samples": outputs,
+            "centroids": self.centroids,
+            "assignments": self.assignments,
+            "coverage": self.parameters.coverage,
+        }
+        if self.parameters.set_type == "FinalStepHyperrectangle":
+            kwargs.update(
+                {
+                    "adaptive_cluster_coverage": self.parameters.adaptive_cluster_coverage,
+                    "min_cluster_coverage": self.parameters.min_cluster_coverage,
+                }
+            )
+
+        return region_cls.from_samples(**kwargs)
     
     def _compute_probs_regions(self, outputs: torch.Tensor) -> torch.Tensor:
         """Compute probability of samples falling in region j, conditioned on being assigned to cluster j.

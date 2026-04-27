@@ -76,6 +76,8 @@ class HyperRectangle:
         centroids: torch.Tensor,
         assignments: torch.Tensor,
         coverage: float,
+        adaptive_cluster_coverage: bool = False,
+        min_cluster_coverage: float = 0.6,
     ):
         nx, _, output_dim = samples.shape
         k = centroids.shape[1]
@@ -126,6 +128,8 @@ class TimeStepHyperrectangles(HyperRectangle):
         centroids: torch.Tensor,
         assignments: torch.Tensor,
         coverage: float,
+        adaptive_cluster_coverage: bool = False,
+        min_cluster_coverage: float = 0.6,
     ):
         nx, _, output_dim = samples.shape
         k = centroids.shape[1]
@@ -152,6 +156,112 @@ class TimeStepHyperrectangles(HyperRectangle):
         lower = centroids - half_widths
         upper = centroids + half_widths
         return TimeStepHyperrectangles(lower=lower, upper=upper)
+
+
+class FinalStepHyperrectangle:
+    """Axis-aligned rectangle on the final predicted (x, y) timestep only."""
+
+    def __init__(self, lower: torch.Tensor, upper: torch.Tensor):
+        if lower.shape != upper.shape:
+            raise ValueError("lower and upper must have identical shape")
+        if lower.shape[-1] != 2:
+            raise ValueError("Expected last dimension to be 2 for final (x, y)")
+        self.lower = lower
+        self.upper = upper
+
+    @property
+    def width(self):
+        return self.upper - self.lower
+
+    @property
+    def area(self):
+        width = self.width.to(torch.float64)
+        return width[..., 0] * width[..., 1]
+
+    @property
+    def timestep_width(self):
+        return self.width.unsqueeze(-2)
+
+    @property
+    def timestep_area(self):
+        return self.area.unsqueeze(-1)
+
+    def contains(self, points: torch.Tensor) -> torch.Tensor:
+        if points.shape[-1] % 2 != 0:
+            raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
+
+        final_xy = points[..., -2:]
+        lower = self.lower.unsqueeze(1)
+        upper = self.upper.unsqueeze(1)
+        return ((final_xy.unsqueeze(2) >= lower) & (final_xy.unsqueeze(2) <= upper)).all(dim=-1)
+
+    @staticmethod
+    def from_samples(
+        samples: torch.Tensor,
+        centroids: torch.Tensor,
+        assignments: torch.Tensor,
+        coverage: float,
+        adaptive_cluster_coverage: bool = False,
+        min_cluster_coverage: float = 0.6,
+    ):
+        if samples.shape[-1] % 2 != 0:
+            raise ValueError("Expected last dimension arranged as [x1,y1,...,xT,yT]")
+
+        final_samples = samples[..., -2:]
+        final_centroids = centroids[..., -2:]
+
+        nx, _, _ = final_samples.shape
+        k = final_centroids.shape[1]
+
+        assigned_abs_diff = _assigned_abs_diff(
+            samples=final_samples,
+            centroids=final_centroids,
+            assignments=assignments,
+        )
+
+        half_widths = torch.zeros((nx, k, 2), dtype=samples.dtype, device=samples.device)
+        for i in range(nx):
+            counts = torch.bincount(assignments[i], minlength=k).to(dtype=samples.dtype)
+            max_count = counts.max().clamp(min=1.0)
+            for j in range(k):
+                mask = assignments[i] == j
+                diff_ij = assigned_abs_diff[i][mask]
+                if diff_ij.numel() == 0:
+                    continue
+
+                effective_coverage = coverage
+                if adaptive_cluster_coverage:
+                    # Explicitly reduce coverage for smaller partition regions.
+                    # This helps prevent low-mass clusters from creating oversized boxes.
+                    scaled = coverage * float((counts[j] / max_count).item())
+                    effective_coverage = max(min_cluster_coverage, scaled)
+
+                rank = _coverage_rank(diff_ij.shape[0], effective_coverage)
+                half_widths[i, j] = diff_ij.kthvalue(rank, dim=0).values
+
+        lower = final_centroids - half_widths
+        upper = final_centroids + half_widths
+
+        # Enforce disjoint rectangles by clipping adjacent x-intervals at the
+        # midpoint between centroid x-coordinates.
+        # Rectangles may touch at boundaries but cannot overlap in x.
+        for i in range(nx):
+            order = torch.argsort(final_centroids[i, :, 0])
+            for idx in range(order.numel() - 1):
+                left_idx = int(order[idx].item())
+                right_idx = int(order[idx + 1].item())
+                boundary = 0.5 * (final_centroids[i, left_idx, 0] + final_centroids[i, right_idx, 0])
+
+                upper[i, left_idx, 0] = torch.minimum(upper[i, left_idx, 0], boundary)
+                lower[i, right_idx, 0] = torch.maximum(lower[i, right_idx, 0], boundary)
+
+                # Keep valid (possibly zero-width) intervals after clipping.
+                if lower[i, left_idx, 0] > upper[i, left_idx, 0]:
+                    lower[i, left_idx, 0] = upper[i, left_idx, 0]
+                if lower[i, right_idx, 0] > upper[i, right_idx, 0]:
+                    upper[i, right_idx, 0] = lower[i, right_idx, 0]
+
+        return FinalStepHyperrectangle(lower=lower, upper=upper)
     
 
 

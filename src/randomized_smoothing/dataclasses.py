@@ -2,7 +2,18 @@ from dataclasses import dataclass
 import torch
 
 
-_ALLOWED_SET_TYPES = {"HyperRectangle", "EuclideanBall", "TimeStepHyperrectangles"}
+_ALLOWED_SET_TYPES = {
+    "HyperRectangle",
+    "EuclideanBall",
+    "TimeStepHyperrectangles",
+    "FinalStepHyperrectangle",
+}
+_ALLOWED_CLUSTER_FEATURES = {
+    "trajectory",
+    "final_displacement",
+    "average_progress",
+    "final_displacement_and_progress",
+}
 
 @dataclass
 class SmoothingParameters:
@@ -28,6 +39,9 @@ class ClusteringParameters:
     max_iter: int = 1000
     tol: float = 1e-5
     elbow_threshold: float = 0.05
+    cluster_feature: str = "trajectory"
+    adaptive_cluster_coverage: bool = False
+    min_cluster_coverage: float = 0.6
 
     def __post_init__(self) -> None:
         self.max_num_clusters = int(self.max_num_clusters)
@@ -38,6 +52,9 @@ class ClusteringParameters:
         self.max_iter = int(self.max_iter)
         self.tol = float(self.tol)
         self.elbow_threshold = float(self.elbow_threshold)
+        self.cluster_feature = str(self.cluster_feature)
+        self.adaptive_cluster_coverage = bool(self.adaptive_cluster_coverage)
+        self.min_cluster_coverage = float(self.min_cluster_coverage)
 
         if self.max_num_clusters <= 0:
             raise ValueError("max_num_clusters must be positive")
@@ -46,6 +63,10 @@ class ClusteringParameters:
         if self.set_type not in _ALLOWED_SET_TYPES:
             raise ValueError(
                 f"set_type must be one of {sorted(_ALLOWED_SET_TYPES)}"
+            )
+        if self.cluster_feature not in _ALLOWED_CLUSTER_FEATURES:
+            raise ValueError(
+                f"cluster_feature must be one of {sorted(_ALLOWED_CLUSTER_FEATURES)}"
             )
         if self.dbscan_eps <= 0.0:
             raise ValueError("dbscan_eps must be positive")
@@ -57,6 +78,8 @@ class ClusteringParameters:
             raise ValueError("tol must be positive")
         if not (0.0 < self.elbow_threshold < 1.0):
             raise ValueError("elbow_threshold must satisfy 0 < elbow_threshold < 1")
+        if not (0.0 < self.min_cluster_coverage <= 1.0):
+            raise ValueError("min_cluster_coverage must satisfy 0 < min_cluster_coverage <= 1")
 
 @dataclass
 class ConfidenceParameters:

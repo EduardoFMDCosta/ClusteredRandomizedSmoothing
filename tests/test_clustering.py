@@ -4,6 +4,7 @@ import torch
 
 from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.dataclasses import ClusteringParameters
+from randomized_smoothing.regions import FinalStepHyperrectangle
 
 
 def _make_outputs() -> torch.Tensor:
@@ -139,3 +140,149 @@ def test_dbscan_caps_clusters_to_max_num_clusters() -> None:
 
     assert cluster.num_clusters == 2
     assert int(cluster.k_per_row[0].item()) == 2
+
+
+def test_feature_clustering_final_displacement_separates_stay_vs_move() -> None:
+    # One row with two clear behavioral modes in trajectory space:
+    # six almost-static trajectories vs six forward-moving trajectories.
+    stay = torch.tensor(
+        [
+            [0.00, 0.00, 0.05, 0.00],
+            [0.00, 0.00, 0.04, 0.01],
+            [0.00, 0.00, 0.03, -0.01],
+            [0.00, 0.00, 0.02, 0.00],
+            [0.00, 0.00, 0.06, -0.01],
+            [0.00, 0.00, 0.05, 0.02],
+        ],
+        dtype=torch.float64,
+    )
+    move = torch.tensor(
+        [
+            [0.00, 0.00, 3.00, 0.00],
+            [0.00, 0.00, 3.10, 0.10],
+            [0.00, 0.00, 2.90, -0.10],
+            [0.00, 0.00, 3.20, 0.00],
+            [0.00, 0.00, 2.80, 0.10],
+            [0.00, 0.00, 3.00, -0.10],
+        ],
+        dtype=torch.float64,
+    )
+    outputs = torch.cat((stay, move), dim=0).unsqueeze(0)
+
+    cluster = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=2,
+            coverage=0.9,
+            dbscan_eps=0.3,
+            dbscan_min_samples=3,
+            cluster_feature="final_displacement",
+        ),
+    )
+
+    assert cluster.num_clusters == 2
+    probs = cluster.probs_partition[0]
+    assert torch.isclose(probs.sum(), torch.tensor(1.0, dtype=probs.dtype))
+    assert torch.all(probs > 0.0)
+
+
+def test_final_step_hyperrectangle_contains_uses_last_xy_only() -> None:
+    # Region bounds for one x and one cluster at final timestep.
+    region = FinalStepHyperrectangle(
+        lower=torch.tensor([[[1.0, 1.0]]], dtype=torch.float64),
+        upper=torch.tensor([[[2.0, 2.0]]], dtype=torch.float64),
+    )
+
+    # Two samples, each encoded as [x1, y1, x2, y2].
+    # Sample 0 ends inside [1,2]x[1,2], sample 1 ends outside.
+    points = torch.tensor(
+        [[
+            [100.0, 100.0, 1.5, 1.5],
+            [-100.0, -100.0, 2.5, 1.5],
+        ]],
+        dtype=torch.float64,
+    )
+
+    contains = region.contains(points)
+    assert contains.shape == (1, 2, 1)
+    assert bool(contains[0, 0, 0].item()) is True
+    assert bool(contains[0, 1, 0].item()) is False
+
+
+def test_final_step_hyperrectangle_x_intervals_are_disjoint() -> None:
+    outputs = torch.tensor(
+        [[
+            [0.0, 0.0, -2.1, 0.0],
+            [0.0, 0.0, -1.9, 0.1],
+            [0.0, 0.0, -2.0, -0.1],
+            [0.0, 0.0, 2.0, 0.0],
+            [0.0, 0.0, 1.9, 0.1],
+            [0.0, 0.0, 2.1, -0.1],
+        ]],
+        dtype=torch.float64,
+    )
+
+    cluster = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=2,
+            coverage=0.95,
+            set_type="FinalStepHyperrectangle",
+            cluster_feature="trajectory",
+            dbscan_eps=0.4,
+            dbscan_min_samples=2,
+        ),
+    )
+
+    assert int(cluster.k_per_row[0].item()) == 2
+    lower_x = cluster.regions.lower[0, :, 0]
+    upper_x = cluster.regions.upper[0, :, 0]
+
+    # Intervals are disjoint up to ordering.
+    left = torch.argmin(cluster.centroids[0, :, -2])
+    right = torch.argmax(cluster.centroids[0, :, -2])
+    assert upper_x[left] <= lower_x[right]
+
+
+def test_adaptive_cluster_coverage_reduces_small_cluster_area() -> None:
+    # Large cluster near x=0 and small cluster near x=3.
+    large = torch.tensor(
+        [[0.0, 0.0, 0.1 * i, 0.0] for i in range(10)],
+        dtype=torch.float64,
+    )
+    small = torch.tensor(
+        [[0.0, 0.0, 3.0 + 0.4 * i, 0.0] for i in range(3)],
+        dtype=torch.float64,
+    )
+    outputs = torch.cat((large, small), dim=0).unsqueeze(0)
+
+    base = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=2,
+            coverage=0.95,
+            set_type="FinalStepHyperrectangle",
+            cluster_feature="final_displacement",
+            adaptive_cluster_coverage=False,
+            dbscan_eps=0.35,
+            dbscan_min_samples=2,
+        ),
+    )
+    adaptive = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=2,
+            coverage=0.95,
+            set_type="FinalStepHyperrectangle",
+            cluster_feature="final_displacement",
+            adaptive_cluster_coverage=True,
+            min_cluster_coverage=0.5,
+            dbscan_eps=0.35,
+            dbscan_min_samples=2,
+        ),
+    )
+
+    # Identify smaller-mass cluster and compare final-step area.
+    probs = base.probs_partition[0]
+    small_idx = int(torch.argmin(probs).item())
+    assert adaptive.regions.area[0, small_idx] <= base.regions.area[0, small_idx]
