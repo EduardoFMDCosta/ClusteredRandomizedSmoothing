@@ -64,11 +64,14 @@ def main():
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
         clustering=ClusteringParameters(
-            max_num_clusters=3,
+            max_num_clusters=2,
             coverage=coverage,
-            set_type="TimeStepHyperrectangles",
-            dbscan_eps=1.5,
-            dbscan_min_samples=100,
+            set_type="FinalStepHyperrectangle",
+            cluster_feature="final_displacement_and_progress",
+            adaptive_cluster_coverage=True,
+            min_cluster_coverage=0.70,
+            dbscan_eps=0.2,
+            dbscan_min_samples=30,
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
@@ -91,7 +94,10 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=1,
             coverage=coverage,
-            set_type="TimeStepHyperrectangles",
+            set_type="FinalStepHyperrectangle",
+            cluster_feature="final_displacement_and_progress",
+            adaptive_cluster_coverage=True,
+            min_cluster_coverage=0.70,
             dbscan_eps=1.5,
             dbscan_min_samples=100,
         ),
@@ -159,9 +165,17 @@ def main():
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
         x_index=0,
+        active_clusters=smoother.cluster.k_per_row,
+        single_active_clusters=smoother_single.cluster.k_per_row,
     )
 
     num_output_timesteps = smoother.regions.lower.shape[-1] // 2
+    selected_timesteps = [0, num_output_timesteps - 1]
+    if num_output_timesteps <= 1:
+        selected_timesteps = [0]
+    else:
+        selected_timesteps = sorted(set(selected_timesteps))
+
     chart_paths += plot_timestep_rectangles_visualization(
         x=x,
         mc_samples=original_mc_samples,
@@ -172,7 +186,9 @@ def main():
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
         x_index=0,
-        timesteps=[0, num_output_timesteps - 1],
+        timesteps=selected_timesteps,
+        active_clusters=smoother.cluster.k_per_row,
+        single_active_clusters=smoother_single.cluster.k_per_row,
     )
     
 
