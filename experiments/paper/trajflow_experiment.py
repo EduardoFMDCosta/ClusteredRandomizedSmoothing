@@ -41,16 +41,25 @@ def main():
     data_file = str(EXPERIMENTS) + os.sep + "TrajFlowExperiment" + os.sep + "Data" + os.sep + "Inputs.npy"
     data = np.load(data_file)
 
-    selected_indices = np.array([772], dtype=int)
+    # Parameters
+    selected_indices = np.array([7, 13, 150, 772], dtype=int)
+    use_position_input = True  # True: smooth in position space x; False: smooth in control space u.
+    sigma = 0.05
+    coverage = 0.95
+
     batch_size = selected_indices.shape[0]
     x_input = data[selected_indices, :, :, :2]  # Take selected samples, both agents, (x, y) coords only.
     # Put the target agent in index 0 because TrajFlow predicts from agent slot 0.
     x_input = x_input[:,[1,0]]
     x = torch.from_numpy(x_input.reshape(batch_size, -1)).float()  # Shape: (batch_size, 40)
-    u, start = stochastic_fn.pos_to_ctrl(x)
 
-    sigma = 0.5 # sigma=1 would correspond to the maximum allowable deviation
-    coverage = 0.95
+    if use_position_input:
+        model_input = x
+        helper = []
+    else:
+        u, start = stochastic_fn.pos_to_ctrl(x)
+        model_input = u
+        helper = start
 
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
@@ -66,10 +75,10 @@ def main():
 
     smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=u,
+        x=model_input,
         sigma=sigma,
         parameters=params,
-        h=start,  # Pass the starting positions as helper variables for the stochastic function.
+        h=helper,
     )
 
     smoothed_distribution = smoother.smooth()
@@ -91,29 +100,29 @@ def main():
 
     smoother_single = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=u,
+        x=model_input,
         sigma=sigma,
         parameters=params_single,
-        h=start,  # Pass the starting positions as helper variables for the stochastic function.
+        h=helper,
     )
     smoother_single.smooth()
 
 
     smoothing_distribution = MultivariateGaussian(
-        mean=torch.zeros(u.shape[-1], dtype=u.dtype), 
-        cov=sigma ** 2 * torch.eye(u.shape[-1], dtype=u.dtype)
+        mean=torch.zeros(model_input.shape[-1], dtype=model_input.dtype), 
+        cov=sigma ** 2 * torch.eye(model_input.shape[-1], dtype=model_input.dtype)
     )
 
     # Monte Carlo simulation for the two smoothed methods.
     mc_samples = stochastic_fn.sample_from_noisy_inputs(
-        x=u,
+        x=model_input,
         smoothing_distribution=smoothing_distribution,
         num_samples=100,
-        h=start,  # Pass the starting positions as helper variables for the stochastic function.
+        h=helper,
     )
 
     # Original means f(x), not f(x + epsilon), for comparison in the plots
-    original = stochastic_fn(u, h=start)
+    original = stochastic_fn(model_input, h=helper)
     original_mc_samples = original.unsqueeze(1).expand(-1, 100, -1)
 
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=100)
