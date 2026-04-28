@@ -77,32 +77,58 @@ def robustness_bound(
     probs_partition_ub = probs_partition_ub.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
     ratio = (probs_region / probs_partition_ub).clamp(eps, 1.0 - eps)
 
-    s = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
-    j = torch.arange(0, num_samples + 1, device=device, dtype=dtype)
+    # All arithmetic happens in log-space and the result is collapsed with
+    # ``logsumexp`` to keep the bound representable when individual binomial
+    # tail terms underflow (e.g. for large N or extreme p / ratio).
+    log_r = torch.log(ratio)
+    log_1mr = torch.log1p(-ratio)
+    log_p_lb = torch.log(probs_partition_lb)
+    log_1mp_lb = torch.log1p(-probs_partition_lb)
+    log_p_ub = torch.log(probs_partition_ub)
+    log_1mp_ub = torch.log1p(-probs_partition_ub)
+
+    N = num_samples
+    s = torch.arange(1, N + 1, device=device, dtype=dtype)
+    j = torch.arange(0, N + 1, device=device, dtype=dtype)
     two_alpha_floor = 2 * torch.floor(alpha * s)
     j_min = (s - two_alpha_floor).to(dtype=torch.long).clamp(min=0)
 
-    s_row = s.view(1, 1, num_samples, 1)
-    j_row = j.view(1, 1, 1, num_samples + 1)
-    valid_j = (j_row >= j_min.view(1, 1, num_samples, 1)) & (j_row <= s_row)
+    s_row = s.view(1, 1, N, 1)
+    j_row = j.view(1, 1, 1, N + 1)
+    valid_j = (j_row >= j_min.view(1, 1, N, 1)) & (j_row <= s_row)
 
+    # log C(s, j) + j * log(r) + (s - j) * log(1 - r)
     log_comb_sj = log_combination(s_row, j_row)
-
-    r = ratio.unsqueeze(-1).unsqueeze(-1)
     log_term_j = (
         log_comb_sj
-        + j_row * torch.log(r)
-        + (s_row - j_row) * torch.log(1.0 - r)
+        + j_row * log_r.unsqueeze(-1).unsqueeze(-1)
+        + (s_row - j_row) * log_1mr.unsqueeze(-1).unsqueeze(-1)
     )
-    term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
-    inner_j = term_j.sum(dim=-1)
+    neg_inf = torch.full((), float("-inf"), dtype=dtype, device=device)
+    log_term_j = torch.where(valid_j, log_term_j, neg_inf)
+    log_inner_j = torch.logsumexp(log_term_j, dim=-1)  # (nx, k, N)
 
-    term_s_lb = _binomial(k=s, N=float(num_samples), p=probs_partition_lb)
-    term_s_ub = _binomial(k=s, N=float(num_samples), p=probs_partition_ub)
-    term_s = torch.minimum(term_s_lb, term_s_ub)
+    # log C(N, s) + s * log(p) + (N - s) * log(1 - p), broadcast over (nx, k, N).
+    log_comb_Ns = log_combination(float(N), s).view(1, 1, N)
+    s_b = s.view(1, 1, N)
+    log_term_s_lb = (
+        log_comb_Ns
+        + s_b * log_p_lb.unsqueeze(-1)
+        + (N - s_b) * log_1mp_lb.unsqueeze(-1)
+    )
+    log_term_s_ub = (
+        log_comb_Ns
+        + s_b * log_p_ub.unsqueeze(-1)
+        + (N - s_b) * log_1mp_ub.unsqueeze(-1)
+    )
+    # min of two positives in linear space is min of their logs.
+    log_term_s = torch.minimum(log_term_s_lb, log_term_s_ub)
 
-    factor_s = (s / float(num_samples)).view(1, 1, num_samples)
-    per_cluster = (factor_s * inner_j * term_s).sum(dim=2)
+    log_factor_s = torch.log(s / float(N)).view(1, 1, N)
+    log_per_s = log_factor_s + log_inner_j + log_term_s
+
+    log_per_cluster = torch.logsumexp(log_per_s, dim=-1)  # (nx, k)
+    per_cluster = torch.exp(log_per_cluster)
     return per_cluster.to(dtype=output_dtype)
 
 
