@@ -9,7 +9,7 @@ import numpy as np
 import pyvista as pv
 import torch
 from dynamics import UAV3D
-from train_vi_bnn_rl import VariationalPolicy, normalize_state
+from train_rl import VariationalPolicy, normalize_state
 
 # State where the trained K=2 policy is sharply bimodal: right at the west
 # face of the central tower obstacle (x in [-1, 3], y in [-3, 1], z in [-7, 7]),
@@ -131,7 +131,7 @@ def visualize_uav3d_with_pyvista():
 
     env = UAV3D()
 
-    checkpoint_path = Path("experiments/uav_3d/vi_bnn_policy.pt")
+    checkpoint_path = Path("experiments/uav_3d/policy.pt")
     policy: VariationalPolicy | None = None
     action_scale = 4.0
     if checkpoint_path.exists():

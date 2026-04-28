@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from dynamics import UAV3D
-from train_vi_bnn_rl import VariationalPolicy, deterministic_action, normalize_state
+from train_rl import VariationalPolicy, deterministic_action, normalize_state
 
 
 def evaluate_returns(action_fn, episodes: int, horizon: int, seed: int, env) -> np.ndarray:
@@ -83,7 +83,7 @@ def main() -> None:
     args = parse_args()
 
     if args.checkpoint_path is None:
-        args.checkpoint_path = f"experiments/{args.env_type}/vi_bnn_policy.pt"
+        args.checkpoint_path = f"experiments/{args.env_type}/policy.pt"
 
     if args.env_type == "uav_3d":
         env = UAV3D(gaussian_noise=True, noise_std=0.05)
@@ -123,7 +123,7 @@ def main() -> None:
         )
 
     print(f"Benchmarking {args.env_type} with episodes={args.episodes}, horizon={args.horizon}, seed={args.seed}")
-    print(summarize("trained_vi_bnn", evaluate_returns(trained_action, args.episodes, args.horizon, args.seed, env)))
+    print(summarize("trained", evaluate_returns(trained_action, args.episodes, args.horizon, args.seed, env)))
     print(summarize("random_uniform", evaluate_returns(random_action, args.episodes, args.horizon, args.seed, env)))
     print(summarize("zero_action", evaluate_returns(zero_action, args.episodes, args.horizon, args.seed, env)))
     print(summarize("forward_action", evaluate_returns(forward_action, args.episodes, args.horizon, args.seed, env)))
