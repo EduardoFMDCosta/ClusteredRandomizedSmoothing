@@ -22,7 +22,7 @@ from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
-from plotting import plot_timestep_rectangles_visualization, plot_trajectory_samples
+from plotting import plot_timestep_rectangles_visualization
 from plotting import plot_final_timestep_density
 
 
@@ -42,10 +42,11 @@ def main():
     data = np.load(data_file)
 
     # Parameters
-    selected_indices = np.array([7, 13, 150, 772], dtype=int)
-    use_position_input = True  # True: smooth in position space x; False: smooth in control space u.
-    sigma = 0.05
-    coverage = 0.95
+    selected_indices = np.array([480, 114, 129, 665], dtype=int)
+    use_position_input = False  # True: smooth in position space x; False: smooth in control space u.
+    sigma = 1.0
+    coverage = 0.80
+    num_plot_samples = 200
 
     batch_size = selected_indices.shape[0]
     x_input = data[selected_indices, :, :, :2]  # Take selected samples, both agents, (x, y) coords only.
@@ -66,9 +67,9 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=3,
             coverage=coverage,
-            set_type="TimeStepHyperrectangles",
-            dbscan_eps=1.5,
-            dbscan_min_samples=100,
+            set_type="HyperRectangle",
+            dbscan_eps=0.5,
+            dbscan_min_samples=10,
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
@@ -82,7 +83,7 @@ def main():
     )
 
     smoothed_distribution = smoother.smooth()
-    radius = 0.05 * torch.ones((x.shape[0], 1), dtype=x.dtype)
+    radius = 0.005 * torch.ones((x.shape[0], 1), dtype=x.dtype)
     certificate = smoother.robust_certification(radius=radius)
 
     # Single-cluster smoother for comparison.
@@ -91,9 +92,9 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=1,
             coverage=coverage,
-            set_type="TimeStepHyperrectangles",
-            dbscan_eps=1.5,
-            dbscan_min_samples=100,
+            set_type="HyperRectangle",
+            dbscan_eps=0.5,
+            dbscan_min_samples=10,
         ),
         confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
     )
@@ -117,62 +118,43 @@ def main():
     mc_samples = stochastic_fn.sample_from_noisy_inputs(
         x=model_input,
         smoothing_distribution=smoothing_distribution,
-        num_samples=100,
+        num_samples=num_plot_samples,
         h=helper,
     )
 
     # Original means f(x), not f(x + epsilon), for comparison in the plots
-    original = stochastic_fn(model_input, h=helper)
-    original_mc_samples = original.unsqueeze(1).expand(-1, 100, -1)
+    original_inputs = model_input.unsqueeze(1).expand(-1, num_plot_samples, -1)
+    if helper:
+        original_helper = [h_i.unsqueeze(1).expand(-1, num_plot_samples, -1) for h_i in helper]
+        original_mc_samples = stochastic_fn(original_inputs, h=original_helper)
+    else:
+        original_mc_samples = stochastic_fn(original_inputs)
 
-    single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=100)
-    clusterized_mc_samples = smoother.monte_carlo(num_simulations=100)
+    single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=num_plot_samples)
+    clusterized_mc_samples = smoother.monte_carlo(num_simulations=num_plot_samples)
 
-    chart_paths = plot_trajectory_samples(
+    chart_paths = plot_final_timestep_density(
         x=x,
-        mc_samples=original_mc_samples,
+        original_mc_samples=original_mc_samples,
+        noisy_mc_samples=mc_samples,
         single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
+        single_cluster_centroids=smoother_single.cluster.centroids,
+        clusterized_centroids=smoother.cluster.centroids,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-    )
-
-    chart_paths += plot_final_timestep_density(
-        x=x,
-        mc_samples=original_mc_samples,
-        single_cluster_mc_samples=single_cluster_mc_samples,
-        clusterized_mc_samples=clusterized_mc_samples,
-        output_dir=EXPERIMENTS / "data" / "figures",
-        num_input_agents=2,
-        dbscan_eps=0.5,
-        dbscan_min_samples=5,
-        ellipse_sigmas=(1.0, 2.0),
     )
 
     chart_paths += plot_timestep_rectangles_visualization(
         x=x,
-        mc_samples=original_mc_samples,
+        original_mc_samples=original_mc_samples,
+        noisy_mc_samples=mc_samples,
         single_cluster_mc_samples=single_cluster_mc_samples,
         clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
         num_input_agents=2,
-        x_index=0,
-    )
-
-    num_output_timesteps = smoother.regions.lower.shape[-1] // 2
-    chart_paths += plot_timestep_rectangles_visualization(
-        x=x,
-        mc_samples=original_mc_samples,
-        single_cluster_mc_samples=single_cluster_mc_samples,
-        clusterized_mc_samples=clusterized_mc_samples,
-        region=smoother.regions,
-        single_cluster_region=smoother_single.regions,
-        output_dir=EXPERIMENTS / "data" / "figures",
-        num_input_agents=2,
-        x_index=0,
-        timesteps=[0, num_output_timesteps - 1],
     )
     
 

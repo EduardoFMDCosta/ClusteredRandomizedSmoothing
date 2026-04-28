@@ -31,6 +31,8 @@ plt.rcParams.update(
 	}
 )
 
+CLUSTER_PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9"]
+
 
 def _to_numpy(x: torch.Tensor) -> np.ndarray:
 	return x.detach().cpu().numpy()
@@ -138,87 +140,39 @@ def _reshape_trajectory_samples(samples: torch.Tensor) -> np.ndarray:
 	return arr.reshape(nx, num_samples, num_timesteps, 2)
 
 
-def _fit_gaussian_ellipses(
-	points: np.ndarray,
-	ax: plt.Axes,
-	color: str,
-	sigmas: tuple[float, ...] = (1.0, 2.0),
-) -> None:
-	"""Fit a 2-D Gaussian to ``points`` and overlay nested confidence ellipses.
-
-	For each value in ``sigmas`` an ellipse at that many standard deviations is
-	drawn. The ellipse axes are the principal axes of the sample covariance,
-	obtained via eigendecomposition.
-	"""
-	if points.shape[0] < 3:
-		return
-	mean = points.mean(axis=0)
-	cov = np.cov(points, rowvar=False)
-	if not np.all(np.isfinite(cov)) or np.linalg.matrix_rank(cov) < 2:
-		# Degenerate (e.g. all points collinear): skip ellipse.
-		return
-	eigenvalues, eigenvectors = np.linalg.eigh(cov)
-	eigenvalues = np.maximum(eigenvalues, 0.0)
-	# eigh returns eigenvalues in ascending order; index 1 = major axis.
-	angle = float(np.degrees(np.arctan2(eigenvectors[1, 1], eigenvectors[0, 1])))
-	for k, sigma in enumerate(sigmas):
-		width = 2.0 * sigma * float(np.sqrt(eigenvalues[1]))
-		height = 2.0 * sigma * float(np.sqrt(eigenvalues[0]))
-		ellipse = mpatches.Ellipse(
-			xy=mean,
-			width=width,
-			height=height,
-			angle=angle,
-			edgecolor=color,
-			facecolor=to_rgba(color, alpha=max(0.12 - 0.04 * k, 0.0)),
-			linewidth=1.6 - 0.3 * k,
-			linestyle="-",
-			zorder=3,
-		)
-		ax.add_patch(ellipse)
-	ax.plot(mean[0], mean[1], marker="+", markersize=7, color=color, linewidth=1.4, zorder=4)
-
-
 def plot_final_timestep_density(
 	x: torch.Tensor,
-	mc_samples: torch.Tensor,
+	original_mc_samples: torch.Tensor,
+	noisy_mc_samples: torch.Tensor,
 	single_cluster_mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
+	single_cluster_centroids: torch.Tensor,
+	clusterized_centroids: torch.Tensor,
 	output_dir: Path,
 	num_input_agents: int = 2,
-	dbscan_eps: float = 0.5,
-	dbscan_min_samples: int = 5,
-	ellipse_sigmas: tuple[float, ...] = (1.0, 2.0),
 ) -> list[Path]:
-	"""Plot per-cluster Gaussian density ellipses at the final prediction timestep.
+	"""Plot final-step endpoint samples colored by smoother-induced clusters.
 
-	For each input row and each smoother column (Original / single-cluster /
-	clusterized), the predicted endpoint cloud (last x,y position) is clustered
-	with DBSCAN in 2-D.  For every cluster a Gaussian is fitted and drawn as
-	nested confidence ellipses at ``ellipse_sigmas`` standard-deviation levels.
+	Columns are Original / Noisy / single-cluster smoother / clusterized smoother.
+	Samples are colored by nearest smoother centroids (Voronoi attribution).
 
 	Args:
 		x: Tensor (nx, num_input_agents * num_input_timesteps * 2) – input
 		   trajectory context, used only for spatial reference markers.
-		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps) – raw samples.
+		original_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
+		noisy_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		single_cluster_mc_samples: same shape, single-cluster smoother.
 		clusterized_mc_samples: same shape, multi-cluster smoother.
+		single_cluster_centroids: Tensor (nx, k1, 2) for single-cluster smoother.
+		clusterized_centroids: Tensor (nx, k2, 2) for multi-cluster smoother.
 		output_dir: Directory to save the chart.
 		num_input_agents: Number of agents encoded in x.
-		dbscan_eps: DBSCAN neighbourhood radius in metres, applied in the 2-D
-		   endpoint space (much smaller than the 40-D trajectory eps).
-		dbscan_min_samples: Minimum neighbourhood size for a DBSCAN core point.
-		ellipse_sigmas: Standard-deviation levels for the confidence ellipses.
 	"""
-	from randomized_smoothing.utils import (
-		_assign_to_nearest_centroid,
-		_compute_centroids_from_assignments,
-		_run_dbscan,
-	)
 
 	output_dir.mkdir(parents=True, exist_ok=True)
 
-	raw = _reshape_trajectory_samples(mc_samples)       # (nx, N, T, 2)
+	original = _reshape_trajectory_samples(original_mc_samples)
+	noisy = _reshape_trajectory_samples(noisy_mc_samples)
 	single = _reshape_trajectory_samples(single_cluster_mc_samples)
 	clust = _reshape_trajectory_samples(clusterized_mc_samples)
 	x_np = _to_numpy(x)
@@ -226,21 +180,24 @@ def plot_final_timestep_density(
 	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
 
 	# Last-timestep endpoints: (nx, N, 2)
-	raw_end = raw[:, :, -1, :]
+	original_end = original[:, :, -1, :]
+	noisy_end = noisy[:, :, -1, :]
 	single_end = single[:, :, -1, :]
 	clust_end = clust[:, :, -1, :]
 
-	nx = raw.shape[0]
+	nx = original.shape[0]
 
 	# Shared axis limits derived from all endpoints and input trajectories.
 	all_x_coords = np.concatenate([
-		raw_end[..., 0].reshape(-1),
+		original_end[..., 0].reshape(-1),
+		noisy_end[..., 0].reshape(-1),
 		single_end[..., 0].reshape(-1),
 		clust_end[..., 0].reshape(-1),
 		x_traj[..., 0].reshape(-1),
 	])
 	all_y_coords = np.concatenate([
-		raw_end[..., 1].reshape(-1),
+		original_end[..., 1].reshape(-1),
+		noisy_end[..., 1].reshape(-1),
 		single_end[..., 1].reshape(-1),
 		clust_end[..., 1].reshape(-1),
 		x_traj[..., 1].reshape(-1),
@@ -252,69 +209,64 @@ def plot_final_timestep_density(
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
-	cluster_colors = ["#1B2A4A", "#E31A1C", "#1F78B4", "#33A02C", "#FF7F00"]
-	col_base_colors = ("#1B2A4A", "#D55E00", "#009E73")
-	col_titles = ("Original", "Rekavandi et al, 2024", "Ours")
+	col_titles = ("Original", "Noisy", "Rekavandi et al, 2024", "Ours")
 	agent_colors = ("#1B5E20", "#0B3C5D")
+	agent_labels = ("Agent", "Ego agent")
+
+	def _assign_to_centroids(points_np: np.ndarray, centroids_np: np.ndarray) -> np.ndarray:
+		diff = points_np[:, None, :] - centroids_np[None, :, :]
+		d2 = np.sum(diff * diff, axis=-1)
+		return np.argmin(d2, axis=1)
 
 	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 3, figsize=(_w, 0.33 * _w * nx), sharex=True, sharey=True)
+	fig, axes = plt.subplots(nx, 4, figsize=(_w, 0.25 * _w * nx), sharex=True, sharey=True, constrained_layout=True)
 	if nx == 1:
 		axes = np.array([axes])
 
 	for i in range(nx):
-		for col_idx, (endpoints, base_color) in enumerate(
-			zip((raw_end[i], single_end[i], clust_end[i]), col_base_colors)
-		):
+		single_centroids_i = _to_numpy(single_cluster_centroids[i])
+		clust_centroids_i = _to_numpy(clusterized_centroids[i])
+
+		column_data = (
+			(original_end[i], None),
+			(noisy_end[i], clust_centroids_i),
+			(single_end[i], single_centroids_i),
+			(clust_end[i], clust_centroids_i),
+		)
+
+		for col_idx, (endpoints, centroids_ref) in enumerate(column_data):
 			ax = axes[i, col_idx]
 			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
 
-			# Cluster the 2-D endpoint cloud with DBSCAN.
-			pts = torch.from_numpy(endpoints.astype(np.float64))
-			labels = _run_dbscan(data=pts, eps=dbscan_eps, min_samples=dbscan_min_samples)
-			noise_mask = labels == -1
-
-			if (~noise_mask).sum().item() == 0:
-				# All noise: treat as single cluster.
-				labels = torch.zeros(pts.shape[0], dtype=torch.long)
-				noise_mask = torch.zeros(pts.shape[0], dtype=torch.bool)
-
-			if noise_mask.any():
-				core_labels = labels[~noise_mask]
-				num_cls_core = int(core_labels.max().item()) + 1
-				core_centroids = _compute_centroids_from_assignments(
-					pts[~noise_mask], core_labels, num_cls_core
-				)
-				labels[noise_mask] = _assign_to_nearest_centroid(pts[noise_mask], core_centroids)
-
-			num_cls = int(labels.max().item()) + 1
-			labels_np = labels.numpy()
+			if centroids_ref is None:
+				labels_np = np.zeros(endpoints.shape[0], dtype=np.int64)
+				num_cls = 1
+			else:
+				labels_np = _assign_to_centroids(endpoints, centroids_ref)
+				num_cls = int(centroids_ref.shape[0])
 
 			for j in range(num_cls):
 				mask_j = labels_np == j
-				color_j = cluster_colors[j % len(cluster_colors)]
-				# Light scatter of raw endpoints.
+				if not np.any(mask_j):
+					continue
+				color_j = CLUSTER_PALETTE[j % len(CLUSTER_PALETTE)]
 				ax.scatter(
 					endpoints[mask_j, 0],
 					endpoints[mask_j, 1],
-					s=5,
-					alpha=0.20,
+					s=8,
+					alpha=0.45,
 					color=color_j,
 					linewidths=0,
 					zorder=2,
-				)
-				# Fitted Gaussian ellipses.
-				_fit_gaussian_ellipses(
-					points=endpoints[mask_j],
-					ax=ax,
-					color=color_j,
-					sigmas=ellipse_sigmas,
 				)
 
 			# Input-trajectory markers for spatial context.
 			for agent_idx in range(num_input_agents):
 				agent_traj = x_traj[i, agent_idx]
 				color = agent_colors[agent_idx % len(agent_colors)]
+				label = None
+				if i == 0 and col_idx == 0 and agent_idx < len(agent_labels):
+					label = agent_labels[agent_idx]
 				ax.plot(
 					agent_traj[:, 0],
 					agent_traj[:, 1],
@@ -326,22 +278,25 @@ def plot_final_timestep_density(
 					markeredgecolor=color,
 					markeredgewidth=0.2,
 					zorder=6,
+					label=label,
 				)
 
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
 
-			axes[i, 1].tick_params(axis="y", which="both", left=False, labelleft=False)
-			axes[i, 2].tick_params(axis="y", which="both", left=False, labelleft=False)
+		for y_col in (1, 2, 3):
+			axes[i, y_col].tick_params(axis="y", which="both", left=False, labelleft=False)
 
-			if i == 0:
-				ax.set_title(col_titles[col_idx], fontsize=8)
+		if i == 0:
+			for col_idx in range(4):
+				axes[i, col_idx].set_title(col_titles[col_idx], fontsize=8)
 
-	fig.supxlabel("x (m)", fontsize=8)
+	handles, labels = axes[0, 0].get_legend_handles_labels()
+	fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=True, fontsize=8)
+	fig.supxlabel("x (m)", fontsize=8, y=-0.02)
 	fig.supylabel("y (m)", fontsize=8)
-	fig.tight_layout()
 	fig_path = output_dir / "final_timestep_density.pdf"
-	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
+	fig.savefig(fig_path, dpi=180)
 	plt.close(fig)
 
 	return [fig_path]
@@ -592,31 +547,29 @@ def plot_trajectory_samples(
 
 def plot_timestep_rectangles_visualization(
 	x: torch.Tensor,
-	mc_samples: torch.Tensor,
+	original_mc_samples: torch.Tensor,
+	noisy_mc_samples: torch.Tensor,
 	single_cluster_mc_samples: torch.Tensor,
 	clusterized_mc_samples: torch.Tensor,
 	region,
 	single_cluster_region,
 	output_dir: Path,
 	num_input_agents: int = 2,
-	x_index: int = 0,
 	timesteps: list[int] | None = None,
 ) -> list[Path]:
-	"""Plot timestep-wise certified rectangles for a single input trajectory.
+	"""Plot timestep-wise certified rectangles with one row per input trajectory.
 
-	Three columns are shown: raw trajectories with multi-cluster rectangles (left),
-	single-cluster smoothed trajectories with single-cluster rectangles (middle),
-	and multi-cluster smoothed trajectories with multi-cluster rectangles (right).
+	Four columns are shown per row: Original, Noisy, single-cluster smoother,
+	and multi-cluster smoother. Certified rectangles are shown on smoother columns.
 	"""
 	output_dir.mkdir(parents=True, exist_ok=True)
 
-	raw = _reshape_trajectory_samples(mc_samples)
+	original = _reshape_trajectory_samples(original_mc_samples)
+	noisy = _reshape_trajectory_samples(noisy_mc_samples)
 	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
 	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
 	x_np = _to_numpy(x)
 
-	if not (0 <= x_index < raw.shape[0]):
-		raise ValueError(f"x_index must be in [0, {raw.shape[0] - 1}]")
 	if x_np.ndim != 2 or x_np.shape[1] % (2 * num_input_agents) != 0:
 		raise ValueError("x must have shape (nx, num_input_agents * num_input_timesteps * 2)")
 
@@ -625,27 +578,15 @@ def plot_timestep_rectangles_visualization(
 
 	if region.lower.shape[-1] % 2 != 0:
 		raise ValueError("Expected region output dimension arranged as [x1,y1,...,xT,yT]")
-
-	# Use one input to keep rectangles readable.
-	raw_i = raw[x_index]
-	single_cluster_i = single_cluster[x_index]
-	clusterized_i = clusterized[x_index]
-	x_traj_i = x_traj[x_index]
-
-	# Region boxes: (k, 2T) -> (k, T, 2)
-	lower = _to_numpy(region.lower[x_index]).reshape(region.lower.shape[1], -1, 2)
-	upper = _to_numpy(region.upper[x_index]).reshape(region.upper.shape[1], -1, 2)
-	num_clusters = lower.shape[0]
-	num_timesteps = lower.shape[1]
-
-	sc_lower = _to_numpy(single_cluster_region.lower[x_index]).reshape(single_cluster_region.lower.shape[1], -1, 2)
-	sc_upper = _to_numpy(single_cluster_region.upper[x_index]).reshape(single_cluster_region.upper.shape[1], -1, 2)
-	sc_num_clusters = sc_lower.shape[0]
+	num_timesteps = region.lower.shape[-1] // 2
 
 	if timesteps is None:
 		timesteps_to_plot = list(range(num_timesteps))
 	else:
 		timesteps_to_plot = timesteps
+		for t in timesteps_to_plot:
+			if t < 0 or t >= num_timesteps:
+				raise ValueError(f"timestep {t} out of range [0, {num_timesteps - 1}]")
 
 	plt.rcParams.update({
 		"text.usetex": True,
@@ -658,13 +599,15 @@ def plot_timestep_rectangles_visualization(
 		"legend.fontsize": 9,
 	})
 
+	nx = original.shape[0]
 	_w = TEXTWIDTH
-	fig, axes = plt.subplots(1, 3, figsize=(_w, 0.33 * _w), sharex=True, sharey=True)
-	ax_left, ax_mid, ax_right = axes
+	fig, axes = plt.subplots(nx, 2, figsize=(_w, 0.25 * _w * nx), sharex=True, sharey=True, constrained_layout=True)
+	if nx == 1:
+		axes = np.array([axes])
 
 	# Compute limits using all data (not just x_index) to match trajectory_samples figure
-	all_x = np.concatenate((raw[:, :, :, 0].reshape(-1), single_cluster[:, :, :, 0].reshape(-1), clusterized[:, :, :, 0].reshape(-1), x_traj[:, :, :, 0].reshape(-1)))
-	all_y = np.concatenate((raw[:, :, :, 1].reshape(-1), single_cluster[:, :, :, 1].reshape(-1), clusterized[:, :, :, 1].reshape(-1), x_traj[:, :, :, 1].reshape(-1)))
+	all_x = np.concatenate((original[:, :, :, 0].reshape(-1), noisy[:, :, :, 0].reshape(-1), single_cluster[:, :, :, 0].reshape(-1), clusterized[:, :, :, 0].reshape(-1), x_traj[:, :, :, 0].reshape(-1)))
+	all_y = np.concatenate((original[:, :, :, 1].reshape(-1), noisy[:, :, :, 1].reshape(-1), single_cluster[:, :, :, 1].reshape(-1), clusterized[:, :, :, 1].reshape(-1), x_traj[:, :, :, 1].reshape(-1)))
 	x_min, x_max = np.min(all_x), np.max(all_x)
 	y_min, y_max = np.min(all_y), np.max(all_y)
 	x_pad = max((x_max - x_min) * 0.05, 1e-6)
@@ -675,67 +618,89 @@ def plot_timestep_rectangles_visualization(
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
-	for ax in (ax_left, ax_mid, ax_right):
-		_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
+	for i in range(nx):
+		ax_single, ax_cluster = axes[i]
 
-	for j in range(raw_i.shape[0]):
-		traj = raw_i[j]
-		ax_left.plot(traj[:, 0], traj[:, 1], color="#1B2A4A", alpha=0.09, linewidth=0.8, zorder=1)
-		traj_single = single_cluster_i[j]
-		ax_mid.plot(traj_single[:, 0], traj_single[:, 1], color="#D55E00", alpha=0.20, linewidth=0.9, zorder=1)
-		traj_cluster = clusterized_i[j]
-		ax_right.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#009E73", alpha=0.20, linewidth=0.9, zorder=1)
+		for ax in (ax_single, ax_cluster):
+			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
 
-	cluster_colors = ["#E31A1C", "#1F78B4", "#33A02C", "#FDBF6F", "#FF7F00"]
+		single_cluster_i = single_cluster[i]
+		clusterized_i = clusterized[i]
+		x_traj_i = x_traj[i]
 
-	# Draw multi-cluster rectangles on right panel only.
-	for c in range(num_clusters):
-		color = cluster_colors[c % len(cluster_colors)]
-		for t in timesteps_to_plot:
-			x_lo, y_lo = lower[c, t]
-			x_hi, y_hi = upper[c, t]
-			w, h = x_hi - x_lo, y_hi - y_lo
-			face = to_rgba(color, alpha=0.10)
-			lw = 1.8 if len(timesteps_to_plot) <= 2 else 1.0
-			rect = mpatches.Rectangle(
-				(x_lo, y_lo), w, h,
-				edgecolor=color, facecolor=face,
-				linewidth=lw, linestyle="-", zorder=2,
-			)
-			ax_right.add_patch(rect)
+		lower = _to_numpy(region.lower[i]).reshape(region.lower.shape[1], -1, 2)
+		upper = _to_numpy(region.upper[i]).reshape(region.upper.shape[1], -1, 2)
+		num_clusters = lower.shape[0]
 
-	# Draw single-cluster rectangles on middle panel.
-	for c in range(sc_num_clusters):
-		color = cluster_colors[c % len(cluster_colors)]
-		for t in timesteps_to_plot:
-			x_lo, y_lo = sc_lower[c, t]
-			x_hi, y_hi = sc_upper[c, t]
-			w, h = x_hi - x_lo, y_hi - y_lo
-			face = to_rgba(color, alpha=0.10)
-			lw = 1.8 if len(timesteps_to_plot) <= 2 else 1.0
-			rect = mpatches.Rectangle(
-				(x_lo, y_lo), w, h,
-				edgecolor=color, facecolor=face,
-				linewidth=lw, linestyle="-", zorder=2,
-			)
-			ax_mid.add_patch(rect)
+		sc_lower = _to_numpy(single_cluster_region.lower[i]).reshape(single_cluster_region.lower.shape[1], -1, 2)
+		sc_upper = _to_numpy(single_cluster_region.upper[i]).reshape(single_cluster_region.upper.shape[1], -1, 2)
+		sc_num_clusters = sc_lower.shape[0]
 
-	# Input trajectory markers for context.
-	agent_colors = ("#1B5E20", "#0B3C5D")
-	for agent_idx in range(num_input_agents):
-		agent_traj = x_traj_i[agent_idx]
-		color = agent_colors[agent_idx % len(agent_colors)]
-		for ax in (ax_left, ax_mid, ax_right):
-			ax.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6)
+		for j in range(single_cluster_i.shape[0]):
+			traj_single = single_cluster_i[j]
+			ax_single.plot(traj_single[:, 0], traj_single[:, 1], color="#D55E00", alpha=0.20, linewidth=0.9, zorder=1)
+			traj_cluster = clusterized_i[j]
+			ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#009E73", alpha=0.20, linewidth=0.9, zorder=1)
 
-	for ax in (ax_left, ax_mid, ax_right):
-		ax.set_xlim(*x_lim)
-		ax.set_ylim(*y_lim)
+		# Draw multi-cluster rectangles on right panel only.
+		for c in range(num_clusters):
+			color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
+			for t in timesteps_to_plot:
+				x_lo, y_lo = lower[c, t]
+				x_hi, y_hi = upper[c, t]
+				w, h = x_hi - x_lo, y_hi - y_lo
+				face = to_rgba(color, alpha=0.10)
+				lw = 0.8 if len(timesteps_to_plot) <= 2 else 0.5
+				rect = mpatches.Rectangle(
+					(x_lo, y_lo), w, h,
+					edgecolor=color, facecolor=face,
+					linewidth=lw, linestyle="-", zorder=2,
+				)
+				ax_cluster.add_patch(rect)
 
-	fig.tight_layout()
+		# Draw single-cluster rectangles on middle panel.
+		for c in range(sc_num_clusters):
+			color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
+			for t in timesteps_to_plot:
+				x_lo, y_lo = sc_lower[c, t]
+				x_hi, y_hi = sc_upper[c, t]
+				w, h = x_hi - x_lo, y_hi - y_lo
+				face = to_rgba(color, alpha=0.10)
+				lw = 0.8 if len(timesteps_to_plot) <= 2 else 0.5
+				rect = mpatches.Rectangle(
+					(x_lo, y_lo), w, h,
+					edgecolor=color, facecolor=face,
+					linewidth=lw, linestyle="-", zorder=2,
+				)
+				ax_single.add_patch(rect)
+
+		agent_colors = ("#1B5E20", "#0B3C5D")
+		agent_labels = ("Agent", "Ego agent")
+		for agent_idx in range(num_input_agents):
+			agent_traj = x_traj_i[agent_idx]
+			color = agent_colors[agent_idx % len(agent_colors)]
+			label = agent_labels[agent_idx] if (i == 0 and agent_idx < len(agent_labels)) else None
+			for ax in (ax_single, ax_cluster):
+				ax.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6, label=label if ax is ax_single else None)
+
+		for ax in (ax_single, ax_cluster):
+			ax.set_xlim(*x_lim)
+			ax.set_ylim(*y_lim)
+
+		axes[i, 1].tick_params(axis="y", which="both", left=False, labelleft=False)
+
+		if i == 0:
+			ax_single.set_title("Rekavandi et al, 2024", fontsize=8)
+			ax_cluster.set_title("Ours", fontsize=8)
+
+	handles, labels = axes[0, 0].get_legend_handles_labels()
+	fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=True, fontsize=8)
+	fig.supxlabel("x", fontsize=8, y=-0.02)
+	fig.supylabel("y", fontsize=8)
+
 	suffix = "" if timesteps is None else "_t" + "_".join(str(t) for t in timesteps_to_plot)
 	fig_path = output_dir / f"timestep_rectangles_visualization{suffix}.pdf"
-	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
+	fig.savefig(fig_path, dpi=180)
 	plt.close(fig)
 
 	return [fig_path]
