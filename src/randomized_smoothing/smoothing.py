@@ -106,6 +106,70 @@ class AlphaTrimmingSmoothing(Smoothing):
 
         return MixtureDirac(locs=trimmed_mean, probs=probs_partition)
 
+    def monte_carlo(self, num_simulations: int) -> torch.Tensor:
+        if num_simulations <= 0:
+            raise ValueError("num_simulations must be positive")
+
+        nx = self.x.shape[0]
+        num_samples = self.parameters.smoothing.N
+        total_samples = num_samples * num_simulations
+
+        outputs = self.stochastic_function.sample_from_noisy_inputs(
+            x=self.x,
+            smoothing_distribution=self.smoothing_distribution,
+            num_samples=total_samples,
+            h=self.h,
+        )
+
+        output_dim = outputs.shape[-1]
+        outputs = outputs.view(nx, num_simulations, num_samples, output_dim)
+
+        cluster = self.cluster
+        centroids = cluster.centroids
+        probs_partition = cluster.probs_partition
+        num_clusters = cluster.num_clusters
+
+        diff = outputs.unsqueeze(3) - centroids.unsqueeze(1).unsqueeze(1)
+        squared_distances = (diff * diff).sum(dim=-1)
+        assignments = squared_distances.argmin(dim=3)
+
+        trimmed_mean = torch.zeros(
+            (nx, num_simulations, num_clusters, output_dim),
+            dtype=outputs.dtype,
+            device=outputs.device,
+        )
+        positions = torch.arange(num_samples, device=outputs.device).view(1, 1, num_samples, 1)
+        inf = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
+        zero = torch.zeros(1, device=outputs.device, dtype=outputs.dtype)
+
+        for j in range(num_clusters):
+            cluster_mask = assignments == j
+            cluster_values = torch.where(cluster_mask.unsqueeze(-1), outputs, inf)
+            sorted_cluster_values = cluster_values.sort(dim=2).values
+
+            counts = cluster_mask.sum(dim=2)
+            left = torch.floor(self.parameters.smoothing.alpha * counts.to(outputs.dtype)).to(torch.long)
+            right = counts - left
+
+            in_trimmed_core = (positions >= left.view(nx, num_simulations, 1, 1)) & (
+                positions < right.view(nx, num_simulations, 1, 1)
+            )
+            trimmed_sum = torch.where(in_trimmed_core, sorted_cluster_values, zero).sum(dim=2)
+            trimmed_count = (right - left).to(outputs.dtype).view(nx, num_simulations, 1)
+
+            cluster_trimmed_mean = trimmed_sum / trimmed_count.clamp(min=1)
+            has_trimmed_points = trimmed_count.squeeze(-1) > 0
+            trimmed_mean[:, :, j, :] = torch.where(
+                has_trimmed_points.unsqueeze(-1),
+                cluster_trimmed_mean,
+                centroids[:, j, :].unsqueeze(1),
+            )
+
+        sampled_cluster = torch.multinomial(probs_partition, num_samples=num_simulations, replacement=True)
+        gather_idx = sampled_cluster.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 1, output_dim)
+
+        return trimmed_mean.gather(dim=2, index=gather_idx).squeeze(2)
+
 
 class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
     def __init__(
