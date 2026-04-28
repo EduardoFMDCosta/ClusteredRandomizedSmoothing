@@ -105,6 +105,56 @@ class HyperRectangle:
 
 
 
+class AxisAlignedHyperRectangle(HyperRectangle):
+    """Per-axis tight axis-aligned box per cluster.
+
+    Differs from :class:`HyperRectangle` in how :meth:`from_samples` is built:
+    instead of producing a cube whose half-width is the L∞ ``coverage``-th
+    rank, this drops the ``1 - coverage`` fraction of L2-furthest points from
+    the centroid and then takes per-axis min/max over the remaining samples.
+    The result is generally a non-cubic axis-aligned box that hugs the bulk
+    of the cluster more tightly along thin directions.
+    """
+
+    @staticmethod
+    def from_samples(
+        samples: torch.Tensor,
+        centroids: torch.Tensor,
+        assignments: torch.Tensor,
+        coverage: float,
+    ):
+        nx = samples.shape[0]
+        k = centroids.shape[1]
+
+        assigned_l2_distances = torch.linalg.vector_norm(
+            _assigned_diff(samples=samples, centroids=centroids, assignments=assignments),
+            dim=-1,
+        )
+
+        lower = centroids.clone()
+        upper = centroids.clone()
+        for i in range(nx):
+            for j in range(k):
+                mask = assignments[i] == j
+                if not mask.any():
+                    continue
+
+                d_ij = assigned_l2_distances[i][mask]
+                samples_ij = samples[i][mask]
+
+                rank = _coverage_rank(d_ij.numel(), coverage)
+                threshold = d_ij.kthvalue(rank).values
+                keep_mask = d_ij <= threshold
+                kept = samples_ij[keep_mask]
+                if kept.numel() == 0:
+                    continue
+
+                lower[i, j] = kept.amin(dim=0)
+                upper[i, j] = kept.amax(dim=0)
+
+        return AxisAlignedHyperRectangle(lower=lower, upper=upper)
+
+
 class TimeStepHyperrectangles(HyperRectangle):
     def __init__(self, lower: torch.Tensor, upper: torch.Tensor):
         if lower.shape[-1] % 2 != 0:

@@ -2,7 +2,12 @@ from dataclasses import dataclass
 import torch
 
 
-_ALLOWED_SET_TYPES = {"HyperRectangle", "EuclideanBall", "TimeStepHyperrectangles"}
+_ALLOWED_SET_TYPES = {
+    "HyperRectangle",
+    "AxisAlignedHyperRectangle",
+    "EuclideanBall",
+    "TimeStepHyperrectangles",
+}
 
 @dataclass
 class SmoothingParameters:

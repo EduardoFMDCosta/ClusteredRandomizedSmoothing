@@ -1,12 +1,18 @@
 import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import EuclideanBall, HyperRectangle, TimeStepHyperrectangles
+from randomized_smoothing.regions import (
+    AxisAlignedHyperRectangle,
+    EuclideanBall,
+    HyperRectangle,
+    TimeStepHyperrectangles,
+)
 from randomized_smoothing.utils import _select_num_clusters
 
 
 _SET_CLASSES = {
     "HyperRectangle": HyperRectangle,
+    "AxisAlignedHyperRectangle": AxisAlignedHyperRectangle,
     "EuclideanBall": EuclideanBall,
     "TimeStepHyperrectangles": TimeStepHyperrectangles,
 }
