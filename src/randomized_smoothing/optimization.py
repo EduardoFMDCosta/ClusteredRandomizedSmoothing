@@ -115,6 +115,25 @@ def _validate_vector(name: str, values: np.ndarray | list[float], M: int) -> np.
     return arr
 
 
+def _logsumexp(values: np.ndarray) -> float:
+    if values.size == 0:
+        return -math.inf
+    m = float(np.max(values))
+    if not math.isfinite(m):
+        return m
+    return m + float(np.log(np.exp(values - m).sum()))
+
+
+def _scaled_log(log_x: float, k: np.ndarray) -> np.ndarray:
+    # k * log_x with the convention 0 * (-inf) = 0 (so x^0 = 1 when x = 0).
+    k64 = k.astype(np.float64)
+    if math.isfinite(log_x):
+        return k64 * log_x
+    out = np.full_like(k64, log_x)
+    out[k64 == 0.0] = 0.0
+    return out
+
+
 def eval_f_m(p: float, p_R_m: float, N: int, alpha: float) -> float:
     if N <= 0:
         raise ValueError("N must be positive")
@@ -128,20 +147,46 @@ def eval_f_m(p: float, p_R_m: float, N: int, alpha: float) -> float:
         return 0.0
 
     ratio = float(np.clip(p_R_m / p, 0.0, 1.0))
-    s = np.arange(1, N + 1, dtype=np.int64)
-    j = np.arange(0, N + 1, dtype=np.int64)
 
-    comb_Ns = np.asarray([math.comb(N, int(s_i)) for s_i in s], dtype=np.float64)
-    outer = (s.astype(np.float64) / float(N)) * comb_Ns * np.power(p, s) * np.power(1.0 - p, N - s)
+    # Log-space arithmetic: C(N, s) overflows float64 for N >~ 1029, so this
+    # function must not materialize binomial coefficients directly.
+    log_p = math.log(p) if p > 0.0 else -math.inf
+    log_1mp = math.log1p(-p) if p < 1.0 else -math.inf
+    log_r = math.log(ratio) if ratio > 0.0 else -math.inf
+    log_1mr = math.log1p(-ratio) if ratio < 1.0 else -math.inf
 
-    inner = np.zeros_like(outer)
-    for idx, s_i in enumerate(s):
-        j_min = max(int(s_i - 2 * math.floor(alpha * s_i)), 0)
-        valid = j[j_min : s_i + 1]
-        comb_sj = np.asarray([math.comb(int(s_i), int(j_i)) for j_i in valid], dtype=np.float64)
-        inner[idx] = np.sum(comb_sj * np.power(ratio, valid) * np.power(1.0 - ratio, s_i - valid))
+    log_factorial = np.fromiter(
+        (math.lgamma(i + 1.0) for i in range(N + 1)),
+        dtype=np.float64,
+        count=N + 1,
+    )
 
-    return float(np.sum(outer * inner))
+    s_arr = np.arange(1, N + 1, dtype=np.int64)
+    log_comb_Ns = log_factorial[N] - log_factorial[s_arr] - log_factorial[N - s_arr]
+    log_outer = (
+        np.log(s_arr.astype(np.float64) / float(N))
+        + log_comb_Ns
+        + _scaled_log(log_p, s_arr)
+        + _scaled_log(log_1mp, N - s_arr)
+    )
+
+    log_per_s = np.full(N, -math.inf, dtype=np.float64)
+    for idx, s_i in enumerate(s_arr):
+        s_int = int(s_i)
+        j_min = max(s_int - 2 * math.floor(alpha * s_int), 0)
+        j_arr = np.arange(j_min, s_int + 1, dtype=np.int64)
+        log_comb_sj = log_factorial[s_int] - log_factorial[j_arr] - log_factorial[s_int - j_arr]
+        log_terms = (
+            log_comb_sj
+            + _scaled_log(log_r, j_arr)
+            + _scaled_log(log_1mr, s_int - j_arr)
+        )
+        log_per_s[idx] = log_outer[idx] + _logsumexp(log_terms)
+
+    total_log = _logsumexp(log_per_s)
+    if not math.isfinite(total_log):
+        return 0.0
+    return float(math.exp(total_log))
 
 
 def compute_total_prob_lower_bound(
