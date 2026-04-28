@@ -102,7 +102,7 @@ class UAV3DPolicyStochasticFunction(StochasticFunction):
         return action.reshape(*leading_shape, action_dim).to(device=x.device, dtype=x.dtype)
 
 
-class TrajFlowMeszarosStochasticFunction(StochasticFunction):
+class TrajFlowMeszaros(StochasticFunction):
     """Experiment-specific adapter exposing trajflow_meszaros as StochasticFunction."""
 
     def __init__(self, model=None) -> None:
@@ -150,21 +150,21 @@ class TrajFlowMeszarosStochasticFunction(StochasticFunction):
         x_0, v_0, phi_0, x_oth = start
         # u.shape is (..., M)
         batch_dims = u.shape[:-1]
-        u_flat = u.view(-1, u.shape[-1])
-        U = u_flat.view(len(u_flat), 1, self.model.num_timesteps_in - 1, 2)
+        u_flat = u.reshape(-1, u.shape[-1])
+        U = u_flat.reshape(len(u_flat), 1, self.model.num_timesteps_in - 1, 2)
 
         # Reverse normalization
         U = U * self.d_ctrl_max.view(1, 1, 1, -1)
 
-        X_0 = x_0.view(-1, 1, 2)
-        V_0 = v_0.view(-1, 1)
-        Phi_0 = phi_0.view(-1, 1)
-        X_oth = x_oth.view(len(u_flat), -1, self.model.num_timesteps_in, 2)
+        X_0 = x_0.reshape(-1, 1, 2)
+        V_0 = v_0.reshape(-1, 1)
+        Phi_0 = phi_0.reshape(-1, 1)
+        X_oth = x_oth.reshape(len(u_flat), -1, self.model.num_timesteps_in, 2)
 
         X_tar = Control_action.Dynamical_Model(U, X_0, V_0, Phi_0, dt=self.dt, device=u.device)
         # Transform back to pass as model inputs
         X = torch.cat([X_tar, X_oth], dim=1)  # Shape: (batch size, number agents, number time steps, 2)
-        x = X.view(*batch_dims, -1)
+        x = X.reshape(*batch_dims, -1)
         return x
     
 
@@ -177,5 +177,28 @@ class TrajFlowMeszarosStochasticFunction(StochasticFunction):
             x = self.ctrl_to_pos(x, start=h)
 
         model_device = getattr(self.model, "device", x.device)
-        y = self.model(x.to(model_device))
+        y = self.model(x.to(model_device).contiguous())
         return y.to(device=x.device, dtype=x.dtype)
+
+
+class TrajFlowMeszarosStochasticFunction(StochasticFunction):
+    """Wrapper returning only the final predicted 2-D point of TrajFlow outputs."""
+
+    def __init__(self, model=None) -> None:
+        self.base = TrajFlowMeszaros(model=model)
+
+    @property
+    def model(self):
+        return self.base.model
+
+    def pos_to_ctrl(self, x: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        return self.base.pos_to_ctrl(x)
+
+    def ctrl_to_pos(self, u: torch.Tensor, start: list[torch.Tensor]) -> torch.Tensor:
+        return self.base.ctrl_to_pos(u, start=start)
+
+    def __call__(self, x: torch.Tensor, h: list[torch.Tensor] = []) -> torch.Tensor:
+        y = self.base(x, h=h)
+        if y.shape[-1] < 2:
+            raise ValueError("Expected output dimension >= 2 for TrajFlowMeszarosStochasticFunction")
+        return y[..., -2:]
