@@ -4,6 +4,7 @@ import torch
 
 from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.dataclasses import ClusteringParameters
+from randomized_smoothing.regions import DisjointRegion, HyperRectangle
 
 
 def _make_outputs() -> torch.Tensor:
@@ -139,3 +140,46 @@ def test_dbscan_caps_clusters_to_max_num_clusters() -> None:
 
     assert cluster.num_clusters == 2
     assert int(cluster.k_per_row[0].item()) == 2
+
+
+def test_disjoint_region_assigns_overlap_to_single_cluster() -> None:
+    lower = torch.tensor([[[0.0, 0.0], [0.3, 0.3]]], dtype=torch.float64)
+    upper = torch.tensor([[[0.5, 0.5], [0.8, 0.8]]], dtype=torch.float64)
+    centroids = torch.tensor([[[0.2, 0.2], [0.6, 0.6]]], dtype=torch.float64)
+    points = torch.tensor([[[0.35, 0.35], [0.45, 0.45], [0.65, 0.65]]], dtype=torch.float64)
+
+    region = DisjointRegion(region=HyperRectangle(lower=lower, upper=upper), centroids=centroids)
+    contains = region.contains(points)
+
+    assert torch.all(contains.sum(dim=-1) <= 1)
+    assert bool(contains[0, 0, 0]) and not bool(contains[0, 0, 1])
+    assert bool(contains[0, 1, 1]) and not bool(contains[0, 1, 0])
+    assert bool(contains[0, 2, 1]) and not bool(contains[0, 2, 0])
+
+
+def test_hyperrectangle_is_clipped_by_voronoi_boundary() -> None:
+    # Two centroids on x-axis; Voronoi boundary is x=1.
+    centroids = torch.tensor([[[0.0, 0.0], [2.0, 0.0]]], dtype=torch.float64)
+    assignments = torch.tensor([[0, 0, 0, 1, 1, 1]], dtype=torch.long)
+    samples = torch.tensor(
+        [[
+            [0.9, 0.0],
+            [1.4, 0.2],
+            [1.3, -0.1],
+            [1.1, 0.0],
+            [0.6, -0.2],
+            [0.7, 0.1],
+        ]],
+        dtype=torch.float64,
+    )
+
+    region = HyperRectangle.from_samples(
+        samples=samples,
+        centroids=centroids,
+        assignments=assignments,
+        coverage=1.0,
+    )
+
+    # Cluster-0 box right face and cluster-1 box left face must not cross x=1.
+    assert float(region.upper[0, 0, 0].item()) <= 1.0 + 1e-9
+    assert float(region.lower[0, 1, 0].item()) >= 1.0 - 1e-9
