@@ -210,7 +210,7 @@ def plot_final_timestep_density(
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
 	col_titles = ("Original", "Noisy", "Rekavandi et al, 2024", "Ours")
-	agent_colors = ("#1B5E20", "#0B3C5D")
+	agent_colors = ("#000000", "#0B3C5D")
 	agent_labels = ("Agent", "Ego agent")
 
 	def _assign_to_centroids(points_np: np.ndarray, centroids_np: np.ndarray) -> np.ndarray:
@@ -481,7 +481,7 @@ def plot_trajectory_samples(
 				label=None,
 			)
 
-		agent_colors = ("#1B5E20", "#0B3C5D")
+		agent_colors = ("#000000", "#0B3C5D")
 		for agent_idx in range(num_input_agents):
 			agent_traj = x_traj[i, agent_idx]
 			color = agent_colors[agent_idx % len(agent_colors)]
@@ -674,7 +674,7 @@ def plot_timestep_rectangles_visualization(
 				)
 				ax_single.add_patch(rect)
 
-		agent_colors = ("#1B5E20", "#0B3C5D")
+		agent_colors = ("#000000", "#0B3C5D")
 		agent_labels = ("Agent", "Ego agent")
 		for agent_idx in range(num_input_agents):
 			agent_traj = x_traj_i[agent_idx]
