@@ -229,7 +229,7 @@ def plot_final_timestep_density(
 
 		column_data = (
 			(original_end[i], None),
-			(noisy_end[i], clust_centroids_i),
+			(noisy_end[i], None),
 			(single_end[i], single_centroids_i),
 			(clust_end[i], clust_centroids_i),
 		)
