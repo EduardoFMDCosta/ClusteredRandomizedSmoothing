@@ -25,6 +25,35 @@ def _assigned_abs_diff(
 ) -> torch.Tensor:
     return _assigned_diff(samples=samples, centroids=centroids, assignments=assignments).abs()
 
+
+def _project_half_widths_to_voronoi_cell(
+    half_widths: torch.Tensor,
+    centroids_row: torch.Tensor,
+    cluster_index: int,
+) -> torch.Tensor:
+    """Scale axis-aligned half-widths so the centered box stays in the Voronoi cell."""
+    k = centroids_row.shape[0]
+    if k <= 1:
+        return half_widths
+
+    c_j = centroids_row[cluster_index]
+    scale = torch.tensor(1.0, dtype=half_widths.dtype, device=half_widths.device)
+    eps = torch.finfo(half_widths.dtype).eps
+
+    for l in range(k):
+        if l == cluster_index:
+            continue
+        delta = centroids_row[l] - c_j
+        lhs = (delta.abs() * half_widths).sum()
+        if lhs <= eps:
+            continue
+
+        rhs = 0.5 * (delta * delta).sum()
+        candidate = (rhs / lhs).clamp(min=0.0, max=1.0)
+        scale = torch.minimum(scale, candidate)
+
+    return half_widths * scale
+
 class HyperRectangle:
     def __init__(self, lower, upper):
         self.lower, self.upper = lower, upper
@@ -86,18 +115,21 @@ class HyperRectangle:
             assignments=assignments,
         )
 
-        # Cube formulation: L∞ distance (max absolute coordinate difference per point)
         half_widths = torch.zeros((nx, k, output_dim), dtype=samples.dtype, device=samples.device)
         for i in range(nx):
             for j in range(k):
                 mask = assignments[i] == j
-                linf_distances_ij = assigned_abs_diff[i][mask].amax(dim=-1)  # L∞ distance per point
-                if linf_distances_ij.numel() == 0:
+                diff_ij = assigned_abs_diff[i][mask]
+                if diff_ij.numel() == 0:
                     continue
 
-                rank = _coverage_rank(linf_distances_ij.shape[0], coverage)
-                radius = linf_distances_ij.kthvalue(rank).values  # scalar radius
-                half_widths[i, j] = radius  # broadcast to all dimensions
+                rank = _coverage_rank(diff_ij.shape[0], coverage)
+                reference_half_widths = diff_ij.kthvalue(rank, dim=0).values
+                half_widths[i, j] = _project_half_widths_to_voronoi_cell(
+                    half_widths=reference_half_widths,
+                    centroids_row=centroids[i],
+                    cluster_index=j,
+                )
 
         lower = centroids - half_widths
         upper = centroids + half_widths
@@ -257,3 +289,30 @@ class EuclideanBall:
                 radii[i, j] = d_ij.kthvalue(rank).values
 
         return EuclideanBall(center=centroids, radius=radii)
+
+
+class DisjointRegion:
+    """Wrap a region so membership is disjoint across clusters.
+
+    If a point belongs to multiple cluster regions, it is assigned to exactly
+    one region using nearest-centroid tie-breaking.
+    """
+
+    def __init__(self, region, centroids: torch.Tensor):
+        self.region = region
+        self.centroids = centroids
+
+    def __getattr__(self, name):
+        return getattr(self.region, name)
+
+    def contains(self, points: torch.Tensor) -> torch.Tensor:
+        in_region = self.region.contains(points)
+        if in_region.numel() == 0:
+            return in_region
+
+        num_clusters = self.centroids.shape[1]
+        squared_distances = ((points.unsqueeze(2) - self.centroids.unsqueeze(1)) ** 2).sum(dim=-1)
+        nearest = squared_distances.argmin(dim=-1)
+        nearest_one_hot = torch.nn.functional.one_hot(nearest, num_classes=num_clusters).to(torch.bool)
+
+        return in_region & nearest_one_hot
