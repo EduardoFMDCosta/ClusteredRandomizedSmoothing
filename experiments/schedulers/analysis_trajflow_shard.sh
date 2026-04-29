@@ -4,7 +4,18 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
 cd "$PROJECT_DIR"
 
-source .venv/bin/activate
+CONDA_ENV="${CONDA_ENV:-randomized_smoothing}"
+
+if [ -n "${CONDA_ENV:-}" ]; then
+  source "$HOME/miniconda3/etc/profile.d/conda.sh"
+  conda activate "$CONDA_ENV"
+elif [ -f ".venv/bin/activate" ]; then
+  source .venv/bin/activate
+else
+  echo "No Python environment found. Set CONDA_ENV or create .venv in $PROJECT_DIR"
+  exit 1
+fi
+
 PYTHON_BIN="python"
 
 # Number of array jobs/shards. Must match the qsub array range length.
