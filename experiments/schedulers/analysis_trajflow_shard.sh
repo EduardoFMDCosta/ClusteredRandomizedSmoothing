@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${rc})" >&2; exit ${rc}' ERR
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
 cd "$PROJECT_DIR"
@@ -35,6 +37,7 @@ MAX_SETTINGS="${MAX_SETTINGS:-}"
 echo "Shard ${SHARD_INDEX}/${NUM_SHARDS} started at $(date)"
 echo "Python: ${PYTHON_BIN}"
 echo "Output dir: ${OUTPUT_DIR}"
+echo "Conda env: ${CONDA_ENV}"
 
 CMD=(
   "$PYTHON_BIN" experiments/paper/analysis_trajflow.py
@@ -55,6 +58,10 @@ fi
 if [ -n "$MAX_SETTINGS" ]; then
   CMD+=(--max-settings "$MAX_SETTINGS")
 fi
+
+printf 'Running command:'
+printf ' %q' "${CMD[@]}"
+printf '\n'
 
 "${CMD[@]}"
 

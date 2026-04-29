@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${rc})" >&2; exit ${rc}' ERR
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
 cd "$PROJECT_DIR"
@@ -24,6 +26,7 @@ OUTPUT_FILE="${MERGED_OUTPUT_FILE:-results.json}"
 echo "Merge started at $(date)"
 echo "Input dir: ${INPUT_DIR}"
 echo "Output file: ${OUTPUT_FILE}"
+echo "Conda env: ${CONDA_ENV}"
 
 CMD=(
   "$PYTHON_BIN" experiments/paper/merge_analysis_results.py
@@ -34,6 +37,10 @@ CMD=(
 if [ -n "$EXPECTED_NUM_SHARDS" ]; then
   CMD+=(--expected-num-shards "$EXPECTED_NUM_SHARDS")
 fi
+
+printf 'Running command:'
+printf ' %q' "${CMD[@]}"
+printf '\n'
 
 "${CMD[@]}"
 
