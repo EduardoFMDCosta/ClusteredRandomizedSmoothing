@@ -95,9 +95,10 @@ def evaluate_setting(
     helper: list[torch.Tensor],
     confidence_num_samples: int,
     confidence_beta: float,
+    seed: int = 0,
 ) -> dict[str, Any]:
     """Run one smoothing/certification setting and return serializable metrics."""
-    torch.manual_seed(0)
+    torch.manual_seed(seed)
 
     params = Parameters(
         smoothing=SmoothingParameters(N=setting.N, alpha=setting.alpha),
@@ -222,8 +223,31 @@ def main() -> None:
         default=None,
         help="Optional cap for quick debugging runs.",
     )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Split the settings list across this many independent shards/jobs.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="0-based shard index to run (must be in [0, num_shards)).",
+    )
+    parser.add_argument(
+        "--num-random-seeds",
+        type=int,
+        default=10,
+        help="Number of random seeds to average over per batch (default: 10).",
+    )
 
     args = parser.parse_args()
+
+    if args.num_shards <= 0:
+        raise ValueError("num_shards must be positive")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("shard_index must satisfy 0 <= shard_index < num_shards")
 
     stochastic_fn = TrajFlowMeszarosStochasticFunction()
     x = load_inputs(batch_size=args.batch_size)
@@ -237,11 +261,16 @@ def main() -> None:
     settings = build_settings()
     if args.max_settings is not None:
         settings = settings[: args.max_settings]
+    all_settings_count = len(settings)
+    settings = [s for i, s in enumerate(settings) if i % args.num_shards == args.shard_index]
 
     print("=== TrajFlow Hyperparameter Analysis ===")
     print(f"batch_size: {x.shape[0]} (all)" if args.batch_size is None else f"batch_size: {args.batch_size}")
     print(f"input_mode: {args.input_mode}")
-    print(f"num_settings: {len(settings)}")
+    print(f"num_settings_total: {all_settings_count}")
+    print(f"num_settings_this_shard: {len(settings)}")
+    print(f"shard: {args.shard_index}/{args.num_shards}")
+    print(f"num_random_seeds: {args.num_random_seeds}")
 
     nx = x.shape[0]
     all_results: list[dict[str, Any]] = []
@@ -253,28 +282,54 @@ def main() -> None:
             f"sigma={setting.sigma}, r={setting.r}"
         )
 
+        _METRICS = [
+            "certified_radius",
+            "minimum_prob",
+            "maximum_prob",
+            "total_certified_prob",
+            "average_area",
+            "minimum_area",
+            "maximum_area",
+        ]
+
         xs_all: list[dict[str, Any]] = []
         for batch_start in range(0, nx, args.sample_batch_size):
             batch_end = min(batch_start + args.sample_batch_size, nx)
-            print(f"  points {batch_start + 1}-{batch_end}/{nx}", end="\r", flush=True)
-            result_i = evaluate_setting(
-                setting=setting,
-                stochastic_fn=stochastic_fn,
-                model_input=model_input[batch_start:batch_end],
-                helper=[h_i[batch_start:batch_end] for h_i in helper],
-                confidence_num_samples=args.confidence_num_samples,
-                confidence_beta=args.confidence_beta,
-            )
-            for local_i, entry in enumerate(result_i["xs"]):
-                entry["x_index"] = batch_start + local_i
-                xs_all.append(entry)
+            batch_n = batch_end - batch_start
+            seed_xs: list[list[dict[str, Any]]] = []
+            for seed in range(args.num_random_seeds):
+                print(
+                    f"  points {batch_start + 1}-{batch_end}/{nx}  seed {seed + 1}/{args.num_random_seeds}",
+                    end="\r",
+                    flush=True,
+                )
+                result_i = evaluate_setting(
+                    setting=setting,
+                    stochastic_fn=stochastic_fn,
+                    model_input=model_input[batch_start:batch_end],
+                    helper=[h_i[batch_start:batch_end] for h_i in helper],
+                    confidence_num_samples=args.confidence_num_samples,
+                    confidence_beta=args.confidence_beta,
+                    seed=seed,
+                )
+                seed_xs.append(result_i["xs"])
+            for local_i in range(batch_n):
+                aggregated: dict[str, Any] = {"x_index": batch_start + local_i}
+                for metric in _METRICS:
+                    vals = [seed_xs[s][local_i][metric] for s in range(args.num_random_seeds)]
+                    aggregated[f"{metric}_mean"] = float(np.mean(vals))
+                    aggregated[f"{metric}_std"] = float(np.std(vals, ddof=1))
+                xs_all.append(aggregated)
         if nx > 1:
             print()  # newline after the \r progress
 
         all_results.append({"setting": asdict(setting), "xs": xs_all})
 
     output_dir = Path(args.output_dir)
-    json_path = output_dir / "results.json"
+    if args.num_shards == 1:
+        json_path = output_dir / "results.json"
+    else:
+        json_path = output_dir / f"results_shard_{args.shard_index:03d}_of_{args.num_shards:03d}.json"
 
     save_json(json_path, all_results)
 
