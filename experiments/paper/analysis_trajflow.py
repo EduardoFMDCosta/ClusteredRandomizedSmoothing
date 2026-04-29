@@ -101,7 +101,6 @@ def evaluate_setting(
         clustering=ClusteringParameters(
             max_num_clusters=setting.max_num_clusters,
             coverage=setting.coverage,
-            set_type="HyperRectangle",
         ),
         confidence=ConfidenceParameters(
             num_samples=confidence_num_samples,

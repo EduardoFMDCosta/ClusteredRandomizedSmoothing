@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import DisjointRegion, HyperRectangle
+from randomized_smoothing.regions import AxisAlignedHyperRectangle, HyperRectangle
 
 
 def _make_outputs() -> torch.Tensor:
@@ -142,23 +143,14 @@ def test_dbscan_caps_clusters_to_max_num_clusters() -> None:
     assert int(cluster.k_per_row[0].item()) == 2
 
 
-def test_disjoint_region_assigns_overlap_to_single_cluster() -> None:
-    lower = torch.tensor([[[0.0, 0.0], [0.3, 0.3]]], dtype=torch.float64)
-    upper = torch.tensor([[[0.5, 0.5], [0.8, 0.8]]], dtype=torch.float64)
-    centroids = torch.tensor([[[0.2, 0.2], [0.6, 0.6]]], dtype=torch.float64)
-    points = torch.tensor([[[0.35, 0.35], [0.45, 0.45], [0.65, 0.65]]], dtype=torch.float64)
-
-    region = DisjointRegion(region=HyperRectangle(lower=lower, upper=upper), centroids=centroids)
-    contains = region.contains(points)
-
-    assert torch.all(contains.sum(dim=-1) <= 1)
-    assert bool(contains[0, 0, 0]) and not bool(contains[0, 0, 1])
-    assert bool(contains[0, 1, 1]) and not bool(contains[0, 1, 0])
-    assert bool(contains[0, 2, 1]) and not bool(contains[0, 2, 0])
+def test_hyperrectangle_is_abstract() -> None:
+    lower = torch.zeros((1, 1, 2), dtype=torch.float64)
+    upper = torch.ones((1, 1, 2), dtype=torch.float64)
+    with pytest.raises(TypeError):
+        HyperRectangle(lower=lower, upper=upper)
 
 
-def test_hyperrectangle_is_clipped_by_voronoi_boundary() -> None:
-    # Two centroids on x-axis; Voronoi boundary is x=1.
+def test_axis_aligned_hyperrectangles_are_shrunk_to_be_disjoint() -> None:
     centroids = torch.tensor([[[0.0, 0.0], [2.0, 0.0]]], dtype=torch.float64)
     assignments = torch.tensor([[0, 0, 0, 1, 1, 1]], dtype=torch.long)
     samples = torch.tensor(
@@ -173,13 +165,33 @@ def test_hyperrectangle_is_clipped_by_voronoi_boundary() -> None:
         dtype=torch.float64,
     )
 
-    region = HyperRectangle.from_samples(
+    region = AxisAlignedHyperRectangle.from_samples(
         samples=samples,
         centroids=centroids,
         assignments=assignments,
         coverage=1.0,
     )
 
-    # Cluster-0 box right face and cluster-1 box left face must not cross x=1.
-    assert float(region.upper[0, 0, 0].item()) <= 1.0 + 1e-9
-    assert float(region.lower[0, 1, 0].item()) >= 1.0 - 1e-9
+    assert float(region.upper[0, 0, 0].item()) < float(region.lower[0, 1, 0].item())
+
+
+def test_partition_probabilities_follow_nearest_region_distance() -> None:
+    outputs = _make_outputs()
+    cluster = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=3,
+            coverage=0.8,
+            dbscan_eps=0.35,
+            dbscan_min_samples=3,
+        ),
+    )
+
+    expected_assignments = cluster.regions.distance(outputs).argmin(dim=2)
+    expected_probs = torch.nn.functional.one_hot(
+        expected_assignments,
+        num_classes=cluster.num_clusters,
+    ).to(dtype=cluster.centroids.dtype).mean(dim=1)
+
+    assert torch.equal(cluster.partition_assignments, expected_assignments)
+    assert torch.allclose(cluster.probs_partition, expected_probs)

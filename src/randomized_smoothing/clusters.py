@@ -1,22 +1,8 @@
 import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
-from randomized_smoothing.regions import (
-    AxisAlignedHyperRectangle,
-    EuclideanBall,
-    HyperRectangle,
-    TimeStepHyperrectangles,
-    DisjointRegion,
-)
+from randomized_smoothing.regions import AxisAlignedHyperRectangle
 from randomized_smoothing.utils import _select_num_clusters
-
-
-_SET_CLASSES = {
-    "HyperRectangle": HyperRectangle,
-    "AxisAlignedHyperRectangle": AxisAlignedHyperRectangle,
-    "EuclideanBall": EuclideanBall,
-    "TimeStepHyperrectangles": TimeStepHyperrectangles,
-}
 
 
 class Cluster:
@@ -28,9 +14,9 @@ class Cluster:
         self.parameters = parameters
         self.centroids, self.assignments, self.k_per_row = self._compute_centroids(outputs=outputs)
         self._k_max: int = int(self.k_per_row.max().item())
-        self.probs_partition = self._compute_probs_partition()
-
         self.regions = self._get_regions(outputs=outputs)
+        self.partition_assignments = self._compute_partition_assignments(outputs=outputs)
+        self.probs_partition = self._compute_probs_partition()
         self.probs_region = self._compute_probs_regions(outputs=outputs)
 
 
@@ -85,41 +71,23 @@ class Cluster:
         return centroids, assignments, k_per_row
 
     def _compute_probs_partition(self) -> torch.Tensor:
-        one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=self.num_clusters)
+        one_hot_assignments = torch.nn.functional.one_hot(
+            self.partition_assignments.long(),
+            num_classes=self.num_clusters,
+        )
         return one_hot_assignments.to(dtype=self.centroids.dtype).mean(dim=1)
+
+    def _compute_partition_assignments(self, outputs: torch.Tensor) -> torch.Tensor:
+        return self.regions.distance(outputs).argmin(dim=2)
     
     def _get_regions(self, outputs: torch.Tensor):
-        region_cls = _SET_CLASSES.get(self.parameters.set_type)
-        if region_cls is None:
-            raise ValueError(f"Unsupported set_type: {self.parameters.set_type}")
-
-        base_region = region_cls.from_samples(
+        return AxisAlignedHyperRectangle.from_samples(
             samples=outputs,
             centroids=self.centroids,
             assignments=self.assignments,
             coverage=self.parameters.coverage,
         )
-        return DisjointRegion(region=base_region, centroids=self.centroids)
     
     def _compute_probs_regions(self, outputs: torch.Tensor) -> torch.Tensor:
-        """Compute probability of samples falling in region j, conditioned on being assigned to cluster j.
-        
-        This ensures by construction that probs_region[i,j] <= probs_partition[i,j],
-        since a sample can only be in region j if it's assigned to cluster j.
-        """
-        num_clusters = self.num_clusters
-
-        # Compute which samples are in which regions (shape: nx, num_samples, num_clusters)
         in_region = self.regions.contains(outputs)
-
-        # Get one-hot assignments (shape: nx, num_samples, num_clusters)
-        one_hot_assignments = torch.nn.functional.one_hot(self.assignments.long(), num_classes=num_clusters)
-        one_hot_assignments = one_hot_assignments.to(dtype=outputs.dtype)
-
-        # For each cluster j, count samples that are both:
-        # 1. assigned to cluster j
-        # 2. fall within region j
-        in_region_and_assigned = in_region.to(dtype=outputs.dtype) * one_hot_assignments
-
-        # Probability: (samples in region j AND assigned to j) / total samples
-        return in_region_and_assigned.mean(dim=1)
+        return in_region.to(dtype=outputs.dtype).mean(dim=1)
