@@ -21,6 +21,16 @@ class _CPU_Unpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == 'torch.storage' and name == '_load_from_bytes':
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        # TrajFlow pickles were created with older torch_geometric module paths.
+        # Remap them to newer locations when possible for cross-version loading.
+        module_aliases = {
+            'torch_geometric.nn.conv.utils.inspector': 'torch_geometric.inspector',
+        }
+        if module in module_aliases:
+            try:
+                return super().find_class(module_aliases[module], name)
+            except (AttributeError, ModuleNotFoundError):
+                pass
         return super().find_class(module, name)
 
 class trajflow_meszaros():
