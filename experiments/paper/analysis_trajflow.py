@@ -59,11 +59,11 @@ def load_inputs(batch_size: int | None = None) -> torch.Tensor:
 
 
 def build_settings() -> list[Setting]:
-    alphas = [0.0]
-    Ns = [10]
-    max_clusters = [1]
-    coverages = [0.9]
-    sigmas = [0.1]
+    alphas = [0.0, 0.2, 0.4]
+    Ns = [10, 20, 50]
+    max_clusters = [1, 2, 3]
+    coverages = [0.7, 0.8, 0.9]
+    sigmas = [0.1, 0.5, 1.0]
 
     settings: list[Setting] = []
     for alpha, N, max_num_clusters, coverage, sigma in itertools.product(
@@ -91,7 +91,8 @@ def build_settings() -> list[Setting]:
 def evaluate_setting(
     setting: Setting,
     stochastic_fn: TrajFlowMeszarosStochasticFunction,
-    x: torch.Tensor,
+    model_input: torch.Tensor,
+    helper: list[torch.Tensor],
     confidence_num_samples: int,
     confidence_beta: float,
 ) -> dict[str, Any]:
@@ -112,12 +113,18 @@ def evaluate_setting(
 
     smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
-        x=x,
+        x=model_input,
         sigma=setting.sigma,
         parameters=params,
+        h=helper,
     )
 
-    radius = torch.full((x.shape[0], 1), fill_value=setting.r, dtype=x.dtype, device=x.device)
+    radius = torch.full(
+        (model_input.shape[0], 1),
+        fill_value=setting.r,
+        dtype=model_input.dtype,
+        device=model_input.device,
+    )
     certificate = smoother.robust_certification(radius=radius)
 
     certified_radius = certificate.radius.squeeze(-1).detach().cpu()    # (nx,)
@@ -140,7 +147,7 @@ def evaluate_setting(
     minimum_area = areas_per_timestep.min(dim=-1).values                       # (nx,)
     maximum_area = areas_per_timestep.max(dim=-1).values                       # (nx,)
 
-    nx = x.shape[0]
+    nx = model_input.shape[0]
     xs = [
         {
             "x_index": i,
@@ -185,6 +192,13 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None, help="How many input trajectories to evaluate (default: all).")
     parser.add_argument("--sample-batch-size", type=int, default=16, help="Number of samples processed per forward pass (default: 16).")
     parser.add_argument(
+        "--input-mode",
+        type=str,
+        choices=("control", "position"),
+        default="control",
+        help="Input representation for smoothing: 'control' (default) or 'position'.",
+    )
+    parser.add_argument(
         "--confidence-num-samples",
         type=int,
         default=5000,
@@ -213,12 +227,20 @@ def main() -> None:
 
     stochastic_fn = TrajFlowMeszarosStochasticFunction()
     x = load_inputs(batch_size=args.batch_size)
+
+    if args.input_mode == "position":
+        model_input = x
+        helper: list[torch.Tensor] = []
+    else:
+        model_input, helper = stochastic_fn.pos_to_ctrl(x)
+
     settings = build_settings()
     if args.max_settings is not None:
         settings = settings[: args.max_settings]
 
     print("=== TrajFlow Hyperparameter Analysis ===")
     print(f"batch_size: {x.shape[0]} (all)" if args.batch_size is None else f"batch_size: {args.batch_size}")
+    print(f"input_mode: {args.input_mode}")
     print(f"num_settings: {len(settings)}")
 
     nx = x.shape[0]
@@ -238,7 +260,8 @@ def main() -> None:
             result_i = evaluate_setting(
                 setting=setting,
                 stochastic_fn=stochastic_fn,
-                x=x[batch_start:batch_end],
+                model_input=model_input[batch_start:batch_end],
+                helper=[h_i[batch_start:batch_end] for h_i in helper],
                 confidence_num_samples=args.confidence_num_samples,
                 confidence_beta=args.confidence_beta,
             )
