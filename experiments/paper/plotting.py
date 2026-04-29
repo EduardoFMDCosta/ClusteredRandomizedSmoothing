@@ -283,6 +283,7 @@ def plot_final_timestep_density(
 
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
+			ax.set_aspect("equal", adjustable="box")
 
 		for y_col in (1, 2, 3):
 			axes[i, y_col].tick_params(axis="y", which="both", left=False, labelleft=False)
@@ -296,6 +297,208 @@ def plot_final_timestep_density(
 	fig.supxlabel("x (m)", fontsize=8, y=-0.02)
 	fig.supylabel("y (m)", fontsize=8)
 	fig_path = output_dir / "final_timestep_density.pdf"
+	fig.savefig(fig_path, dpi=180)
+	plt.close(fig)
+
+	return [fig_path]
+
+
+def plot_final_timestep_examples(
+	x: torch.Tensor,
+	original_mc_samples: torch.Tensor,
+	noisy_mc_samples: torch.Tensor,
+	single_cluster_mc_samples: torch.Tensor,
+	clusterized_mc_samples: torch.Tensor,
+	single_cluster_centroids: torch.Tensor,
+	clusterized_centroids: torch.Tensor,
+	region,
+	single_cluster_region,
+	output_dir: Path,
+	num_input_agents: int = 2,
+) -> list[Path]:
+	"""Plot final-step endpoint samples and certified rectangles in one chart.
+
+	Columns are Original / Noisy / single-cluster smoother / clusterized smoother.
+	Certified final-step rectangles are overlaid on the smoother columns.
+	"""
+
+	output_dir.mkdir(parents=True, exist_ok=True)
+
+	original = _reshape_trajectory_samples(original_mc_samples)
+	noisy = _reshape_trajectory_samples(noisy_mc_samples)
+	single = _reshape_trajectory_samples(single_cluster_mc_samples)
+	clust = _reshape_trajectory_samples(clusterized_mc_samples)
+	x_np = _to_numpy(x)
+	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
+	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
+
+	original_end = original[:, :, -1, :]
+	noisy_end = noisy[:, :, -1, :]
+	single_end = single[:, :, -1, :]
+	clust_end = clust[:, :, -1, :]
+
+	# Final-step rectangle slices: (nx, k, 2)
+	if region.lower.shape[-1] % 2 != 0 or single_cluster_region.lower.shape[-1] % 2 != 0:
+		raise ValueError("Expected region output dimension arranged as [x1,y1,...,xT,yT]")
+
+	region_lower_final = _to_numpy(region.lower[..., -2:])
+	region_upper_final = _to_numpy(region.upper[..., -2:])
+	sc_lower_final = _to_numpy(single_cluster_region.lower[..., -2:])
+	sc_upper_final = _to_numpy(single_cluster_region.upper[..., -2:])
+
+	nx = original.shape[0]
+
+	all_x_coords = np.concatenate([
+		original_end[..., 0].reshape(-1),
+		noisy_end[..., 0].reshape(-1),
+		single_end[..., 0].reshape(-1),
+		clust_end[..., 0].reshape(-1),
+		x_traj[..., 0].reshape(-1),
+		region_lower_final[..., 0].reshape(-1),
+		region_upper_final[..., 0].reshape(-1),
+		sc_lower_final[..., 0].reshape(-1),
+		sc_upper_final[..., 0].reshape(-1),
+	])
+	all_y_coords = np.concatenate([
+		original_end[..., 1].reshape(-1),
+		noisy_end[..., 1].reshape(-1),
+		single_end[..., 1].reshape(-1),
+		clust_end[..., 1].reshape(-1),
+		x_traj[..., 1].reshape(-1),
+		region_lower_final[..., 1].reshape(-1),
+		region_upper_final[..., 1].reshape(-1),
+		sc_lower_final[..., 1].reshape(-1),
+		sc_upper_final[..., 1].reshape(-1),
+	])
+	x_pad = max((float(all_x_coords.max()) - float(all_x_coords.min())) * 0.12, 0.5)
+	y_pad = max((float(all_y_coords.max()) - float(all_y_coords.min())) * 0.12, 0.5)
+	x_lim = (float(all_x_coords.min()) - x_pad, float(all_x_coords.max()) + x_pad)
+	y_lim = (float(all_y_coords.min()) - y_pad, float(all_y_coords.max()) + y_pad)
+	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
+	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
+
+	col_titles = ("Original", "Noisy", "Rekavandi et al, 2024", "Ours")
+	agent_colors = ("#000000", "#0B3C5D")
+	agent_labels = ("Agent", "Ego agent")
+
+	def _assign_to_centroids(points_np: np.ndarray, centroids_np: np.ndarray) -> np.ndarray:
+		diff = points_np[:, None, :] - centroids_np[None, :, :]
+		d2 = np.sum(diff * diff, axis=-1)
+		return np.argmin(d2, axis=1)
+
+	_w = TEXTWIDTH
+	fig, axes = plt.subplots(nx, 4, figsize=(_w, 0.25 * _w * nx), sharex=True, sharey=True, constrained_layout=True)
+	if nx == 1:
+		axes = np.array([axes])
+
+	for i in range(nx):
+		single_centroids_i = _to_numpy(single_cluster_centroids[i])
+		clust_centroids_i = _to_numpy(clusterized_centroids[i])
+
+		column_data = (
+			(original_end[i], None),
+			(noisy_end[i], None),
+			(single_end[i], single_centroids_i),
+			(clust_end[i], clust_centroids_i),
+		)
+
+		for col_idx, (endpoints, centroids_ref) in enumerate(column_data):
+			ax = axes[i, col_idx]
+			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
+
+			if centroids_ref is None:
+				labels_np = np.zeros(endpoints.shape[0], dtype=np.int64)
+				num_cls = 1
+			else:
+				labels_np = _assign_to_centroids(endpoints, centroids_ref)
+				num_cls = int(centroids_ref.shape[0])
+
+			for j in range(num_cls):
+				mask_j = labels_np == j
+				if not np.any(mask_j):
+					continue
+				color_j = CLUSTER_PALETTE[j % len(CLUSTER_PALETTE)]
+				ax.scatter(
+					endpoints[mask_j, 0],
+					endpoints[mask_j, 1],
+					s=8,
+					alpha=0.45,
+					color=color_j,
+					linewidths=0,
+					zorder=2,
+				)
+
+			# Overlay certified final-step rectangles on smoother columns.
+			if col_idx == 2:
+				sc_k = int(single_cluster_region.lower.shape[1])
+				for c in range(sc_k):
+					color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
+					x_lo, y_lo = sc_lower_final[i, c]
+					x_hi, y_hi = sc_upper_final[i, c]
+					rect = mpatches.Rectangle(
+						(x_lo, y_lo),
+						x_hi - x_lo,
+						y_hi - y_lo,
+						edgecolor=color,
+						facecolor=to_rgba(color, alpha=0.12),
+						linewidth=0.8,
+						linestyle="-",
+						zorder=3,
+					)
+					ax.add_patch(rect)
+			elif col_idx == 3:
+				k = int(region.lower.shape[1])
+				for c in range(k):
+					color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
+					x_lo, y_lo = region_lower_final[i, c]
+					x_hi, y_hi = region_upper_final[i, c]
+					rect = mpatches.Rectangle(
+						(x_lo, y_lo),
+						x_hi - x_lo,
+						y_hi - y_lo,
+						edgecolor=color,
+						facecolor=to_rgba(color, alpha=0.12),
+						linewidth=0.8,
+						linestyle="-",
+						zorder=3,
+					)
+					ax.add_patch(rect)
+
+			for agent_idx in range(num_input_agents):
+				agent_traj = x_traj[i, agent_idx]
+				color = agent_colors[agent_idx % len(agent_colors)]
+				label = None
+				if i == 0 and col_idx == 0 and agent_idx < len(agent_labels):
+					label = agent_labels[agent_idx]
+				ax.plot(
+					agent_traj[:, 0],
+					agent_traj[:, 1],
+					color=color,
+					linestyle="None",
+					marker="o",
+					markersize=2.0,
+					markerfacecolor=color,
+					markeredgecolor=color,
+					markeredgewidth=0.2,
+					zorder=6,
+					label=label,
+				)
+
+			ax.set_xlim(*x_lim)
+			ax.set_ylim(*y_lim)
+
+		for y_col in (1, 2, 3):
+			axes[i, y_col].tick_params(axis="y", which="both", left=False, labelleft=False)
+
+		if i == 0:
+			for col_idx in range(4):
+				axes[i, col_idx].set_title(col_titles[col_idx], fontsize=8)
+
+	handles, labels = axes[0, 0].get_legend_handles_labels()
+	fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=True, fontsize=8)
+	fig.supxlabel("x (m)", fontsize=8, y=-0.02)
+	fig.supylabel("y (m)", fontsize=8)
+	fig_path = output_dir / "final_timestep_examples.pdf"
 	fig.savefig(fig_path, dpi=180)
 	plt.close(fig)
 
@@ -738,6 +941,7 @@ def _add_region_patch(ax: plt.Axes, cluster: Cluster, cluster_index: int, color:
 def plot_comparison(
 	outputs: torch.Tensor,
 	clusters_by_key: dict[tuple[str, float], Cluster],
+	set_types: list[str],
 	coverages: list[float],
 	output_dir: Path,
 ) -> list[Path]:
@@ -768,13 +972,16 @@ def plot_comparison(
 	for coverage in coverages:
 		_w = HALFWIDTH
 		fig, axes = plt.subplots(
-			1, 2,
+			1, len(set_types),
 			figsize=(_w, 0.55 * _w),
 			sharex=True,
 			sharey=True,
 		)
 
-		for col, set_type in enumerate(["HyperRectangle", "EuclideanBall"]):
+		if len(set_types) == 1:
+			axes = [axes]
+
+		for col, set_type in enumerate(set_types):
 			ax = axes[col]
 			cluster = clusters_by_key[(set_type, coverage)]
 			assignments = cluster.assignments[0].detach().cpu().numpy()
@@ -806,7 +1013,7 @@ def plot_comparison(
 			ax.grid(alpha=0.25, linestyle=":")
 
 		fig.subplots_adjust(wspace=0.05)
-		output_path = output_dir / f"hyperrectangle_vs_ball_cov{coverage:.2f}.pdf"
+		output_path = output_dir / f"axis_aligned_hyperrectangle_cov{coverage:.2f}.pdf"
 		fig.savefig(output_path, dpi=180, bbox_inches="tight")
 		plt.close(fig)
 		paths.append(output_path)
