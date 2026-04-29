@@ -224,6 +224,18 @@ def main() -> None:
         help="Optional cap for quick debugging runs.",
     )
     parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Split the settings list across this many independent shards/jobs.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="0-based shard index to run (must be in [0, num_shards)).",
+    )
+    parser.add_argument(
         "--num-random-seeds",
         type=int,
         default=10,
@@ -231,6 +243,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.num_shards <= 0:
+        raise ValueError("num_shards must be positive")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("shard_index must satisfy 0 <= shard_index < num_shards")
 
     stochastic_fn = TrajFlowMeszarosStochasticFunction()
     x = load_inputs(batch_size=args.batch_size)
@@ -244,11 +261,15 @@ def main() -> None:
     settings = build_settings()
     if args.max_settings is not None:
         settings = settings[: args.max_settings]
+    all_settings_count = len(settings)
+    settings = [s for i, s in enumerate(settings) if i % args.num_shards == args.shard_index]
 
     print("=== TrajFlow Hyperparameter Analysis ===")
     print(f"batch_size: {x.shape[0]} (all)" if args.batch_size is None else f"batch_size: {args.batch_size}")
     print(f"input_mode: {args.input_mode}")
-    print(f"num_settings: {len(settings)}")
+    print(f"num_settings_total: {all_settings_count}")
+    print(f"num_settings_this_shard: {len(settings)}")
+    print(f"shard: {args.shard_index}/{args.num_shards}")
     print(f"num_random_seeds: {args.num_random_seeds}")
 
     nx = x.shape[0]
@@ -305,7 +326,10 @@ def main() -> None:
         all_results.append({"setting": asdict(setting), "xs": xs_all})
 
     output_dir = Path(args.output_dir)
-    json_path = output_dir / "results.json"
+    if args.num_shards == 1:
+        json_path = output_dir / "results.json"
+    else:
+        json_path = output_dir / f"results_shard_{args.shard_index:03d}_of_{args.num_shards:03d}.json"
 
     save_json(json_path, all_results)
 
