@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONDA_ENV="${CONDA_ENV:-randomized_smoothing}"
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate "$CONDA_ENV"
-
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
 cd "$PROJECT_DIR"
 
+source .venv/bin/activate
 PYTHON_BIN="python"
 
 # Number of array jobs/shards. Must match the qsub array range length.
