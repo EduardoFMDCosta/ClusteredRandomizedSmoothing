@@ -18,7 +18,7 @@ INPUT_MODE="${INPUT_MODE:-control}"
 CONFIDENCE_NUM_SAMPLES="${CONFIDENCE_NUM_SAMPLES:-5000}"
 CONFIDENCE_BETA="${CONFIDENCE_BETA:-1e-5}"
 NUM_RANDOM_SEEDS="${NUM_RANDOM_SEEDS:-10}"
-OUTPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis_parallel}"
+OUTPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis}"
 MAX_SETTINGS="${MAX_SETTINGS:-}"
 
 echo "Shard ${SHARD_INDEX}/${NUM_SHARDS} started at $(date)"

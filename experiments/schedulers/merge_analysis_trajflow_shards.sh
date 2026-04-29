@@ -6,7 +6,7 @@ cd "$PROJECT_DIR"
 
 source .venv/bin/activate
 PYTHON_BIN="python"
-INPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis_parallel}"
+INPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis}"
 EXPECTED_NUM_SHARDS="${NUM_SHARDS:-}"
 OUTPUT_FILE="${MERGED_OUTPUT_FILE:-results.json}"
 
