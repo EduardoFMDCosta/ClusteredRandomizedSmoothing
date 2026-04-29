@@ -139,6 +139,7 @@ def _build_smoother(
     x: torch.Tensor,
     sigma: float,
     smoothing_N: int,
+    confidence_N: int,
     alpha: float,
     coverage: float,
     max_clusters: int,
@@ -155,7 +156,7 @@ def _build_smoother(
             dbscan_min_samples=dbscan_min_samples,
             set_type=set_type,
         ),
-        confidence=ConfidenceParameters(num_samples=smoothing_N, beta=1e-2),
+        confidence=ConfidenceParameters(num_samples=confidence_N, beta=0.1),
     )
     return GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
@@ -193,16 +194,17 @@ def _print_certificate(
         hw = 0.5 * region_widths[j]
         print(f"    cluster {j}: [±{hw[0]:.3f}, ±{hw[1]:.3f}, ±{hw[2]:.3f}]")
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
     parser.add_argument("--out-dir", type=str, default="experiments/uav_3d/bimodal_plots")
     parser.add_argument("--sigma", type=float, default=0.05,
                         help="Std of the Gaussian state-space smoothing noise (normalized state units).")
-    parser.add_argument("--smoothing-N", type=int, default=4000,
+    parser.add_argument("--smoothing-N", type=int, default=50,
                         help="Number of noisy state samples per smoothing call.")
-    parser.add_argument("--alpha", type=float, default=0.2,
+    parser.add_argument("--confidence-N", type=int, default=4000,
+                        help="Number of Monte Carlo samples for confidence estimation.")
+    parser.add_argument("--alpha", type=float, default=0.4,
                         help="Alpha-trimming fraction (0 <= alpha < 0.5).")
     parser.add_argument("--coverage", type=float, default=0.9)
     parser.add_argument("--max-clusters", type=int, default=3)
@@ -254,7 +256,7 @@ def main() -> None:
     # ---- (ii) Clusterized smoothed predictor (K = max_clusters) ----
     smoother_K = _build_smoother(
         stochastic_fn=stochastic_fn, x=x, sigma=args.sigma,
-        smoothing_N=args.smoothing_N, alpha=args.alpha, coverage=args.coverage,
+        smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,
         max_clusters=args.max_clusters,
         dbscan_eps=args.dbscan_eps, dbscan_min_samples=args.dbscan_min_samples,
         set_type=args.set_type,
@@ -274,7 +276,7 @@ def main() -> None:
     # ---- (iii) Alpha-smoothing baseline (K = 1) ----
     smoother_1 = _build_smoother(
         stochastic_fn=stochastic_fn, x=x, sigma=args.sigma,
-        smoothing_N=args.smoothing_N, alpha=args.alpha, coverage=args.coverage,
+        smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,
         max_clusters=1,
         dbscan_eps=args.dbscan_eps, dbscan_min_samples=args.dbscan_min_samples,
         set_type=args.set_type,
