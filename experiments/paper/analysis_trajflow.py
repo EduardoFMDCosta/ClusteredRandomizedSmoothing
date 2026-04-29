@@ -42,10 +42,12 @@ class Setting:
     r: float
 
 
-def load_inputs(batch_size: int) -> torch.Tensor:
+def load_inputs(batch_size: int | None = None) -> torch.Tensor:
     data_file = EXPERIMENTS / "TrajFlowExperiment" / "Data" / "Inputs.npy"
     data = np.load(str(data_file))
 
+    if batch_size is None:
+        batch_size = len(data)
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     if batch_size > len(data):
@@ -88,6 +90,7 @@ def build_settings() -> list[Setting]:
 
 def evaluate_setting(
     setting: Setting,
+    stochastic_fn: TrajFlowMeszarosStochasticFunction,
     x: torch.Tensor,
     confidence_num_samples: int,
     confidence_beta: float,
@@ -95,7 +98,6 @@ def evaluate_setting(
     """Run one smoothing/certification setting and return serializable metrics."""
     torch.manual_seed(0)
 
-    stochastic_fn = TrajFlowMeszarosStochasticFunction()
     params = Parameters(
         smoothing=SmoothingParameters(N=setting.N, alpha=setting.alpha),
         clustering=ClusteringParameters(
@@ -132,7 +134,8 @@ def evaluate_setting(
     x_widths = widths[..., 0::2]                                                # (nx, k, T)
     y_widths = widths[..., 1::2]                                                # (nx, k, T)
     areas_per_cluster = x_widths * y_widths                                     # (nx, k, T)
-    areas_per_timestep = areas_per_cluster.sum(dim=1).detach().cpu()           # (nx, 20)
+    # T can be 1 (final timestep only) or larger (full trajectory output).
+    areas_per_timestep = areas_per_cluster.sum(dim=1).detach().cpu()           # (nx, T)
     average_area = areas_per_timestep.mean(dim=-1)                             # (nx,)
     minimum_area = areas_per_timestep.min(dim=-1).values                       # (nx,)
     maximum_area = areas_per_timestep.max(dim=-1).values                       # (nx,)
@@ -179,7 +182,8 @@ def save_json(path: Path, payload: Any) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hyperparameter analysis for TrajFlow randomized smoothing.")
-    parser.add_argument("--batch-size", type=int, default=4, help="How many input trajectories to evaluate.")
+    parser.add_argument("--batch-size", type=int, default=None, help="How many input trajectories to evaluate (default: all).")
+    parser.add_argument("--sample-batch-size", type=int, default=16, help="Number of samples processed per forward pass (default: 16).")
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
@@ -207,15 +211,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    stochastic_fn = TrajFlowMeszarosStochasticFunction()
     x = load_inputs(batch_size=args.batch_size)
     settings = build_settings()
     if args.max_settings is not None:
         settings = settings[: args.max_settings]
 
     print("=== TrajFlow Hyperparameter Analysis ===")
-    print(f"batch_size: {args.batch_size}")
+    print(f"batch_size: {x.shape[0]} (all)" if args.batch_size is None else f"batch_size: {args.batch_size}")
     print(f"num_settings: {len(settings)}")
 
+    nx = x.shape[0]
     all_results: list[dict[str, Any]] = []
     for idx, setting in enumerate(settings, start=1):
         print(
@@ -225,13 +231,24 @@ def main() -> None:
             f"sigma={setting.sigma}, r={setting.r}"
         )
 
-        result = evaluate_setting(
-            setting=setting,
-            x=x,
-            confidence_num_samples=args.confidence_num_samples,
-            confidence_beta=args.confidence_beta,
-        )
-        all_results.append(result)
+        xs_all: list[dict[str, Any]] = []
+        for batch_start in range(0, nx, args.sample_batch_size):
+            batch_end = min(batch_start + args.sample_batch_size, nx)
+            print(f"  points {batch_start + 1}-{batch_end}/{nx}", end="\r", flush=True)
+            result_i = evaluate_setting(
+                setting=setting,
+                stochastic_fn=stochastic_fn,
+                x=x[batch_start:batch_end],
+                confidence_num_samples=args.confidence_num_samples,
+                confidence_beta=args.confidence_beta,
+            )
+            for local_i, entry in enumerate(result_i["xs"]):
+                entry["x_index"] = batch_start + local_i
+                xs_all.append(entry)
+        if nx > 1:
+            print()  # newline after the \r progress
+
+        all_results.append({"setting": asdict(setting), "xs": xs_all})
 
     output_dir = Path(args.output_dir)
     json_path = output_dir / "results.json"

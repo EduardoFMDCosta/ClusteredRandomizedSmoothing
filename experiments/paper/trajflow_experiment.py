@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -25,7 +26,23 @@ from stochastic_functions import TrajFlowMeszarosStochasticFunction
 from plotting import plot_final_timestep_examples
 
 
+def _parse_indices(text: str) -> np.ndarray:
+    values = [item.strip() for item in text.split(",") if item.strip()]
+    if not values:
+        raise ValueError("selected-indices must contain at least one integer")
+    return np.array([int(v) for v in values], dtype=int)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="TrajFlow smoothing experiment with plotting.")
+    parser.add_argument("--selected-indices", type=str, default="480,114,129,665",
+                        help="Comma-separated dataset indices to analyze.")
+    parser.add_argument("--num-plot-samples", type=int, default=200,
+                        help="Monte Carlo samples used for plotting distributions.")
+    parser.add_argument("--confidence-num-samples", type=int, default=5000,
+                        help="num_samples used in confidence (Clopper-Pearson) estimation.")
+    args = parser.parse_args()
+
     torch.manual_seed(0)
 
     try:
@@ -41,11 +58,11 @@ def main():
     data = np.load(data_file)
 
     # Parameters
-    selected_indices = np.array([480, 114, 129, 665], dtype=int)
+    selected_indices = _parse_indices(args.selected_indices)
     use_position_input = False  # True: smooth in position space x; False: smooth in control space u.
     sigma = 1.0
     coverage = 0.80
-    num_plot_samples = 200
+    num_plot_samples = args.num_plot_samples
 
     batch_size = selected_indices.shape[0]
     x_input = data[selected_indices, :, :, :2]  # Take selected samples, both agents, (x, y) coords only.
@@ -69,7 +86,7 @@ def main():
             dbscan_eps=0.5,
             dbscan_min_samples=10,
         ),
-        confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
+        confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
     )
 
     smoother = GaussianAlphaTrimmingSmoothing(
@@ -93,7 +110,7 @@ def main():
             dbscan_eps=0.5,
             dbscan_min_samples=10,
         ),
-        confidence=ConfidenceParameters(num_samples=5000, beta=1e-5),
+        confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
     )
 
     smoother_single = GaussianAlphaTrimmingSmoothing(
