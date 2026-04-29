@@ -198,7 +198,7 @@ def main() -> None:
     parser.add_argument("--out-dir", type=str, default="experiments/uav_3d/bimodal_plots")
     parser.add_argument("--sigma", type=float, default=0.05,
                         help="Std of the Gaussian state-space smoothing noise (normalized state units).")
-    parser.add_argument("--smoothing-N", type=int, default=50,
+    parser.add_argument("--smoothing-N", type=int, default=30,
                         help="Number of noisy state samples per smoothing call.")
     parser.add_argument("--confidence-N", type=int, default=4000,
                         help="Number of Monte Carlo samples for confidence estimation.")
