@@ -243,7 +243,6 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
                 p_R=p_R,
                 p_V_lower=p_lower,
                 p_V_upper=p_upper,
-                K=5,
             )
             total_bounds.append(lower_bound)
 
