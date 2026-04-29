@@ -53,8 +53,8 @@ def main():
     clustering_parameters = ClusteringParameters(
         max_num_clusters=2,
         coverage=coverage,
-        dbscan_eps=0.2,
-        dbscan_min_samples=80,
+        dbscan_eps=0.05,
+        dbscan_min_samples=5,
     )
     confidence_parameters = ConfidenceParameters(
         beta=1e-2,

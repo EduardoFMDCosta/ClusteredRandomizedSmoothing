@@ -15,11 +15,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.distributions import Normal
-
 from benchmark_policies import load_policy
 from dynamics import UAV3D
-from train_vi_bnn_rl import normalize_state
+from torch.distributions import Normal
+from train_rl import normalize_state
 
 
 def _forced_component_action(policy, state_t: torch.Tensor, component_idx: int) -> np.ndarray:
@@ -96,8 +95,8 @@ def _draw_xy_obstacles(ax, env: UAV3D) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/vi_bnn_policy.pt")
-    parser.add_argument("--out", type=str, default="experiments/uav_3d/vi_bnn_bimodal_state.png")
+    parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
+    parser.add_argument("--out", type=str, default="experiments/uav_3d/bimodal_state.png")
     parser.add_argument("--x", type=float, default=-1.82)
     parser.add_argument("--y", type=float, default=-0.34)
     parser.add_argument("--z", type=float, default=0.68)

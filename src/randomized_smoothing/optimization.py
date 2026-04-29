@@ -77,32 +77,58 @@ def robustness_bound(
     probs_partition_ub = probs_partition_ub.to(device=device, dtype=dtype).clamp(eps, 1.0 - eps)
     ratio = (probs_region / probs_partition_ub).clamp(eps, 1.0 - eps)
 
-    s = torch.arange(1, num_samples + 1, device=device, dtype=dtype)
-    j = torch.arange(0, num_samples + 1, device=device, dtype=dtype)
+    # All arithmetic happens in log-space and the result is collapsed with
+    # ``logsumexp`` to keep the bound representable when individual binomial
+    # tail terms underflow (e.g. for large N or extreme p / ratio).
+    log_r = torch.log(ratio)
+    log_1mr = torch.log1p(-ratio)
+    log_p_lb = torch.log(probs_partition_lb)
+    log_1mp_lb = torch.log1p(-probs_partition_lb)
+    log_p_ub = torch.log(probs_partition_ub)
+    log_1mp_ub = torch.log1p(-probs_partition_ub)
+
+    N = num_samples
+    s = torch.arange(1, N + 1, device=device, dtype=dtype)
+    j = torch.arange(0, N + 1, device=device, dtype=dtype)
     two_alpha_floor = 2 * torch.floor(alpha * s)
     j_min = (s - two_alpha_floor).to(dtype=torch.long).clamp(min=0)
 
-    s_row = s.view(1, 1, num_samples, 1)
-    j_row = j.view(1, 1, 1, num_samples + 1)
-    valid_j = (j_row >= j_min.view(1, 1, num_samples, 1)) & (j_row <= s_row)
+    s_row = s.view(1, 1, N, 1)
+    j_row = j.view(1, 1, 1, N + 1)
+    valid_j = (j_row >= j_min.view(1, 1, N, 1)) & (j_row <= s_row)
 
+    # log C(s, j) + j * log(r) + (s - j) * log(1 - r)
     log_comb_sj = log_combination(s_row, j_row)
-
-    r = ratio.unsqueeze(-1).unsqueeze(-1)
     log_term_j = (
         log_comb_sj
-        + j_row * torch.log(r)
-        + (s_row - j_row) * torch.log(1.0 - r)
+        + j_row * log_r.unsqueeze(-1).unsqueeze(-1)
+        + (s_row - j_row) * log_1mr.unsqueeze(-1).unsqueeze(-1)
     )
-    term_j = torch.where(valid_j, torch.exp(log_term_j), torch.zeros_like(log_term_j))
-    inner_j = term_j.sum(dim=-1)
+    neg_inf = torch.full((), float("-inf"), dtype=dtype, device=device)
+    log_term_j = torch.where(valid_j, log_term_j, neg_inf)
+    log_inner_j = torch.logsumexp(log_term_j, dim=-1)  # (nx, k, N)
 
-    term_s_lb = _binomial(k=s, N=float(num_samples), p=probs_partition_lb)
-    term_s_ub = _binomial(k=s, N=float(num_samples), p=probs_partition_ub)
-    term_s = torch.minimum(term_s_lb, term_s_ub)
+    # log C(N, s) + s * log(p) + (N - s) * log(1 - p), broadcast over (nx, k, N).
+    log_comb_Ns = log_combination(float(N), s).view(1, 1, N)
+    s_b = s.view(1, 1, N)
+    log_term_s_lb = (
+        log_comb_Ns
+        + s_b * log_p_lb.unsqueeze(-1)
+        + (N - s_b) * log_1mp_lb.unsqueeze(-1)
+    )
+    log_term_s_ub = (
+        log_comb_Ns
+        + s_b * log_p_ub.unsqueeze(-1)
+        + (N - s_b) * log_1mp_ub.unsqueeze(-1)
+    )
+    # min of two positives in linear space is min of their logs.
+    log_term_s = torch.minimum(log_term_s_lb, log_term_s_ub)
 
-    factor_s = (s / float(num_samples)).view(1, 1, num_samples)
-    per_cluster = (factor_s * inner_j * term_s).sum(dim=2)
+    log_factor_s = torch.log(s / float(N)).view(1, 1, N)
+    log_per_s = log_factor_s + log_inner_j + log_term_s
+
+    log_per_cluster = torch.logsumexp(log_per_s, dim=-1)  # (nx, k)
+    per_cluster = torch.exp(log_per_cluster)
     return per_cluster.to(dtype=output_dtype)
 
 
@@ -113,6 +139,25 @@ def _validate_vector(name: str, values: np.ndarray | list[float], M: int) -> np.
     if np.any(arr < 0.0) or np.any(arr > 1.0):
         raise ValueError(f"{name} entries must lie in [0, 1]")
     return arr
+
+
+def _logsumexp(values: np.ndarray) -> float:
+    if values.size == 0:
+        return -math.inf
+    m = float(np.max(values))
+    if not math.isfinite(m):
+        return m
+    return m + float(np.log(np.exp(values - m).sum()))
+
+
+def _scaled_log(log_x: float, k: np.ndarray) -> np.ndarray:
+    # k * log_x with the convention 0 * (-inf) = 0 (so x^0 = 1 when x = 0).
+    k64 = k.astype(np.float64)
+    if math.isfinite(log_x):
+        return k64 * log_x
+    out = np.full_like(k64, log_x)
+    out[k64 == 0.0] = 0.0
+    return out
 
 
 def eval_f_m(p: float, p_R_m: float, N: int, alpha: float) -> float:
@@ -128,20 +173,46 @@ def eval_f_m(p: float, p_R_m: float, N: int, alpha: float) -> float:
         return 0.0
 
     ratio = float(np.clip(p_R_m / p, 0.0, 1.0))
-    s = np.arange(1, N + 1, dtype=np.int64)
-    j = np.arange(0, N + 1, dtype=np.int64)
 
-    comb_Ns = np.asarray([math.comb(N, int(s_i)) for s_i in s], dtype=np.float64)
-    outer = (s.astype(np.float64) / float(N)) * comb_Ns * np.power(p, s) * np.power(1.0 - p, N - s)
+    # Log-space arithmetic: C(N, s) overflows float64 for N >~ 1029, so this
+    # function must not materialize binomial coefficients directly.
+    log_p = math.log(p) if p > 0.0 else -math.inf
+    log_1mp = math.log1p(-p) if p < 1.0 else -math.inf
+    log_r = math.log(ratio) if ratio > 0.0 else -math.inf
+    log_1mr = math.log1p(-ratio) if ratio < 1.0 else -math.inf
 
-    inner = np.zeros_like(outer)
-    for idx, s_i in enumerate(s):
-        j_min = max(int(s_i - 2 * math.floor(alpha * s_i)), 0)
-        valid = j[j_min : s_i + 1]
-        comb_sj = np.asarray([math.comb(int(s_i), int(j_i)) for j_i in valid], dtype=np.float64)
-        inner[idx] = np.sum(comb_sj * np.power(ratio, valid) * np.power(1.0 - ratio, s_i - valid))
+    log_factorial = np.fromiter(
+        (math.lgamma(i + 1.0) for i in range(N + 1)),
+        dtype=np.float64,
+        count=N + 1,
+    )
 
-    return float(np.sum(outer * inner))
+    s_arr = np.arange(1, N + 1, dtype=np.int64)
+    log_comb_Ns = log_factorial[N] - log_factorial[s_arr] - log_factorial[N - s_arr]
+    log_outer = (
+        np.log(s_arr.astype(np.float64) / float(N))
+        + log_comb_Ns
+        + _scaled_log(log_p, s_arr)
+        + _scaled_log(log_1mp, N - s_arr)
+    )
+
+    log_per_s = np.full(N, -math.inf, dtype=np.float64)
+    for idx, s_i in enumerate(s_arr):
+        s_int = int(s_i)
+        j_min = max(s_int - 2 * math.floor(alpha * s_int), 0)
+        j_arr = np.arange(j_min, s_int + 1, dtype=np.int64)
+        log_comb_sj = log_factorial[s_int] - log_factorial[j_arr] - log_factorial[s_int - j_arr]
+        log_terms = (
+            log_comb_sj
+            + _scaled_log(log_r, j_arr)
+            + _scaled_log(log_1mr, s_int - j_arr)
+        )
+        log_per_s[idx] = log_outer[idx] + _logsumexp(log_terms)
+
+    total_log = _logsumexp(log_per_s)
+    if not math.isfinite(total_log):
+        return 0.0
+    return float(math.exp(total_log))
 
 
 def compute_total_prob_lower_bound(

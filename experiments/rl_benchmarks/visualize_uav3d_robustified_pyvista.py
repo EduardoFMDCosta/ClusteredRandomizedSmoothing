@@ -15,7 +15,6 @@ plots both bundles of trajectories in the same scene.
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -23,18 +22,9 @@ from typing import Any, cast
 import numpy as np
 import pyvista as pv
 import torch
-
-THIS = Path(__file__).resolve()
-RL_DIR = THIS.parent
-EXPERIMENTS = RL_DIR.parent
-SRC = EXPERIMENTS.parent / "src"
-for p in (str(SRC), str(EXPERIMENTS), str(RL_DIR)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 from dynamics import UAV3D
 from stochastic_functions import UAV3DPolicyStochasticFunction
-from train_vi_bnn_rl import VariationalPolicy, normalize_state
+from train_rl import VariationalPolicy, normalize_state
 from visualize_uav3d_pyvista import (
     BIMODAL_START_STATE,
     _create_box,
@@ -55,18 +45,9 @@ def _robustified_action(
     state: np.ndarray,
     parameters: Parameters,
     sigma: float,
-    selector: str,
-    prev_action: np.ndarray | None,
 ) -> np.ndarray:
     """Build a smoother at ``state`` and return one action from the
     robustified ``MixtureDirac``.
-
-    ``selector``:
-      * ``"sample"``     — draw from the partition (flips modes across steps);
-      * ``"mode"``       — pick the centroid with the largest partition weight;
-      * ``"consistent"`` — on step 0 take the heaviest-weight centroid, on
-        subsequent steps pick the centroid closest to ``prev_action`` (mode
-        commitment — keeps the robust controller in one mixture branch).
     """
     x = torch.tensor(normalize_state(state, "uav_3d"), dtype=torch.float32).unsqueeze(0)
     smoother = GaussianAlphaTrimmingSmoothing(
@@ -76,19 +57,9 @@ def _robustified_action(
         parameters=parameters,
     )
     distribution = smoother.smooth()
-    probs = distribution.probs[0].detach().cpu().numpy()
-    locs = distribution.locs[0].detach().cpu().numpy()
-    if selector == "sample":
-        action_t = distribution.sample(size=())
-        return action_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
-    if selector == "mode" or (selector == "consistent" and prev_action is None):
-        idx = int(np.argmax(probs))
-        return locs[idx].astype(np.float32)
-    if selector == "consistent":
-        dists = np.linalg.norm(locs - prev_action[None, :], axis=-1)
-        idx = int(np.argmin(dists))
-        return locs[idx].astype(np.float32)
-    raise ValueError(f"Unknown selector: {selector}")
+    action_t = distribution.sample(size=())
+    return action_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    
 
 
 def _rollout(
@@ -239,7 +210,7 @@ def _add_trajectories(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/vi_bnn_policy.pt")
+    parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--horizon", type=int, default=48)
     parser.add_argument("--sigma", type=float, default=0.05)
