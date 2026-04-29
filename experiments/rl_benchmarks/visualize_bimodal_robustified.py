@@ -145,7 +145,6 @@ def _build_smoother(
     max_clusters: int,
     dbscan_eps: float,
     dbscan_min_samples: int,
-    set_type: str,
 ) -> GaussianAlphaTrimmingSmoothing:
     parameters = Parameters(
         smoothing=SmoothingParameters(N=smoothing_N, alpha=alpha),
@@ -154,7 +153,6 @@ def _build_smoother(
             coverage=coverage,
             dbscan_eps=dbscan_eps,
             dbscan_min_samples=dbscan_min_samples,
-            set_type=set_type,
         ),
         confidence=ConfidenceParameters(num_samples=confidence_N, beta=0.1),
     )
@@ -215,13 +213,6 @@ def main() -> None:
                         help="Draws from the robustified MixtureDirac for plotting.")
     parser.add_argument("--radius", type=float, default=0.02,
                         help="Input disturbance L2 radius (normalized state units) for the certificate.")
-    parser.add_argument("--set-type", type=str, default="AxisAlignedHyperRectangle",
-                        choices=["HyperRectangle", "AxisAlignedHyperRectangle",
-                                 "EuclideanBall", "TimeStepHyperrectangles"],
-                        help="Output region shape per cluster: 'HyperRectangle' is an L∞ "
-                             "cube (shared half-width), 'AxisAlignedHyperRectangle' is the "
-                             "tightest axis-aligned box around the L2-closest 'coverage' "
-                             "fraction of cluster samples.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -259,7 +250,6 @@ def main() -> None:
         smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,
         max_clusters=args.max_clusters,
         dbscan_eps=args.dbscan_eps, dbscan_min_samples=args.dbscan_min_samples,
-        set_type=args.set_type,
     )
     mc_K = smoother_K.monte_carlo(num_simulations=args.mc_samples).squeeze(0).detach().cpu().numpy()
     smoothed_path = out_dir / "bimodal_smoothed.png"
@@ -279,7 +269,6 @@ def main() -> None:
         smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,
         max_clusters=1,
         dbscan_eps=args.dbscan_eps, dbscan_min_samples=args.dbscan_min_samples,
-        set_type=args.set_type,
     )
     mc_1 = smoother_1.monte_carlo(num_simulations=args.mc_samples).squeeze(0).detach().cpu().numpy()
     alpha_path = out_dir / "bimodal_alpha.png"

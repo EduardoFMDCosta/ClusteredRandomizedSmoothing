@@ -1,13 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import torch
-
-
-_ALLOWED_SET_TYPES = {
-    "HyperRectangle",
-    "AxisAlignedHyperRectangle",
-    "EuclideanBall",
-    "TimeStepHyperrectangles",
-}
 
 @dataclass
 class SmoothingParameters:
@@ -27,7 +19,6 @@ class SmoothingParameters:
 class ClusteringParameters:
     max_num_clusters: int
     coverage: float
-    set_type: str = "HyperRectangle"
     dbscan_eps: float = 0.5
     dbscan_min_samples: int = 10
     max_iter: int = 1000
@@ -37,7 +28,6 @@ class ClusteringParameters:
     def __post_init__(self) -> None:
         self.max_num_clusters = int(self.max_num_clusters)
         self.coverage = float(self.coverage)
-        self.set_type = str(self.set_type)
         self.dbscan_eps = float(self.dbscan_eps)
         self.dbscan_min_samples = int(self.dbscan_min_samples)
         self.max_iter = int(self.max_iter)
@@ -48,10 +38,6 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
-        if self.set_type not in _ALLOWED_SET_TYPES:
-            raise ValueError(
-                f"set_type must be one of {sorted(_ALLOWED_SET_TYPES)}"
-            )
         if self.dbscan_eps <= 0.0:
             raise ValueError("dbscan_eps must be positive")
         if self.dbscan_min_samples <= 0:
@@ -77,11 +63,22 @@ class ConfidenceParameters:
         if not (0.0 < self.beta < 1.0):
             raise ValueError("beta must satisfy 0 < beta < 1")
 
+
+@dataclass
+class RuntimeHeuristics:
+    noise_sub_batch_size: int = 300
+
+    def __post_init__(self) -> None:
+        self.noise_sub_batch_size = int(self.noise_sub_batch_size)
+        if self.noise_sub_batch_size <= 0:
+            raise ValueError("noise_sub_batch_size must be positive")
+
 @dataclass
 class Parameters:
     smoothing: SmoothingParameters
     clustering: ClusteringParameters
     confidence: ConfidenceParameters
+    runtime: RuntimeHeuristics = field(default_factory=RuntimeHeuristics)
 
 
 @dataclass

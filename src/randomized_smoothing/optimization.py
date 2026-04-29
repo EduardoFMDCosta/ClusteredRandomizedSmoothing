@@ -215,6 +215,37 @@ def eval_f_m(p: float, p_R_m: float, N: int, alpha: float) -> float:
     return float(math.exp(total_log))
 
 
+def _estimate_lipschitz_constants(
+    N: int,
+    alpha: float,
+    p_R: np.ndarray,
+    interval_lower: np.ndarray,
+    interval_upper: np.ndarray,
+    num_grid_points: int,
+) -> np.ndarray:
+    """Estimate per-cluster Lipschitz constants by max finite-difference slope."""
+    M = p_R.shape[0]
+    if num_grid_points < 2:
+        raise ValueError("num_grid_points must be at least 2")
+
+    lipschitz = np.zeros(M, dtype=np.float64)
+    for m in range(M):
+        lo = float(interval_lower[m])
+        hi = float(interval_upper[m])
+        if hi <= lo + 1e-15:
+            continue
+
+        grid = np.linspace(lo, hi, num_grid_points, dtype=np.float64)
+        values = np.asarray(
+            [eval_f_m(p=float(p), p_R_m=float(p_R[m]), N=N, alpha=alpha) for p in grid],
+            dtype=np.float64,
+        )
+        slopes = np.abs(np.diff(values) / np.diff(grid))
+        lipschitz[m] = float(np.max(slopes)) if slopes.size > 0 else 0.0
+
+    return lipschitz
+
+
 def compute_total_prob_lower_bound(
     M: int,
     N: int,
@@ -222,14 +253,14 @@ def compute_total_prob_lower_bound(
     p_R: np.ndarray | list[float],
     p_V_lower: np.ndarray | list[float],
     p_V_upper: np.ndarray | list[float],
-    K: int = 5,
+    num_anchor_points: int = 10,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     if M <= 0:
         raise ValueError("M must be positive")
     if N <= 0:
         raise ValueError("N must be positive")
-    if K <= 0:
-        raise ValueError("K must be positive")
+    if num_anchor_points <= 0:
+        raise ValueError("num_anchor_points must be positive")
 
     p_R = _validate_vector("p_R", p_R, M)
     p_V_lower = _validate_vector("p_V_lower", p_V_lower, M)
@@ -245,16 +276,19 @@ def compute_total_prob_lower_bound(
         raise ValueError("Each p_V upper bound must be >= max(p_V lower, p_R)")
 
     anchor_points = np.vstack(
-        [np.linspace(effective_lower[m], p_V_upper[m], K, dtype=np.float64) for m in range(M)]
+        [np.linspace(effective_lower[m], p_V_upper[m], num_anchor_points, dtype=np.float64) for m in range(M)]
     )
     f_values = np.vstack(
         [
-            np.asarray([eval_f_m(p=anchor_points[m, k], p_R_m=p_R[m], N=N, alpha=alpha) for k in range(K)], dtype=np.float64)
+            np.asarray(
+                [eval_f_m(p=anchor_points[m, k], p_R_m=p_R[m], N=N, alpha=alpha) for k in range(num_anchor_points)],
+                dtype=np.float64,
+            )
             for m in range(M)
         ]
     )
 
-    lambdas = cp.Variable((M, K), nonneg=True)
+    lambdas = cp.Variable((M, num_anchor_points), nonneg=True)
     p_m = cp.Variable(M)
 
     constraints = [
@@ -279,8 +313,29 @@ def compute_total_prob_lower_bound(
     if status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}:
         raise RuntimeError(f"total probability LP ended with status {problem.status}")
 
-    lower_bound = float(problem.value)
+    lower_bound_lp = float(problem.value)
     lambda_opt = np.asarray(lambdas.value, dtype=np.float64)
+
+    # Correction for piecewise-linear LP discretization: subtract an estimated
+    # per-cluster Lipschitz envelope term sum_m L_m h_{m,K}.
+    if num_anchor_points > 1:
+        h_mk = np.max(np.diff(anchor_points, axis=1), axis=1)
+    else:
+        h_mk = np.zeros(M, dtype=np.float64)
+
+    # Use the same feasible intervals as the LP anchors for each cluster.
+    num_grid_points = max(33, min(257, 4 * num_anchor_points + 1))
+    lipschitz_estimates = _estimate_lipschitz_constants(
+        N=N,
+        alpha=alpha,
+        p_R=p_R,
+        interval_lower=effective_lower,
+        interval_upper=p_V_upper,
+        num_grid_points=num_grid_points,
+    )
+    lipschitz_correction_term = float(np.sum(lipschitz_estimates * h_mk))
+
+    lower_bound = max(0.0, lower_bound_lp - lipschitz_correction_term)
 
     # Short sanity check: lower bound should be below any feasible evaluation.
     rng = np.random.default_rng(0)

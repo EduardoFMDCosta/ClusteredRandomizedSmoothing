@@ -335,8 +335,7 @@ class trajflow_meszaros():
             # Get pixel position in Image
             pos_old = pos_old / loc_M2px
             pos_old[...,1] *= -1
-            
-            torch.cuda.empty_cache()
+
             Imgs[Index] = self._interpolate_image(Imgs[Index], pos_old, self.img)
     
         return Imgs
