@@ -22,8 +22,7 @@ from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
-from plotting import plot_timestep_rectangles_visualization
-from plotting import plot_final_timestep_density
+from plotting import plot_final_timestep_examples
 
 
 def main():
@@ -67,7 +66,6 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=3,
             coverage=coverage,
-            set_type="HyperRectangle",
             dbscan_eps=0.5,
             dbscan_min_samples=10,
         ),
@@ -92,7 +90,6 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=1,
             coverage=coverage,
-            set_type="HyperRectangle",
             dbscan_eps=0.5,
             dbscan_min_samples=10,
         ),
@@ -133,7 +130,7 @@ def main():
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=num_plot_samples)
     clusterized_mc_samples = smoother.monte_carlo(num_simulations=num_plot_samples)
 
-    chart_paths = plot_final_timestep_density(
+    chart_paths = plot_final_timestep_examples(
         x=x,
         original_mc_samples=original_mc_samples,
         noisy_mc_samples=mc_samples,
@@ -141,16 +138,6 @@ def main():
         clusterized_mc_samples=clusterized_mc_samples,
         single_cluster_centroids=smoother_single.cluster.centroids,
         clusterized_centroids=smoother.cluster.centroids,
-        output_dir=EXPERIMENTS / "data" / "figures",
-        num_input_agents=2,
-    )
-
-    chart_paths += plot_timestep_rectangles_visualization(
-        x=x,
-        original_mc_samples=original_mc_samples,
-        noisy_mc_samples=mc_samples,
-        single_cluster_mc_samples=single_cluster_mc_samples,
-        clusterized_mc_samples=clusterized_mc_samples,
         region=smoother.regions,
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",
