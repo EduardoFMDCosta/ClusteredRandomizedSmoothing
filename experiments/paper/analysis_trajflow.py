@@ -61,8 +61,8 @@ def load_inputs(batch_size: int | None = None) -> torch.Tensor:
 def build_settings() -> list[Setting]:
     alphas = [0.0, 0.2, 0.4]
     Ns = [10, 20, 50]
-    max_clusters = [1, 2, 3]
-    coverages = [0.7, 0.8, 0.9]
+    max_clusters = [1, 3]
+    coverages = [0.7, 0.9]
     sigmas = [0.1, 0.5, 1.0]
 
     settings: list[Setting] = []
