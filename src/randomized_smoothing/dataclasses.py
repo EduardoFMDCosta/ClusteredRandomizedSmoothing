@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import torch
 
 @dataclass
@@ -63,11 +63,22 @@ class ConfidenceParameters:
         if not (0.0 < self.beta < 1.0):
             raise ValueError("beta must satisfy 0 < beta < 1")
 
+
+@dataclass
+class RuntimeHeuristics:
+    noise_sub_batch_size: int = 300
+
+    def __post_init__(self) -> None:
+        self.noise_sub_batch_size = int(self.noise_sub_batch_size)
+        if self.noise_sub_batch_size <= 0:
+            raise ValueError("noise_sub_batch_size must be positive")
+
 @dataclass
 class Parameters:
     smoothing: SmoothingParameters
     clustering: ClusteringParameters
     confidence: ConfidenceParameters
+    runtime: RuntimeHeuristics = field(default_factory=RuntimeHeuristics)
 
 
 @dataclass
