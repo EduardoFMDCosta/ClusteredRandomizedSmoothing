@@ -11,17 +11,65 @@ import torch
 from dynamics import UAV3D
 from train_rl import VariationalPolicy, normalize_state
 
-# State where the trained K=2 policy is sharply bimodal: right at the west
-# face of the central tower obstacle (x in [-1, 3], y in [-3, 1], z in [-7, 7]),
-# where the two mixture components encode "go around the tower on the north
-# side" vs "go around on the south side". Zero initial velocity.
-BIMODAL_START_STATE = np.array([-3.5, 0.0, -0.35, 0.0, 0.7, 0.0], dtype=np.float32)
+# State where the trained K=2 policy is sharply bimodal AND the raw policy
+# is "clutch": some trajectories collide, so the visualization shows a
+# non-trivial failure mode that randomized smoothing can mitigate. From this
+# far-west, low-y, low-z position the two mixture components encode two
+# distinct route bundles toward the goal in the far-east, low-z corner.
+# 200-trajectory rollout: ~25-unit cluster separation at quarter-horizon
+# with a ~66/34 split, and ~72% goal / 24% collision / 4% timeout. Zero
+# initial velocity.
+BIMODAL_START_STATE = np.array([-13.5, 0.0, -3.0, 0.0, -5.0, 0.0], dtype=np.float32)
 
 
 def _create_box(bounds):
     """Create a PyVista box from (x_min, x_max, y_min, y_max, z_min, z_max)."""
     x_min, x_max, y_min, y_max, z_min, z_max = bounds
     return pv.Box(bounds=(x_min, x_max, y_min, y_max, z_min, z_max))
+
+
+def _add_legend_text(
+    plotter,
+    entries: list[list[str]],
+    *,
+    x_ndc: float = 0.76,
+    margin_ndc: float = 0.04,
+    font_size: int = 32,
+    window_height: int = 1200,
+    line_dy_ndc: float | None = None,
+) -> None:
+    """Render an upper-right legend using ``add_text`` per entry.
+
+    ``vtkLegendBoxActor`` reserves most of each entry's width for a marker
+    glyph and squeezes text into a narrow right strip — even with
+    ``face=None`` — which clips counts like ``"collision: 47"`` off the
+    right edge of the viewport. Drawing each label as a viewport-space
+    text actor sidesteps that and gives left-aligned labels with a gap we
+    control directly via ``line_dy_ndc``.
+
+    ``margin_ndc`` is the gap (in normalized device coords) between the
+    top of the first label and the top of the viewport; pick ``x_ndc`` so
+    the longest label leaves a similar gap from the right edge.
+    """
+    # ``add_text(position=(x, y), viewport=True)`` treats (x, y) as the
+    # lower-left of the text bounding box. vtkTextActor's bounding-box
+    # height empirically runs ~1.83 × font_size in pixels (font height plus
+    # ascender + descender padding), so the text top sits at
+    # ``y + 1.83 * font_size / window_height``.
+    text_height_ndc = 1.83 * font_size / float(window_height)
+    y_top_ndc = 1.0 - margin_ndc - text_height_ndc
+    if line_dy_ndc is None:
+        # Default line height = 1.9 × font height keeps the gap proportional
+        # to the font size when the caller scales font_size.
+        line_dy_ndc = 1.9 * font_size / float(window_height)
+    for i, (text, color) in enumerate(entries):
+        plotter.add_text(
+            text,
+            position=(x_ndc, y_top_ndc - i * line_dy_ndc),
+            font_size=font_size,
+            color=color,
+            viewport=True,
+        )
 
 
 def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]:
@@ -60,18 +108,20 @@ def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]
     return policy, action_scale
 
 
+_SAFETY_STEP_CAP = 1000
+
+
 def _sample_uav3d_trajectories(
     policy: VariationalPolicy | None,
     action_scale: float,
     num_trajectories: int,
-    horizon: int,
     seed: int,
 ) -> tuple[list[np.ndarray], list[str], dict[str, int]]:
     """Roll out trajectories from the bimodal start state.
 
-    All rollouts begin at ``BIMODAL_START_STATE``; the visible spread between
-    trajectories reflects the policy's stochasticity (mixture-component
-    sampling + Gaussian noise) and the environment's process noise.
+    Rollouts run until natural termination (goal, obstacle collision, or
+    corridor exit). The env is constructed with ``max_steps=None`` and the
+    inner loop only enforces a generous safety cap.
     """
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -80,7 +130,7 @@ def _sample_uav3d_trajectories(
     outcomes: list[str] = []
     outcome_counts = {"goal": 0, "collision": 0, "timeout": 0}
 
-    env = UAV3D(gaussian_noise=True, noise_std=0.05)
+    env = UAV3D(gaussian_noise=True, noise_std=0.05, max_steps=None)
     start_pos = np.array(
         [BIMODAL_START_STATE[0], BIMODAL_START_STATE[2], BIMODAL_START_STATE[4]],
         dtype=np.float32,
@@ -93,8 +143,8 @@ def _sample_uav3d_trajectories(
         state = env._state.copy()
         trace = [start_pos.copy()]
 
-        outcome = "timeout"
-        for _step in range(horizon):
+        steps = 0
+        while not env.is_done() and steps < _SAFETY_STEP_CAP:
             if policy is not None:
                 state_t = torch.tensor(
                     normalize_state(state, "uav_3d"), dtype=torch.float32
@@ -107,16 +157,12 @@ def _sample_uav3d_trajectories(
 
             _, _reward, state = env.step(action)
             trace.append(np.array([state[0], state[2], state[4]], dtype=np.float32))
+            steps += 1
 
-            if env.is_done():
-                final_pos = np.array([state[0], state[2], state[4]], dtype=np.float32)
-                if env._check_goal(final_pos):
-                    outcome = "goal"
-                elif env._check_obstacle_collision(final_pos) or env._outside_corridor(final_pos):
-                    outcome = "collision"
-                else:
-                    outcome = "timeout"
-                break
+        # Trust the env's classification: with swept-segment collision the
+        # post-step position can lie past the obstacle, so deriving the
+        # outcome from final_pos alone misclassifies those as "timeout".
+        outcome = env._terminal_reason if env._terminal_reason is not None else "timeout"
 
         trajectories.append(np.stack(trace, axis=0))
         outcomes.append(outcome)
@@ -150,7 +196,6 @@ def visualize_uav3d_with_pyvista():
         policy=policy,
         action_scale=action_scale,
         num_trajectories=100,
-        horizon=48,
         seed=42,
     )
 
@@ -217,13 +262,14 @@ def visualize_uav3d_with_pyvista():
         )
         plotter.add_mesh(end_marker, color=color, opacity=0.95)
 
-    plotter.add_legend(
-        labels=[
+    _add_legend_text(
+        plotter,
+        entries=[
             ["Goal-reaching",      outcome_colors["goal"]],
             ["Obstacle collision", outcome_colors["collision"]],
             ["Timeout",            outcome_colors["timeout"]],
         ],
-        bcolor=(1.0, 1.0, 1.0),
+        x_ndc=0.66,  # left-shifted to fit the longer "Obstacle collision"
     )
 
     print("Trajectories drawn.")

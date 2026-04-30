@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from benchmark_policies import load_policy
+from matplotlib.lines import Line2D
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import normalize_state
 from visualize_uav3d_pyvista import BIMODAL_START_STATE
@@ -72,21 +73,21 @@ def _new_3d_fig():
     ax.set_xlim(-AXIS_LIM, AXIS_LIM)
     ax.set_ylim(-AXIS_LIM, AXIS_LIM)
     ax.set_zlim(-AXIS_LIM, AXIS_LIM)
-    ax.set_xlabel("fx")
-    ax.set_ylabel("fy")
-    ax.set_zlabel("fz")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
     return fig, ax
 
 
 def _plot_raw(actions: np.ndarray, out_path: Path, base_state: np.ndarray) -> None:
     fig, ax = _new_3d_fig()
     ax.scatter(actions[:, 0], actions[:, 1], actions[:, 2],
-               s=5, alpha=0.35, color="steelblue", label=f"raw samples (N={len(actions)})")
-    pos = (base_state[0], base_state[2], base_state[4])
-    ax.set_title(
-        f"Raw policy actions at s = ({pos[0]:+.2f}, {pos[1]:+.2f}, {pos[2]:+.2f})"
-    )
-    ax.legend(loc="upper left", fontsize=9)
+               s=5, alpha=0.35, color="steelblue")
+    legend_handles = [
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="black",
+               markeredgecolor="black", markersize=5, label="samples"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=14)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -95,10 +96,8 @@ def _plot_smoothed(
     smoother: GaussianAlphaTrimmingSmoothing,
     mc_samples: np.ndarray,
     out_path: Path,
-    title: str,
 ) -> None:
     centroids = smoother.cluster.centroids[0].detach().cpu().numpy()
-    probs_partition = smoother.cluster.probs_partition[0].detach().cpu().numpy()
     k_used = int(smoother.cluster.k_per_row[0].item())
     region_lower = smoother.regions.lower[0].detach().cpu().numpy()
     region_upper = smoother.regions.upper[0].detach().cpu().numpy()
@@ -114,22 +113,16 @@ def _plot_smoothed(
         ax.scatter(
             mc_samples[mask, 0], mc_samples[mask, 1], mc_samples[mask, 2],
             s=5, alpha=0.35, color=cluster_colors[j],
-            label=f"cluster {j} (π={probs_partition[j]:.2f})",
         )
-    ax.scatter(
-        centroids[:k_used, 0], centroids[:k_used, 1], centroids[:k_used, 2],
-        s=180, marker="X", edgecolor="black", linewidth=1.2,
-        color=[cluster_colors[j] for j in range(k_used)],
-        zorder=10, label="trimmed centroids",
-    )
     for j in range(k_used):
-        _draw_region(
-            ax, region_lower[j], region_upper[j], cluster_colors[j],
-            label=f"region {j}",
-        )
+        _draw_region(ax, region_lower[j], region_upper[j], cluster_colors[j], label=None)
 
-    ax.set_title(title)
-    ax.legend(loc="upper left", fontsize=8)
+    legend_handles = [
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="black",
+               markeredgecolor="black", markersize=5, label="samples"),
+        Line2D([0], [0], color="black", linewidth=2.0, label="coverage region"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=14)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -139,6 +132,7 @@ def _build_smoother(
     x: torch.Tensor,
     sigma: float,
     smoothing_N: int,
+    confidence_N: int,
     alpha: float,
     coverage: float,
     max_clusters: int,
@@ -153,7 +147,7 @@ def _build_smoother(
             dbscan_eps=dbscan_eps,
             dbscan_min_samples=dbscan_min_samples,
         ),
-        confidence=ConfidenceParameters(num_samples=smoothing_N, beta=1e-2),
+        confidence=ConfidenceParameters(num_samples=confidence_N, beta=0.1),
     )
     return GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
@@ -191,16 +185,17 @@ def _print_certificate(
         hw = 0.5 * region_widths[j]
         print(f"    cluster {j}: [±{hw[0]:.3f}, ±{hw[1]:.3f}, ±{hw[2]:.3f}]")
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
     parser.add_argument("--out-dir", type=str, default="experiments/uav_3d/bimodal_plots")
     parser.add_argument("--sigma", type=float, default=0.05,
                         help="Std of the Gaussian state-space smoothing noise (normalized state units).")
-    parser.add_argument("--smoothing-N", type=int, default=4000,
+    parser.add_argument("--smoothing-N", type=int, default=30,
                         help="Number of noisy state samples per smoothing call.")
-    parser.add_argument("--alpha", type=float, default=0.2,
+    parser.add_argument("--confidence-N", type=int, default=4000,
+                        help="Number of Monte Carlo samples for confidence estimation.")
+    parser.add_argument("--alpha", type=float, default=0.4,
                         help="Alpha-trimming fraction (0 <= alpha < 0.5).")
     parser.add_argument("--coverage", type=float, default=0.9)
     parser.add_argument("--max-clusters", type=int, default=3)
@@ -230,9 +225,6 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pos = (base_state[0], base_state[2], base_state[4])
-    state_str = f"s = ({pos[0]:+.2f}, {pos[1]:+.2f}, {pos[2]:+.2f})"
-
     # ---- (i) Raw predictor samples ----
     with torch.no_grad():
         s_rep = x.repeat(args.raw_samples, 1)
@@ -245,18 +237,13 @@ def main() -> None:
     # ---- (ii) Clusterized smoothed predictor (K = max_clusters) ----
     smoother_K = _build_smoother(
         stochastic_fn=stochastic_fn, x=x, sigma=args.sigma,
-        smoothing_N=args.smoothing_N, alpha=args.alpha, coverage=args.coverage,
+        smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,
         max_clusters=args.max_clusters,
         dbscan_eps=args.dbscan_eps, dbscan_min_samples=args.dbscan_min_samples,
     )
     mc_K = smoother_K.monte_carlo(num_simulations=args.mc_samples).squeeze(0).detach().cpu().numpy()
     smoothed_path = out_dir / "bimodal_smoothed.png"
-    _plot_smoothed(
-        smoother_K, mc_K, smoothed_path,
-        title=(f"Smoothed predictor at {state_str}\n"
-               f"σ = {args.sigma}, α = {args.alpha}, max_clusters = {args.max_clusters}, "
-               f"coverage = {args.coverage}"),
-    )
+    _plot_smoothed(smoother_K, mc_K, smoothed_path)
     print(f"Saved smoothed predictor figure to {smoothed_path}")
     _print_certificate(smoother_K, sigma=args.sigma, radius=args.radius,
                        label="smoothed predictor")
@@ -264,17 +251,13 @@ def main() -> None:
     # ---- (iii) Alpha-smoothing baseline (K = 1) ----
     smoother_1 = _build_smoother(
         stochastic_fn=stochastic_fn, x=x, sigma=args.sigma,
-        smoothing_N=args.smoothing_N, alpha=args.alpha, coverage=args.coverage,
+        smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,
         max_clusters=1,
         dbscan_eps=args.dbscan_eps, dbscan_min_samples=args.dbscan_min_samples,
     )
     mc_1 = smoother_1.monte_carlo(num_simulations=args.mc_samples).squeeze(0).detach().cpu().numpy()
     alpha_path = out_dir / "bimodal_alpha.png"
-    _plot_smoothed(
-        smoother_1, mc_1, alpha_path,
-        title=(f"Alpha-smoothing (max_clusters = 1) at {state_str}\n"
-               f"σ = {args.sigma}, α = {args.alpha}, coverage = {args.coverage}"),
-    )
+    _plot_smoothed(smoother_1, mc_1, alpha_path)
     print(f"Saved alpha-smoothing figure to {alpha_path}")
     _print_certificate(smoother_1, sigma=args.sigma, radius=args.radius,
                        label="alpha-smoothing (K=1)")

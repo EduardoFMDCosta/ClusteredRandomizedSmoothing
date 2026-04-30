@@ -609,7 +609,7 @@ def train(config: TrainConfig) -> tuple[VariationalPolicy, dict[str, list[float]
 
 
 def parse_args() -> TrainConfig:
-    parser = argparse.ArgumentParser(description="PPO training for VI-BNN policy on UAV3D benchmark.")
+    parser = argparse.ArgumentParser(description="PPO training for policy on UAV3D benchmark.")
     parser.add_argument("--env-type", type=str, default="uav_3d", choices=["uav_3d"])
     parser.add_argument("--episodes", type=int, default=200000)
     parser.add_argument("--horizon", type=int, default=64)
@@ -643,7 +643,7 @@ def parse_args() -> TrainConfig:
     args = parser.parse_args()
     metrics_path = args.metrics_path
     if metrics_path is None:
-        metrics_path = "experiments/uav_3d/vi_bnn_training_metrics.json"
+        metrics_path = "experiments/uav_3d/training_metrics.json"
 
     return TrainConfig(
         env_type=args.env_type,
@@ -678,7 +678,7 @@ def main() -> None:
     config = parse_args()
     policy, metrics = train(config)
 
-    out_path = "experiments/uav_3d/vi_bnn_policy.pt"
+    out_path = "experiments/uav_3d/policy.pt"
     checkpoint: dict[str, Any] = {
         "model_state_dict": policy.state_dict(),
         "env_type": "uav_3d",

@@ -27,19 +27,17 @@ class UAV3D:
         self,
         gaussian_noise: bool = True,
         noise_std: float = 0.15,
-        max_steps: int = 64,
-        substeps: int = 16,
+        max_steps: int | None = 64,
     ):
+        # ``max_steps=None`` disables the per-episode timeout entirely so an
+        # episode only ends on goal / obstacle collision / corridor exit.
+        # Used by the visualizers to render trajectories until natural
+        # termination.
         self.max_steps = max_steps
         self.gaussian_noise = gaussian_noise
         self.noise_std = noise_std
-        assert substeps >= 1
-        self.substeps = int(substeps)
 
-        # Full-logical-step matrices from the JAIR 2022 paper (dt = 1). Kept
-        # for reference; the actual integration uses the sub-step matrices
-        # below so we don't tunnel through obstacles when the velocity is
-        # high relative to obstacle thickness.
+        # Double-integrator matrices from the JAIR 2022 paper (dt = 1).
         self.A = np.array([
             [1, 1, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0],
@@ -57,32 +55,6 @@ class UAV3D:
             [0.0, 0.0, 0.5],
             [0.0, 0.0, 1.0],
         ], dtype=np.float32)
-
-        # Sub-step matrices for the same continuous-time double integrator
-        # with dt = 1 / substeps. One logical env.step() applies these
-        # ``substeps`` times with the same action, checking collision/goal at
-        # every sub-step.
-        dt = 1.0 / self.substeps
-        self.A_sub = np.array([
-            [1.0, dt, 0.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, dt, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 0.0, 1.0, dt],
-            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        ], dtype=np.float32)
-        self.B_sub = np.array([
-            [0.5 * dt * dt, 0.0, 0.0],
-            [dt, 0.0, 0.0],
-            [0.0, 0.5 * dt * dt, 0.0],
-            [0.0, dt, 0.0],
-            [0.0, 0.0, 0.5 * dt * dt],
-            [0.0, 0.0, dt],
-        ], dtype=np.float32)
-        # Per-sub-step velocity noise std. Scaled so that the sum of N
-        # independent sub-step noises per logical step has the original
-        # variance noise_std^2.
-        self._sub_noise_std = float(self.noise_std) / float(np.sqrt(self.substeps))
 
         self.u_min = -4.0
         self.u_max = 4.0
@@ -111,6 +83,11 @@ class UAV3D:
         self._state = np.zeros(6, dtype=np.float32)
         self._done = False
         self._step_count = 0
+        # Why the most recent step terminated. None while the episode is
+        # alive; one of "goal" / "collision" / "timeout" once self._done is
+        # True. "collision" covers both obstacle hits (point or swept) and
+        # corridor exits.
+        self._terminal_reason: str | None = None
 
         # Canonical start position (left edge, moderate height): far from goal.
         self.start_state = np.array([-14.0, 0.0, 6.0, 0.0, -6.0, 0.0], dtype=np.float32)
@@ -123,10 +100,9 @@ class UAV3D:
         # Previous distance to goal, used for dense progress reward.
         self._prev_dist = None
 
-    def _sample_noise(self, std: float | None = None) -> np.ndarray:
-        """Sample velocity-component noise with the given std (defaults to
-        the logical-step std, ``self.noise_std``)."""
-        sigma = float(self.noise_std if std is None else std)
+    def _sample_noise(self) -> np.ndarray:
+        """Sample velocity-component noise with std ``self.noise_std``."""
+        sigma = float(self.noise_std)
         w = np.zeros(6, dtype=np.float32)
         if self.gaussian_noise:
             w[1] = np.random.normal(0.0, sigma)
@@ -148,6 +124,79 @@ class UAV3D:
                 z_min <= z <= z_max):
                 return True
         return False
+
+    def _segment_corridor_exit_t(
+        self, p0: np.ndarray, p1: np.ndarray
+    ) -> float | None:
+        """t in [0, 1] at which the segment p0->p1 first leaves the corridor
+        AABB (-15..15, -9..9, -7..7), or None if the segment stays inside.
+
+        Assumes ``p0`` lies inside the corridor (true in normal play, since
+        we terminate on exit). If ``p0`` is already outside on any axis we
+        return 0.
+        """
+        d = p1 - p0
+        bmin = (-15.0, -9.0, -7.0)
+        bmax = (15.0, 9.0, 7.0)
+        t_exit = float("inf")
+        for i in range(3):
+            if p0[i] < bmin[i] or p0[i] > bmax[i]:
+                return 0.0
+            if abs(d[i]) < 1e-12:
+                continue
+            t_axis = (bmax[i] - p0[i]) / d[i] if d[i] > 0 else (bmin[i] - p0[i]) / d[i]
+            if t_axis < t_exit:
+                t_exit = t_axis
+        if t_exit == float("inf"):
+            return None
+        if t_exit < 0.0:
+            return 0.0
+        if t_exit > 1.0:
+            return None
+        return float(t_exit)
+
+    def _segment_obstacle_entry_t(
+        self, p0: np.ndarray, p1: np.ndarray
+    ) -> float | None:
+        """Swept collision: smallest t in [0, 1] at which the segment p0->p1
+        enters any obstacle AABB, or None if it hits none.
+
+        Slab method — for each axis we compute the parameter interval
+        [t_enter, t_exit] during which the segment lies inside the obstacle's
+        slab on that axis, intersect across axes, and report a hit when the
+        resulting interval overlaps [0, 1]. We return the *minimum* entry t
+        across obstacles so the caller can clip the trajectory to the first
+        crossing.
+        """
+        d = p1 - p0
+        best: float | None = None
+        for x_min, x_max, y_min, y_max, z_min, z_max in self.obstacles:
+            bmin = (x_min, y_min, z_min)
+            bmax = (x_max, y_max, z_max)
+            t_enter = 0.0
+            t_exit = 1.0
+            hit = True
+            for i in range(3):
+                if abs(d[i]) < 1e-12:
+                    if p0[i] < bmin[i] or p0[i] > bmax[i]:
+                        hit = False
+                        break
+                else:
+                    inv = 1.0 / d[i]
+                    t1 = (bmin[i] - p0[i]) * inv
+                    t2 = (bmax[i] - p0[i]) * inv
+                    t_lo = t1 if t1 < t2 else t2
+                    t_hi = t1 if t1 > t2 else t2
+                    if t_lo > t_enter:
+                        t_enter = t_lo
+                    if t_hi < t_exit:
+                        t_exit = t_hi
+                    if t_enter > t_exit:
+                        hit = False
+                        break
+            if hit and (best is None or t_enter < best):
+                best = t_enter
+        return best
 
     def _check_goal(self, pos: np.ndarray) -> bool:
         return bool(np.all(pos >= self.goal_min) and np.all(pos <= self.goal_max))
@@ -241,6 +290,7 @@ class UAV3D:
 
         self._done = False
         self._step_count = 0
+        self._terminal_reason = None
         pos = np.array([self._state[0], self._state[2], self._state[4]], dtype=np.float32)
         self._prev_dist = float(np.linalg.norm(pos - self.goal_center))
         return self._state.copy()
@@ -251,51 +301,68 @@ class UAV3D:
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray]:
         """Advance the simulation by one logical step.
 
-        Internally integrates the double-integrator dynamics in
-        ``self.substeps`` sub-steps of size dt = 1/substeps so that the
-        displacement within a single sub-step stays small relative to
-        obstacle dimensions. Collision, goal, and corridor-exit checks run
-        at every sub-step, preventing tunneling through thin obstacles.
+        Obstacle collision is a swept segment vs. AABB test between the pre-
+        and post-step positions, so the agent cannot tunnel through thin
+        obstacles or clip corners regardless of velocity. Goal and
+        corridor-exit are point checks on the post-step position: the agent
+        must *land* inside the goal, and a step that exits and re-enters the
+        corridor is treated as an exit.
         """
         action = np.clip(action, self.u_min, self.u_max).astype(np.float32)
         old_state = self._state.copy()
+        old_pos = np.array([old_state[0], old_state[2], old_state[4]], dtype=np.float32)
+
+        w = self._sample_noise()
+        self._state = self.A @ self._state + self.B @ action + w
+        self._state[1] = np.clip(self._state[1], -7.0, 7.0)
+        self._state[3] = np.clip(self._state[3], -7.0, 7.0)
+        self._state[5] = np.clip(self._state[5], -7.0, 7.0)
+
+        new_pos = np.array([self._state[0], self._state[2], self._state[4]], dtype=np.float32)
+        self._step_count += 1
 
         terminal_reward: float | None = None
-        for _ in range(self.substeps):
-            w = self._sample_noise(self._sub_noise_std)
-            self._state = self.A_sub @ self._state + self.B_sub @ action + w
-            self._state[1] = np.clip(self._state[1], -7.0, 7.0)
-            self._state[3] = np.clip(self._state[3], -7.0, 7.0)
-            self._state[5] = np.clip(self._state[5], -7.0, 7.0)
-
-            pos = np.array([self._state[0], self._state[2], self._state[4]])
-            if self._outside_corridor(pos):
-                terminal_reward = -5.0
-                self._done = True
-                break
-            if self._check_obstacle_collision(pos):
-                terminal_reward = -5.0
-                self._done = True
-                break
-            if self._check_goal(pos):
-                terminal_reward = 10.0
-                self._done = True
-                break
-
-        self._step_count += 1
+        if self._outside_corridor(new_pos):
+            terminal_reward = -5.0
+            self._done = True
+            self._terminal_reason = "collision"
+            # Snap the position to the corridor wall so the visible trajectory
+            # ends at the exit face rather than overshooting outside the box.
+            exit_t = self._segment_corridor_exit_t(old_pos, new_pos)
+            if exit_t is not None:
+                exit_pos = old_pos + exit_t * (new_pos - old_pos)
+                self._state[0] = exit_pos[0]
+                self._state[2] = exit_pos[1]
+                self._state[4] = exit_pos[2]
+        elif (entry_t := self._segment_obstacle_entry_t(old_pos, new_pos)) is not None:
+            terminal_reward = -5.0
+            self._done = True
+            self._terminal_reason = "collision"
+            # Snap the position to the obstacle-entry point so the visible
+            # trajectory ends at the face it crossed rather than overshooting
+            # past the obstacle. The episode is terminal so downstream
+            # transitions never read this clipped state.
+            entry_pos = old_pos + float(entry_t) * (new_pos - old_pos)
+            self._state[0] = entry_pos[0]
+            self._state[2] = entry_pos[1]
+            self._state[4] = entry_pos[2]
+        elif self._check_goal(new_pos):
+            terminal_reward = 10.0
+            self._done = True
+            self._terminal_reason = "goal"
 
         if terminal_reward is not None:
             reward = terminal_reward
         else:
-            pos = np.array([self._state[0], self._state[2], self._state[4]])
-            new_dist = float(np.linalg.norm(pos - self.goal_center))
+            new_dist = float(np.linalg.norm(new_pos - self.goal_center))
             progress = (self._prev_dist if self._prev_dist is not None else new_dist) - new_dist
             self._prev_dist = new_dist
-            if self._step_count >= self.max_steps:
+            if self.max_steps is not None and self._step_count >= self.max_steps:
                 # Distance-based timeout so that timing out far from the goal
                 # is clearly worse than timing out close to it.
                 reward = -0.05 * new_dist
                 self._done = True
+                self._terminal_reason = "timeout"
             else:
                 # Dense progress reward - scaled large enough that several
                 # good steps offset a single step in the wrong direction.
