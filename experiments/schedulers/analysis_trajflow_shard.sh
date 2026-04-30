@@ -6,39 +6,15 @@ trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR"
 
-APPTAINER_IMAGE="${APPTAINER_IMAGE:-}"
-
-if [ -z "$APPTAINER_IMAGE" ]; then
-  echo "APPTAINER_IMAGE is required (example: $PROJECT_DIR/randomized-smoothing.sif)"
-  exit 1
-fi
-
-if command -v apptainer >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="apptainer"
-elif command -v singularity >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="singularity"
-else
-  echo "Neither 'apptainer' nor 'singularity' is available in PATH."
-  exit 1
-fi
-
-PYTHON_CMD=(
-  "$CONTAINER_RUNTIME" exec
-  --bind "$PROJECT_DIR:$PROJECT_DIR"
-  --pwd "$PROJECT_DIR"
-  "$APPTAINER_IMAGE"
-  python
-)
-
 # Number of array jobs/shards. Must match the scheduler array range length.
 NUM_SHARDS="${NUM_SHARDS:-32}"
-SHARD_INDEX="${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-}}"
+SHARD_INDEX="${SHARD_INDEX:-${PBS_ARRAYID:-}}"
 if [ -z "$SHARD_INDEX" ]; then
-  echo "SHARD_INDEX is required (set SHARD_INDEX or use SLURM_ARRAY_TASK_ID)."
+  echo "SHARD_INDEX is required (set SHARD_INDEX or submit with qsub -t start-end)."
   exit 1
 fi
 
-# Runtime controls (override via sbatch --export if needed)
+# Runtime controls (override via qsub -v if needed)
 BATCH_SIZE="${BATCH_SIZE:-}"
 SAMPLE_BATCH_SIZE="${SAMPLE_BATCH_SIZE:-16}"
 INPUT_MODE="${INPUT_MODE:-control}"
@@ -49,13 +25,11 @@ OUTPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis}"
 MAX_SETTINGS="${MAX_SETTINGS:-}"
 
 echo "Shard ${SHARD_INDEX}/${NUM_SHARDS} started at $(date)"
-echo "Python command: ${PYTHON_CMD[*]}"
+echo "Python command: python"
 echo "Output dir: ${OUTPUT_DIR}"
-echo "Container runtime: ${CONTAINER_RUNTIME}"
-echo "Apptainer image: ${APPTAINER_IMAGE}"
 
 CMD=(
-  "${PYTHON_CMD[@]}" experiments/paper/analysis_trajflow.py
+  python experiments/paper/analysis_trajflow.py
   --num-shards "$NUM_SHARDS"
   --shard-index "$SHARD_INDEX"
   --sample-batch-size "$SAMPLE_BATCH_SIZE"

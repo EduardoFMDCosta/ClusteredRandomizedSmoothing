@@ -5,30 +5,6 @@ trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR"
-
-APPTAINER_IMAGE="${APPTAINER_IMAGE:-}"
-
-if [ -z "$APPTAINER_IMAGE" ]; then
-  echo "APPTAINER_IMAGE is required (example: $PROJECT_DIR/randomized-smoothing.sif)"
-  exit 1
-fi
-
-if command -v apptainer >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="apptainer"
-elif command -v singularity >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="singularity"
-else
-  echo "Neither 'apptainer' nor 'singularity' is available in PATH."
-  exit 1
-fi
-
-PYTHON_CMD=(
-  "$CONTAINER_RUNTIME" exec
-  --bind "$PROJECT_DIR:$PROJECT_DIR"
-  --pwd "$PROJECT_DIR"
-  "$APPTAINER_IMAGE"
-  python
-)
 INPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis}"
 EXPECTED_NUM_SHARDS="${NUM_SHARDS:-}"
 OUTPUT_FILE="${MERGED_OUTPUT_FILE:-results.json}"
@@ -36,11 +12,10 @@ OUTPUT_FILE="${MERGED_OUTPUT_FILE:-results.json}"
 echo "Merge started at $(date)"
 echo "Input dir: ${INPUT_DIR}"
 echo "Output file: ${OUTPUT_FILE}"
-echo "Container runtime: ${CONTAINER_RUNTIME}"
-echo "Apptainer image: ${APPTAINER_IMAGE}"
+echo "Python command: python"
 
 CMD=(
-  "${PYTHON_CMD[@]}" experiments/paper/merge_analysis_results.py
+  python experiments/paper/merge_analysis_results.py
   --input-dir "$INPUT_DIR"
   --output-file "$OUTPUT_FILE"
 )
