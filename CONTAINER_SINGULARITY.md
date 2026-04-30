@@ -8,10 +8,11 @@ You will run the project with Apptainer on DelftBlue.
 
 Apptainer needs a container image file (`.sif`).
 
-There are two practical ways to get that image:
+There are three practical ways to get that image:
 
 1. Pull from a public Docker Hub image (easy to pull; no sign-in needed on server).
 2. Build your own image locally and push it once.
+3. Build automatically in GitHub Actions and publish to GHCR (no local Docker install).
 
 This guide keeps the server side Apptainer-only.
 
@@ -19,7 +20,7 @@ This guide keeps the server side Apptainer-only.
 
 Format:
 
-`<namespace>/<image>:<tag>`
+`NAMESPACE/IMAGE:TAG`
 
 Example:
 
@@ -55,26 +56,74 @@ mkdir -p "$APPTAINER_CACHEDIR"
 
 Optional (recommended): add this export to `~/.bashrc`.
 
+If `/scratch/$USER` is not accessible, use this robust fallback:
+
+```bash
+if mkdir -p /scratch/$USER/.apptainer/cache 2>/dev/null; then
+  export APPTAINER_CACHEDIR=/scratch/$USER/.apptainer/cache
+elif [ -n "${TMPDIR:-}" ] && mkdir -p "$TMPDIR/.apptainer/cache" 2>/dev/null; then
+  export APPTAINER_CACHEDIR="$TMPDIR/.apptainer/cache"
+else
+  export APPTAINER_CACHEDIR=$HOME/.apptainer/cache
+  mkdir -p "$APPTAINER_CACHEDIR"
+fi
+echo "APPTAINER_CACHEDIR=$APPTAINER_CACHEDIR"
+```
+
 ## Step 2: Get image as `.sif` on DelftBlue
 
-Option A (recommended): pull from a public Docker Hub image
+Option A (best if you cannot install Docker locally): GitHub Actions + GHCR
+
+This repository already includes workflow [build-container.yml](.github/workflows/build-container.yml).
+It builds the image in GitHub and publishes to:
+
+ghcr.io/YOUR_GITHUB_USERNAME/randomized-smoothing:latest
+
+How to use it:
+
+1. Push your current branch to GitHub.
+2. In GitHub, open Actions and run "Build and Publish Container" (or merge to main).
+3. Wait until workflow success.
+4. In GitHub Packages, open randomized-smoothing package and set visibility to public.
+
+Then, on DelftBlue, pull with Apptainer:
+
+```bash
+cd $HOME/Projects/RandomizedSmoothing
+apptainer pull randomized-smoothing.sif docker://ghcr.io/YOUR_GITHUB_USERNAME/randomized-smoothing:latest
+```
+
+If your GHCR package is private, log in first:
+
+```bash
+apptainer registry login ghcr.io
+```
+
+Option B (recommended if you already have public Docker Hub image): pull from Docker Hub
 
 If your image is public, DelftBlue can pull it without signing in:
 
 ```bash
 cd $HOME/Projects/RandomizedSmoothing
-apptainer pull randomized-smoothing.sif docker://<namespace>/randomized-smoothing:latest
+apptainer pull randomized-smoothing.sif docker://YOUR_DOCKERHUB_USERNAME/randomized-smoothing:latest
 ```
 
-Option B: if you need to create your own image first
+Important: do not type angle brackets (`<` `>`). They are shell redirection symbols.
+Use a real value, for example:
+
+```bash
+apptainer pull randomized-smoothing.sif docker://alice/randomized-smoothing:latest
+```
+
+Option C: build locally and push to Docker Hub
 
 Run these on your local machine (not on DelftBlue):
 
 ```bash
 docker build -t randomized-smoothing:latest .
 docker login
-docker tag randomized-smoothing:latest <your_dockerhub_username>/randomized-smoothing:latest
-docker push <your_dockerhub_username>/randomized-smoothing:latest
+docker tag randomized-smoothing:latest YOUR_DOCKERHUB_USERNAME/randomized-smoothing:latest
+docker push YOUR_DOCKERHUB_USERNAME/randomized-smoothing:latest
 ```
 
 Then on DelftBlue pull it with Apptainer using the same `apptainer pull` command.
