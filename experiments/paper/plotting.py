@@ -209,7 +209,7 @@ def plot_final_timestep_density(
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
-	col_titles = ("Original", "Noisy", "Rekavandi et al, 2024", "Ours")
+	col_titles = (r"$h_{w}(x)$", r"$h_{w}(x+\varepsilon)$", r"$\alpha$-smoothing [2]", r"Clustered $\alpha$-smoothing")
 	agent_colors = ("#000000", "#0B3C5D")
 	agent_labels = ("Agent", "Ego agent")
 
@@ -377,7 +377,7 @@ def plot_final_timestep_examples(
 	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
 	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
 
-	col_titles = ("Original", "Noisy", "Rekavandi et al, 2024", "Ours")
+	col_titles = (r"$h_{w}(x)$", r"$h_{w}(x+\varepsilon)$", r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing")
 	agent_colors = ("#000000", "#0B3C5D")
 	agent_labels = ("Agent", "Ego agent")
 
