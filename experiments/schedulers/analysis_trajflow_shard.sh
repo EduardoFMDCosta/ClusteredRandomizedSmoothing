@@ -6,25 +6,30 @@ trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
 cd "$PROJECT_DIR"
 
-CONDA_ENV="${CONDA_ENV:-randomized_smoothing}"
+APPTAINER_IMAGE="${APPTAINER_IMAGE:-}"
 
-if [ -n "${CONDA_ENV:-}" ]; then
-  source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate "$CONDA_ENV"
-elif [ -f ".venv/bin/activate" ]; then
-  source .venv/bin/activate
-else
-  echo "No Python environment found. Set CONDA_ENV or create .venv in $PROJECT_DIR"
+if [ -z "$APPTAINER_IMAGE" ]; then
+  echo "APPTAINER_IMAGE is required (example: $PROJECT_DIR/randomized-smoothing.sif)"
   exit 1
 fi
 
-PYTHON_BIN="python"
+PYTHON_CMD=(
+  apptainer exec
+  --bind "$PROJECT_DIR:$PROJECT_DIR"
+  --pwd "$PROJECT_DIR"
+  "$APPTAINER_IMAGE"
+  python
+)
 
-# Number of array jobs/shards. Must match the qsub array range length.
+# Number of array jobs/shards. Must match the scheduler array range length.
 NUM_SHARDS="${NUM_SHARDS:-32}"
-SHARD_INDEX="${PBS_ARRAYID}"
+SHARD_INDEX="${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-}}"
+if [ -z "$SHARD_INDEX" ]; then
+  echo "SHARD_INDEX is required (set SHARD_INDEX or use SLURM_ARRAY_TASK_ID)."
+  exit 1
+fi
 
-# Runtime controls (override via qsub -v if needed)
+# Runtime controls (override via sbatch --export if needed)
 BATCH_SIZE="${BATCH_SIZE:-}"
 SAMPLE_BATCH_SIZE="${SAMPLE_BATCH_SIZE:-16}"
 INPUT_MODE="${INPUT_MODE:-control}"
@@ -35,12 +40,12 @@ OUTPUT_DIR="${OUTPUT_DIR:-experiments/data/analysis}"
 MAX_SETTINGS="${MAX_SETTINGS:-}"
 
 echo "Shard ${SHARD_INDEX}/${NUM_SHARDS} started at $(date)"
-echo "Python: ${PYTHON_BIN}"
+echo "Python command: ${PYTHON_CMD[*]}"
 echo "Output dir: ${OUTPUT_DIR}"
-echo "Conda env: ${CONDA_ENV}"
+echo "Apptainer image: ${APPTAINER_IMAGE}"
 
 CMD=(
-  "$PYTHON_BIN" experiments/paper/analysis_trajflow.py
+  "${PYTHON_CMD[@]}" experiments/paper/analysis_trajflow.py
   --num-shards "$NUM_SHARDS"
   --shard-index "$SHARD_INDEX"
   --sample-batch-size "$SAMPLE_BATCH_SIZE"
