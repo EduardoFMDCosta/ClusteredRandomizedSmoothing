@@ -15,4 +15,4 @@ mkdir -p logging
 export PROJECT_DIR
 export APPTAINER_IMAGE
 
-apptainer exec "$APPTAINER_IMAGE" experiments/schedulers/merge_analysis_trajflow_shards.sh
+apptainer exec "$APPTAINER_IMAGE" experiments/schedulers/run_merge_shards.sh

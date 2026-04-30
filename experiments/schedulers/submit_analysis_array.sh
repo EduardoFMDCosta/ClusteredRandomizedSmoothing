@@ -23,4 +23,4 @@ if [ -z "${SHARD_INDEX}" ]; then
   exit 1
 fi
 
-apptainer exec "$APPTAINER_IMAGE" experiments/schedulers/analysis_trajflow_shard.sh
+apptainer exec "$APPTAINER_IMAGE" experiments/schedulers/run_analysis_shard.sh
