@@ -8,7 +8,7 @@
 
 set -Eeuo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 APPTAINER_IMAGE="${APPTAINER_IMAGE:-$PROJECT_DIR/randomized-smoothing.sif}"
 
 cd "$PROJECT_DIR"

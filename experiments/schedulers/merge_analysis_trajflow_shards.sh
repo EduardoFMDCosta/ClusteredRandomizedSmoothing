@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${rc})" >&2; exit ${rc}' ERR
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR"
 
 APPTAINER_IMAGE="${APPTAINER_IMAGE:-}"
@@ -13,8 +13,17 @@ if [ -z "$APPTAINER_IMAGE" ]; then
   exit 1
 fi
 
+if command -v apptainer >/dev/null 2>&1; then
+  CONTAINER_RUNTIME="apptainer"
+elif command -v singularity >/dev/null 2>&1; then
+  CONTAINER_RUNTIME="singularity"
+else
+  echo "Neither 'apptainer' nor 'singularity' is available in PATH."
+  exit 1
+fi
+
 PYTHON_CMD=(
-  apptainer exec
+  "$CONTAINER_RUNTIME" exec
   --bind "$PROJECT_DIR:$PROJECT_DIR"
   --pwd "$PROJECT_DIR"
   "$APPTAINER_IMAGE"
@@ -27,6 +36,7 @@ OUTPUT_FILE="${MERGED_OUTPUT_FILE:-results.json}"
 echo "Merge started at $(date)"
 echo "Input dir: ${INPUT_DIR}"
 echo "Output file: ${OUTPUT_FILE}"
+echo "Container runtime: ${CONTAINER_RUNTIME}"
 echo "Apptainer image: ${APPTAINER_IMAGE}"
 
 CMD=(

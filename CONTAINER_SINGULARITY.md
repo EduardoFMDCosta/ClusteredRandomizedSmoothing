@@ -1,10 +1,10 @@
-# Running This Project With Apptainer (Singularity)
+# Running This Project On TU Delft HPC With Apptainer/Singularity
 
 This is a first-time-user guide.
 
 ## Minimal workflow overview
 
-You will run the project with Apptainer on DelftBlue.
+You will run the project on TU Delft HPC with Apptainer/Singularity.
 
 Apptainer needs a container image file (`.sif`).
 
@@ -40,14 +40,14 @@ This is the name used in:
 
 The scheduler scripts now always run with Apptainer and require `APPTAINER_IMAGE`.
 
-## Step 0: Prerequisites on DelftBlue
+## Step 0: Prerequisites on HPC
 
 - your project folder cloned (for example `~/Projects/RandomizedSmoothing`)
-- `apptainer` available (DelftBlue docs say no module needed)
+- `apptainer` or `singularity` available
 
-## Step 1: Configure Apptainer cache on DelftBlue
+## Step 1: Configure container cache on HPC
 
-This follows DelftBlue recommendations:
+This follows common TU Delft HPC practice:
 
 ```bash
 export APPTAINER_CACHEDIR=/scratch/$USER/.apptainer/cache
@@ -70,7 +70,7 @@ fi
 echo "APPTAINER_CACHEDIR=$APPTAINER_CACHEDIR"
 ```
 
-## Step 2: Get image as `.sif` on DelftBlue
+## Step 2: Build/publish image without local Docker (recommended)
 
 Option A (best if you cannot install Docker locally): GitHub Actions + GHCR
 
@@ -86,7 +86,7 @@ How to use it:
 3. Wait until workflow success.
 4. In GitHub Packages, open randomized-smoothing package and set visibility to public.
 
-Then, on DelftBlue, pull with Apptainer:
+Then, on HPC, pull with Apptainer:
 
 ```bash
 cd $HOME/Projects/RandomizedSmoothing
@@ -99,9 +99,13 @@ If your GHCR package is private, log in first:
 apptainer registry login ghcr.io
 ```
 
+Private repository + public container is supported on GitHub.
+In GitHub Packages, set package visibility for `randomized-smoothing` to public.
+That keeps code private while allowing public image pulls.
+
 Option B (recommended if you already have public Docker Hub image): pull from Docker Hub
 
-If your image is public, DelftBlue can pull it without signing in:
+If your image is public, HPC can pull it without signing in:
 
 ```bash
 cd $HOME/Projects/RandomizedSmoothing
@@ -117,7 +121,7 @@ apptainer pull randomized-smoothing.sif docker://alice/randomized-smoothing:late
 
 Option C: build locally and push to Docker Hub
 
-Run these on your local machine (not on DelftBlue):
+Run these on your local machine (not on HPC):
 
 ```bash
 docker build -t randomized-smoothing:latest .
@@ -126,22 +130,45 @@ docker tag randomized-smoothing:latest YOUR_DOCKERHUB_USERNAME/randomized-smooth
 docker push YOUR_DOCKERHUB_USERNAME/randomized-smoothing:latest
 ```
 
-Then on DelftBlue pull it with Apptainer using the same `apptainer pull` command.
+Then on HPC pull it with Apptainer using the same `apptainer pull` command.
 
-## Step 3: Quick test before submitting jobs
+## Step 3: Pull image on HPC
+
+Use whichever runtime exists on your cluster:
+
+```bash
+if command -v apptainer >/dev/null 2>&1; then
+  RUNTIME=apptainer
+elif command -v singularity >/dev/null 2>&1; then
+  RUNTIME=singularity
+else
+  echo "No apptainer/singularity in PATH"; exit 1
+fi
+
+cd $HOME/Projects/RandomizedSmoothing
+$RUNTIME pull randomized-smoothing.sif docker://ghcr.io/YOUR_GITHUB_USERNAME/randomized-smoothing:latest
+```
+
+## Step 4: Quick test before submitting jobs
 
 ```bash
 cd $HOME/Projects/RandomizedSmoothing
 export PROJECT_DIR=$PWD
 export APPTAINER_IMAGE=$PROJECT_DIR/randomized-smoothing.sif
 
-apptainer exec --bind "$PROJECT_DIR:$PROJECT_DIR" --pwd "$PROJECT_DIR" "$APPTAINER_IMAGE" \
+if command -v apptainer >/dev/null 2>&1; then
+  RUNTIME=apptainer
+else
+  RUNTIME=singularity
+fi
+
+$RUNTIME exec --bind "$PROJECT_DIR:$PROJECT_DIR" --pwd "$PROJECT_DIR" "$APPTAINER_IMAGE" \
   python -c "import torch; print('torch', torch.__version__)"
 ```
 
 If this prints a torch version, the image is ready.
 
-## Step 4: Submit array analysis job
+## Step 5: Submit array analysis job (Slurm)
 
 ```bash
 cd $HOME/Projects/RandomizedSmoothing
@@ -160,7 +187,20 @@ Check status:
 squeue -u $USER
 ```
 
-## Step 5: Merge shard outputs
+If your cluster does not use Slurm (`sbatch` not found), run shard jobs manually:
+
+```bash
+cd $HOME/Projects/RandomizedSmoothing
+export PROJECT_DIR=$PWD
+export APPTAINER_IMAGE=$PROJECT_DIR/randomized-smoothing.sif
+export NUM_SHARDS=32
+
+for SHARD_INDEX in $(seq 0 31); do
+  SHARD_INDEX=$SHARD_INDEX bash experiments/schedulers/analysis_trajflow_shard.sh
+done
+```
+
+## Step 6: Merge shard outputs
 
 When all array tasks are done:
 
@@ -174,6 +214,15 @@ export NUM_SHARDS=32
 sbatch experiments/schedulers/scheduler_merge_trajflow_results.sh
 ```
 
+Manual merge alternative:
+
+```bash
+cd $HOME/Projects/RandomizedSmoothing
+export PROJECT_DIR=$PWD
+export APPTAINER_IMAGE=$PROJECT_DIR/randomized-smoothing.sif
+bash experiments/schedulers/merge_analysis_trajflow_shards.sh
+```
+
 ## Where files appear
 
 - shard outputs: `experiments/data/analysis/results_shard_*_of_*.json`
@@ -182,10 +231,10 @@ sbatch experiments/schedulers/scheduler_merge_trajflow_results.sh
 
 ## Common issues and fixes
 
-- `apptainer pull` fails due quota: ensure `APPTAINER_CACHEDIR` is in `/scratch`.
-- pull fails for private image: make image public, or run `apptainer registry login docker.io`.
-- command not found `apptainer`: verify DelftBlue environment/session.
+- image pull fails due quota: ensure cache path has enough space.
+- pull fails for private image: make image public, or run `apptainer registry login ghcr.io`.
+- command not found `apptainer`: try `singularity`.
 
 ## Optional: build `.sif` directly from definition file
 
-If your DelftBlue account supports it, you can build from an Apptainer definition (`.def`) instead of Docker Hub. That is not required for this project path, but I can add it if you want.
+If your HPC account supports it, you can build from an Apptainer definition (`.def`) instead of Docker Hub. That is not required for this project path, but I can add it if you want.

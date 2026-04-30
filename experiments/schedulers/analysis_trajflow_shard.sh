@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND} (exit=${rc})" >&2; exit ${rc}' ERR
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Projects/RandomizedSmoothing}"
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR"
 
 APPTAINER_IMAGE="${APPTAINER_IMAGE:-}"
@@ -13,8 +13,17 @@ if [ -z "$APPTAINER_IMAGE" ]; then
   exit 1
 fi
 
+if command -v apptainer >/dev/null 2>&1; then
+  CONTAINER_RUNTIME="apptainer"
+elif command -v singularity >/dev/null 2>&1; then
+  CONTAINER_RUNTIME="singularity"
+else
+  echo "Neither 'apptainer' nor 'singularity' is available in PATH."
+  exit 1
+fi
+
 PYTHON_CMD=(
-  apptainer exec
+  "$CONTAINER_RUNTIME" exec
   --bind "$PROJECT_DIR:$PROJECT_DIR"
   --pwd "$PROJECT_DIR"
   "$APPTAINER_IMAGE"
@@ -42,6 +51,7 @@ MAX_SETTINGS="${MAX_SETTINGS:-}"
 echo "Shard ${SHARD_INDEX}/${NUM_SHARDS} started at $(date)"
 echo "Python command: ${PYTHON_CMD[*]}"
 echo "Output dir: ${OUTPUT_DIR}"
+echo "Container runtime: ${CONTAINER_RUNTIME}"
 echo "Apptainer image: ${APPTAINER_IMAGE}"
 
 CMD=(
