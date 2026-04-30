@@ -39,8 +39,14 @@ def _rollout(
     horizon: int,
     first_component: int | None,
 ) -> tuple[np.ndarray, str]:
-    """Run one rollout; first step uses ``first_component`` (if given),
-    subsequent steps use the normal mixture sampling."""
+    """Run one rollout until natural termination; the first step uses
+    ``first_component`` (if given), subsequent steps use normal mixture
+    sampling.
+
+    The env must be constructed with ``max_steps=None`` so the rollout
+    only ends on goal / collision / corridor exit; ``horizon`` is a safety
+    cap that should never bind in practice.
+    """
     env._state = start_state.copy()
     env._step_count = 0
     env._done = False
@@ -48,8 +54,9 @@ def _rollout(
     env._prev_dist = float(np.linalg.norm(pos - env.goal_center))
 
     trace = [pos.copy()]
-    outcome = "timeout"
-    for step in range(horizon):
+    step = 0
+    next_state = env._state.copy()
+    while not env.is_done() and step < horizon:
         normed = normalize_state(env._state)
         state_t = torch.from_numpy(normed).unsqueeze(0)
         if step == 0 and first_component is not None:
@@ -61,14 +68,12 @@ def _rollout(
 
         _, _, next_state = env.step(action)
         trace.append(np.array([next_state[0], next_state[2], next_state[4]], dtype=np.float32))
-        if env.is_done():
-            final_pos = np.array([next_state[0], next_state[2], next_state[4]], dtype=np.float32)
-            if env._check_goal(final_pos):
-                outcome = "goal"
-            elif env._check_obstacle_collision(final_pos) or env._outside_corridor(final_pos):
-                outcome = "collision"
-            break
+        step += 1
 
+    # Trust the env's terminal_reason: with swept-segment collision the
+    # post-step position may lie past the obstacle, so deriving the outcome
+    # from final_pos alone misclassifies those as "timeout".
+    outcome = env._terminal_reason if env._terminal_reason is not None else "timeout"
     return np.stack(trace, axis=0), outcome
 
 
@@ -101,7 +106,9 @@ def main() -> None:
     parser.add_argument("--y", type=float, default=-0.34)
     parser.add_argument("--z", type=float, default=0.68)
     parser.add_argument("--trajectories-per-mode", type=int, default=30)
-    parser.add_argument("--horizon", type=int, default=48)
+    parser.add_argument("--horizon", type=int, default=1000,
+                        help="Safety cap on rollout length; rollouts normally "
+                             "terminate on goal / collision / corridor exit.")
     parser.add_argument("--action-samples", type=int, default=5000)
     parser.add_argument("--split-axis", type=int, default=1, choices=[0, 1, 2],
                         help="Action axis for the marginal histogram (0=fx, 1=fy, 2=fz).")
@@ -116,7 +123,7 @@ def main() -> None:
         raise ValueError(
             f"Script assumes K=2 components, checkpoint has K={policy.num_components}.")
 
-    env = UAV3D(gaussian_noise=True, noise_std=0.05)
+    env = UAV3D(gaussian_noise=True, noise_std=0.05, max_steps=None)
     start_state = np.array([args.x, 0.0, args.y, 0.0, args.z, 0.0], dtype=np.float32)
     normed = normalize_state(start_state)
     state_t = torch.from_numpy(normed).unsqueeze(0)

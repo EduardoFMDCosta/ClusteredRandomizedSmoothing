@@ -27,6 +27,7 @@ from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import VariationalPolicy, normalize_state
 from visualize_uav3d_pyvista import (
     BIMODAL_START_STATE,
+    _add_legend_text,
     _create_box,
     _load_uav3d_policy,
 )
@@ -68,6 +69,12 @@ def _rollout(
     horizon: int,
     action_fn,
 ) -> tuple[np.ndarray, str]:
+    """Roll out until natural termination (goal / collision / corridor exit).
+
+    The env should be constructed with ``max_steps=None`` so it never times
+    out from inside ``step()``; ``horizon`` here is just a safety cap that
+    should never bind in practice.
+    """
     env._state = start_state.copy()
     env._step_count = 0
     env._done = False
@@ -76,19 +83,17 @@ def _rollout(
 
     state = env._state.copy()
     trace = [start_pos.copy()]
-    outcome = "timeout"
-    for _ in range(horizon):
+    steps = 0
+    while not env.is_done() and steps < horizon:
         action = action_fn(state)
         _, _reward, state = env.step(action)
         trace.append(np.array([state[0], state[2], state[4]], dtype=np.float32))
-        if env.is_done():
-            final_pos = np.array([state[0], state[2], state[4]], dtype=np.float32)
-            if env._check_goal(final_pos):
-                outcome = "goal"
-            elif env._check_obstacle_collision(final_pos) or env._outside_corridor(final_pos):
-                outcome = "collision"
-            break
+        steps += 1
 
+    # Trust the env's terminal_reason: with swept-segment collision the
+    # post-step position may lie past the obstacle, so deriving the outcome
+    # from final_pos alone misclassifies those as "timeout".
+    outcome = env._terminal_reason if env._terminal_reason is not None else "timeout"
     return np.stack(trace, axis=0), outcome
 
 
@@ -208,28 +213,28 @@ def _add_trajectories(
 
 
 def _make_plotter_with_env(env: UAV3D, off_screen: bool) -> Any:
-    plotter = cast(Any, pv.Plotter(window_size=[1600, 1000], off_screen=off_screen))
+    plotter = cast(Any, pv.Plotter(window_size=[1600, 1200], off_screen=off_screen))
     plotter.set_background("white")
     _add_env_geometry(plotter, env)
     return plotter
 
 
 def _legend_entries_for(
-    outcomes: list[str], color_map: dict[str, str], prefix: str,
+    outcomes: list[str], color_map: dict[str, str],
 ) -> list[list[str]]:
     entries: list[list[str]] = []
     for outcome, color in color_map.items():
         n = sum(1 for o in outcomes if o == outcome)
         if n > 0:
-            entries.append([f"{prefix} → {outcome} ({n})", color])
+            entries.append([f"{outcome}: {n}", color])
     return entries
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
-    parser.add_argument("--num-trajectories", type=int, default=40)
-    parser.add_argument("--horizon", type=int, default=48)
+    parser.add_argument("--num-trajectories", type=int, default=100)
+    parser.add_argument("--horizon", type=int, default=1000)
     parser.add_argument("--sigma", type=float, default=0.05)
     parser.add_argument("--smoothing-N", type=int, default=30,
                         help="Noisy-state samples used inside smooth() per env step.")
@@ -299,7 +304,9 @@ def main() -> None:
     parameters_robust = _make_parameters(args.max_clusters)
     parameters_alpha = _make_parameters(1)
 
-    env = UAV3D(gaussian_noise=True, noise_std=args.noise_std)
+    # max_steps=None: rollouts run to natural termination (goal / collision
+    # / corridor exit). args.horizon is a safety cap inside _rollout.
+    env = UAV3D(gaussian_noise=True, noise_std=args.noise_std, max_steps=None)
 
     # ---- raw policy rollouts (optional) ----
     raw_traces: list[np.ndarray] = []
@@ -458,16 +465,16 @@ def main() -> None:
         if not args.no_raw:
             _add_trajectories(plotter, raw_traces, raw_outcomes,
                               raw_colors, line_width, line_opacity)
-            legend_entries += _legend_entries_for(raw_outcomes, raw_colors, "Raw")
+            legend_entries += _legend_entries_for(raw_outcomes, raw_colors)
         if not args.no_alpha:
             _add_trajectories(plotter, alpha_traces, alpha_outcomes,
                               alpha_colors, line_width, line_opacity)
-            legend_entries += _legend_entries_for(alpha_outcomes, alpha_colors, "Alpha")
+            legend_entries += _legend_entries_for(alpha_outcomes, alpha_colors)
         _add_trajectories(plotter, rob_traces, rob_outcomes,
                           rob_colors, line_width, line_opacity)
-        legend_entries += _legend_entries_for(rob_outcomes, rob_colors, "Robust")
+        legend_entries += _legend_entries_for(rob_outcomes, rob_colors)
         if legend_entries:
-            plotter.add_legend(labels=legend_entries, bcolor=(1.0, 1.0, 1.0))
+            _add_legend_text(plotter, entries=legend_entries)
         plotter.add_text(f"Bimodal — {base_subtitle}",
                          position="upper_edge", font_size=10, color="black")
         plotter.camera_position = preset
@@ -501,18 +508,16 @@ def main() -> None:
 
     def _render_one(
         out_name: str,
-        title: str,
-        groups: list[tuple[list[np.ndarray], list[str], dict[str, str], str]],
+        groups: list[tuple[list[np.ndarray], list[str], dict[str, str]]],
     ) -> None:
         plotter = _make_plotter_with_env(env, off_screen=True)
         legend_entries: list[list[str]] = []
-        for traces, outcomes, color_map, prefix in groups:
+        for traces, outcomes, color_map in groups:
             _add_trajectories(plotter, traces, outcomes,
                               color_map, line_width, line_opacity)
-            legend_entries += _legend_entries_for(outcomes, color_map, prefix)
+            legend_entries += _legend_entries_for(outcomes, color_map)
         if legend_entries:
-            plotter.add_legend(labels=legend_entries, bcolor=(1.0, 1.0, 1.0))
-        plotter.add_text(title, position="upper_edge", font_size=10, color="black")
+            _add_legend_text(plotter, entries=legend_entries)
         plotter.camera_position = preset
         out_path = out_dir / out_name
         plotter.show(screenshot=str(out_path), auto_close=True)
@@ -520,25 +525,21 @@ def main() -> None:
 
     _render_one(
         out_name="environment.png",
-        title="UAV3D environment (bimodal start state)",
         groups=[],
     )
     if not args.no_raw:
         _render_one(
             out_name="raw_trajectories.png",
-            title=f"Raw policy — {base_subtitle}",
-            groups=[(raw_traces, raw_outcomes, raw_colors, "Raw")],
+            groups=[(raw_traces, raw_outcomes, raw_colors)],
         )
     if not args.no_alpha:
         _render_one(
             out_name="alpha_trajectories.png",
-            title=f"α-smoothing (max_clusters=1) — {base_subtitle}",
-            groups=[(alpha_traces, alpha_outcomes, alpha_colors, "Alpha")],
+            groups=[(alpha_traces, alpha_outcomes, alpha_colors)],
         )
     _render_one(
         out_name="robust_trajectories.png",
-        title=f"Robustified (max_clusters={args.max_clusters}) — {base_subtitle}",
-        groups=[(rob_traces, rob_outcomes, rob_colors, "Robust")],
+        groups=[(rob_traces, rob_outcomes, rob_colors)],
     )
 
 
