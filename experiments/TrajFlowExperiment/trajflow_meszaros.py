@@ -21,6 +21,11 @@ class _CPU_Unpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == 'torch.storage' and name == '_load_from_bytes':
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+
+        # torch_geometric moved Inspector to a new module in newer releases.
+        if module == 'torch_geometric.nn.conv.utils.inspector':
+            module = 'torch_geometric.inspector'
+
         return super().find_class(module, name)
 
 class trajflow_meszaros():

@@ -11,8 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "cvxpy>=1.5",
     "numpy>=2.0",
-    "torch>=2.2",
-    "numpy>=2.0",
+    "torch>=2.4,<2.5",
 ]
 
 [project.optional-dependencies]
@@ -26,3 +25,4 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+

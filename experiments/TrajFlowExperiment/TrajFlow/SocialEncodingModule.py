@@ -53,6 +53,10 @@ class MPNNLayer(MessagePassing):
     Implementation taken from GDL lecture practical 3 (https://colab.research.google.com/drive/1p9vlVAUcQZXQjulA7z_FyPrB9UXFATrR)
     """
 
+    # Newer torch_geometric MessagePassing expects this attribute.
+    # Keep a class-level default so legacy pickled instances still run.
+    decomposed_layers = 1
+
     def __init__(self, emb_dim, edge_dim, aggr='add', device=torch.device("cpu")):
         """Message Passing Neural Network Layer
 
@@ -131,7 +135,29 @@ class MPNNLayer(MessagePassing):
         Returns:
             out: (n, d) - updated node features
         """
-        out = self.propagate(edge_index, h=h, edge_attr=edge_attr)
+        # Avoid relying on MessagePassing inspector internals so legacy
+        # pickled models remain compatible across torch_geometric versions.
+        src = edge_index[0]
+        dst = edge_index[1]
+
+        h_j = h[src]
+        h_i = h[dst]
+        msg = self.message(h_i, h_j, edge_attr)
+        aggr_out = self.aggregate(msg, dst)
+
+        # Keep node dimension aligned even when some destination nodes have
+        # no incoming edges and therefore do not appear in `dst`.
+        if aggr_out.size(0) < h.size(0):
+            pad = torch.zeros(
+                (h.size(0) - aggr_out.size(0), aggr_out.size(1)),
+                dtype=aggr_out.dtype,
+                device=aggr_out.device,
+            )
+            aggr_out = torch.cat([aggr_out, pad], dim=0)
+        elif aggr_out.size(0) > h.size(0):
+            aggr_out = aggr_out[: h.size(0)]
+
+        out = self.update(aggr_out, h)
         return out
 
     def message(self, h_i, h_j, edge_attr):
