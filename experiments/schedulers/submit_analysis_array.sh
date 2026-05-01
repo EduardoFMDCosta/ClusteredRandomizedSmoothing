@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #PBS -N trajflow_analysis
-#PBS -l nodes=1:ppn=8,walltime=12:00:00
+#PBS -l nodes=1:ppn=8
 #PBS -o logging/analysis_trajflow_$PBS_JOBID.out
 #PBS -e logging/analysis_trajflow_$PBS_JOBID.err
 
