@@ -58,6 +58,40 @@ def load_inputs(batch_size: int | None = None) -> torch.Tensor:
     return torch.from_numpy(x_input.reshape(batch_size, -1)).float()
 
 
+def load_ground_truth_outputs(batch_size: int | None = None) -> torch.Tensor:
+    data_file = EXPERIMENTS / "TrajFlowExperiment" / "Data" / "Outputs_gt.npy"
+    data = np.load(str(data_file))
+
+    if batch_size is None:
+        batch_size = len(data)
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if batch_size > len(data):
+        raise ValueError(f"batch_size={batch_size} exceeds available GT samples={len(data)}")
+
+    data = data[:batch_size]
+
+    # Accept common GT layouts and extract the target agent at the final timestep.
+    if data.ndim == 4 and data.shape[-1] == 2:
+        # (num_samples, num_agents, num_timesteps, 2)
+        if data.shape[1] < 1:
+            raise ValueError("Outputs_gt.npy has no agent dimension entries")
+        gt_final = data[:, 0, -1, :]
+    elif data.ndim == 3 and data.shape[-1] == 2:
+        # (num_samples, num_timesteps, 2)
+        gt_final = data[:, -1, :]
+    elif data.ndim == 2 and data.shape[-1] == 2:
+        # (num_samples, 2)
+        gt_final = data
+    else:
+        raise ValueError(
+            "Unsupported Outputs_gt.npy shape. Expected (..., 2) with time and optional agent axes, "
+            f"got {tuple(data.shape)}"
+        )
+
+    return torch.from_numpy(gt_final).float()
+
+
 def build_settings() -> list[Setting]:
     alphas = [0.0, 0.2, 0.4]
     Ns = [10, 20, 50]
@@ -93,11 +127,16 @@ def evaluate_setting(
     stochastic_fn: TrajFlowMeszarosStochasticFunction,
     model_input: torch.Tensor,
     helper: list[torch.Tensor],
+    gt_output_final: torch.Tensor,
+    error_num_samples: int,
     confidence_num_samples: int,
     confidence_beta: float,
     seed: int = 0,
 ) -> dict[str, Any]:
     """Run one smoothing/certification setting and return serializable metrics."""
+    if error_num_samples <= 0:
+        raise ValueError("error_num_samples must be positive")
+
     torch.manual_seed(seed)
 
     params = Parameters(
@@ -128,6 +167,17 @@ def evaluate_setting(
     )
     certificate = smoother.robust_certification(radius=radius)
 
+    smoothed_samples = smoother.monte_carlo(num_simulations=error_num_samples)
+    if smoothed_samples.shape[-1] != gt_output_final.shape[-1]:
+        raise ValueError(
+            "Dimension mismatch between smoothed samples and GT outputs: "
+            f"{smoothed_samples.shape[-1]} vs {gt_output_final.shape[-1]}"
+        )
+    # Per Monte Carlo draw: Euclidean residual ||y_hat - y_gt||_2, then aggregate over draws.
+    l2_errors = (smoothed_samples - gt_output_final.unsqueeze(1)).pow(2).sum(dim=-1).sqrt()
+    mean_l2_error_to_gt = l2_errors.mean(dim=1).detach().cpu()                  # (nx,)
+    std_l2_error_to_gt = l2_errors.std(dim=1, unbiased=False).detach().cpu()    # (nx,)
+
     certified_radius = certificate.radius.squeeze(-1).detach().cpu()    # (nx,)
     certified_probs = certificate.probs.detach().cpu()                   # (nx, num_clusters)
     total_certified_prob = certificate.total_probs.detach().cpu()         # (nx,)
@@ -156,6 +206,8 @@ def evaluate_setting(
             "minimum_prob": float(certified_probs[i].min().item()),
             "maximum_prob": float(certified_probs[i].max().item()),
             "total_certified_prob": float(total_certified_prob[i].item()),
+            "mean_l2_error_to_gt": float(mean_l2_error_to_gt[i].item()),
+            "std_l2_error_to_gt": float(std_l2_error_to_gt[i].item()),
             "average_area": float(average_area[i].item()),
             "minimum_area": float(minimum_area[i].item()),
             "maximum_area": float(maximum_area[i].item()),
@@ -212,6 +264,18 @@ def main() -> None:
         help="beta used in confidence bounds.",
     )
     parser.add_argument(
+        "--error-num-samples",
+        type=int,
+        default=100,
+        help="Number of Monte Carlo samples from the smoothed model used to compute average Euclidean error against GT.",
+    )
+    parser.add_argument(
+        "--rmse-num-samples",
+        dest="error_num_samples",
+        type=int,
+        help="Deprecated alias for --error-num-samples.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=str(EXPERIMENTS / "data" / "analysis"),
@@ -251,6 +315,12 @@ def main() -> None:
 
     stochastic_fn = TrajFlowMeszarosStochasticFunction()
     x = load_inputs(batch_size=args.batch_size)
+    y_gt_final = load_ground_truth_outputs(batch_size=args.batch_size)
+    if y_gt_final.shape[0] != x.shape[0]:
+        raise ValueError(
+            "Inputs.npy and Outputs_gt.npy have inconsistent number of samples "
+            f"({x.shape[0]} vs {y_gt_final.shape[0]})"
+        )
 
     if args.input_mode == "position":
         model_input = x
@@ -271,6 +341,7 @@ def main() -> None:
     print(f"num_settings_this_shard: {len(settings)}")
     print(f"shard: {args.shard_index}/{args.num_shards}")
     print(f"num_random_seeds: {args.num_random_seeds}")
+    print(f"error_num_samples: {args.error_num_samples}")
 
     nx = x.shape[0]
     all_results: list[dict[str, Any]] = []
@@ -287,6 +358,8 @@ def main() -> None:
             "minimum_prob",
             "maximum_prob",
             "total_certified_prob",
+            "mean_l2_error_to_gt",
+            "std_l2_error_to_gt",
             "average_area",
             "minimum_area",
             "maximum_area",
@@ -308,6 +381,8 @@ def main() -> None:
                     stochastic_fn=stochastic_fn,
                     model_input=model_input[batch_start:batch_end],
                     helper=[h_i[batch_start:batch_end] for h_i in helper],
+                    gt_output_final=y_gt_final[batch_start:batch_end],
+                    error_num_samples=args.error_num_samples,
                     confidence_num_samples=args.confidence_num_samples,
                     confidence_beta=args.confidence_beta,
                     seed=seed,
