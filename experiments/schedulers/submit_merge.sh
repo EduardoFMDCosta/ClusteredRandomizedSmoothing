@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #PBS -N trajflow_merge
-#PBS -l nodes=1:ppn=2,walltime=00:30:00
+#PBS -l nodes=1:ppn=2
 #PBS -o logging/merge_trajflow_$PBS_JOBID.out
 #PBS -e logging/merge_trajflow_$PBS_JOBID.err
 
