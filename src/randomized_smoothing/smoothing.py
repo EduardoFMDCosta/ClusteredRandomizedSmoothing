@@ -40,12 +40,14 @@ class AlphaTrimmingSmoothing(Smoothing):
             smoothing_distribution: Distribution,
             parameters: Parameters,
             h: list[torch.Tensor] = [],
+            cluster_anchor: torch.Tensor | None = None,
         ):
         self.stochastic_function = stochastic_function
         self.x = x
         self.h = h
         self.smoothing_distribution = smoothing_distribution
         self.parameters = parameters
+        self.cluster_anchor = cluster_anchor
 
         self.cluster = self._compute_cluster()
         self.regions = self.cluster.regions 
@@ -58,7 +60,11 @@ class AlphaTrimmingSmoothing(Smoothing):
             h=self.h,
             noise_sub_batch_size=self.parameters.runtime.noise_sub_batch_size,
         )
-        return Cluster(outputs=raw_outputs, parameters=self.parameters.clustering)
+        return Cluster(
+            outputs=raw_outputs,
+            parameters=self.parameters.clustering,
+            behavior_anchor=self.cluster_anchor,
+        )
 
     def smooth(self) -> Distribution:
         outputs = self.stochastic_function.sample_from_noisy_inputs(
@@ -182,6 +188,7 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             sigma: float,
             parameters: Parameters,
             h: list[torch.Tensor] = [],
+            cluster_anchor: torch.Tensor | None = None,
         ):
         dimension = x.shape[-1]
         mean = torch.zeros(dimension, device=x.device, dtype=x.dtype)
@@ -194,6 +201,7 @@ class GaussianAlphaTrimmingSmoothing(AlphaTrimmingSmoothing):
             smoothing_distribution=smoothing_distribution,
             parameters=parameters,
             h=h,
+            cluster_anchor=cluster_anchor,
         )
 
     @staticmethod
