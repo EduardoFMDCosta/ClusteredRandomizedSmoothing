@@ -21,6 +21,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 ROOT = Path(__file__).resolve().parent
 EXPERIMENTS = ROOT.parent
@@ -30,28 +31,59 @@ if str(SRC) not in sys.path:
 
 from plotting import TEXTWIDTH  # noqa: E402  -- applies shared rcParams
 
+from randomized_smoothing.dataclasses import (  # noqa: E402
+    ClusteringParameters,
+    ConfidenceParameters,
+    Parameters,
+    SmoothingParameters,
+)
+from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing  # noqa: E402
+from randomized_smoothing.stochastic import StochasticFunction  # noqa: E402
+
+
+class BimodalGMMStochasticFunction(StochasticFunction):
+    """Output one i.i.d. sample from a 1-D bimodal Gaussian mixture, ignoring
+    the input.  Used to feed the standard smoothing pipeline a synthetic
+    multi-modal predictor whose distribution is independent of the smoothed
+    state."""
+
+    def __init__(self, mu_a: float, mu_b: float, sigma: float, p_a: float):
+        self.mu_a = float(mu_a)
+        self.mu_b = float(mu_b)
+        self.sigma = float(sigma)
+        self.p_a = float(p_a)
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        target_shape = x.shape[:-1] + (1,)
+        mode_a = torch.rand(target_shape, device=x.device, dtype=x.dtype) < self.p_a
+        means = torch.where(mode_a, self.mu_a, self.mu_b)
+        noise = self.sigma * torch.randn(target_shape, device=x.device, dtype=x.dtype)
+        return means + noise
+
 
 def _gaussian_pdf(x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
     return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
 
 
-def _simulate_trimmed_means(
-    rng: np.random.Generator,
-    mu_a: float,
-    mu_b: float,
-    sigma: float,
-    p_a: float,
-    n: int,
-    alpha: float,
-    num_simulations: int,
-) -> np.ndarray:
-    left = int(np.floor(alpha * n))
-    right = n - left
-    from_b = rng.binomial(1, 1.0 - p_a, size=(num_simulations, n))
-    means = np.where(from_b == 0, mu_a, mu_b)
-    samples = rng.normal(loc=means, scale=sigma)
-    sorted_samples = np.sort(samples, axis=1)
-    return sorted_samples[:, left:right].mean(axis=1)
+def _build_smoother(
+    mu_a: float, mu_b: float, sigma: float, p_a: float,
+    n_samples: int, alpha: float,
+) -> GaussianAlphaTrimmingSmoothing:
+    stochastic_fn = BimodalGMMStochasticFunction(
+        mu_a=mu_a, mu_b=mu_b, sigma=sigma, p_a=p_a,
+    )
+    parameters = Parameters(
+        smoothing=SmoothingParameters(N=n_samples, alpha=alpha),
+        clustering=ClusteringParameters(max_num_clusters=1, coverage=0.9),
+        confidence=ConfidenceParameters(num_samples=1000, beta=0.1),
+    )
+    x = torch.zeros((1, 1), dtype=torch.float64)
+    return GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=x,
+        sigma=0.1,  # input perturbation; ignored since stochastic_fn is input-independent
+        parameters=parameters,
+    )
 
 
 def _expected_order_stats(
@@ -143,13 +175,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    rng = np.random.default_rng(args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
-    trimmed = _simulate_trimmed_means(
-        rng=rng,
-        mu_a=args.mu_a, mu_b=args.mu_b, sigma=args.sigma,
-        p_a=args.p_a, n=args.n_samples, alpha=args.alpha,
-        num_simulations=args.simulations,
+    smoother = _build_smoother(
+        mu_a=args.mu_a, mu_b=args.mu_b, sigma=args.sigma, p_a=args.p_a,
+        n_samples=args.n_samples, alpha=args.alpha,
+    )
+    trimmed = (
+        smoother.monte_carlo(num_simulations=args.simulations)
+        .squeeze(0).squeeze(-1).detach().cpu().numpy()
     )
     levels, weights = _quantization_levels(
         args.mu_a, args.mu_b, args.sigma, args.n_samples, args.alpha, args.p_a,
