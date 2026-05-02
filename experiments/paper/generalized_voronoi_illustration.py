@@ -460,8 +460,8 @@ def main() -> None:
         )
     ax_a.scatter(*query_point, color="black", s=24, zorder=7)
     ax_a.text(
-        query_point[0] + 0.25, query_point[1] - 0.2, r"$p$",
-        fontsize=10, ha="left", va="top", zorder=7,
+        query_point[0] + 0.3, query_point[1], r"$p$",
+        fontsize=10, ha="left", va="bottom", zorder=7,
     )
     witness_target = _nearest_point(query_point, rectangles[witness_idx])
     midpoint = 0.5 * (query_point + witness_target)
