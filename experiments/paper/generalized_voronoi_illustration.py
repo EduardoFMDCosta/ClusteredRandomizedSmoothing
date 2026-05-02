@@ -48,7 +48,6 @@ from plotting import (  # noqa: E402  -- applies shared rcParams
     TEXTWIDTH,
 )
 
-
 # ----------------------------------------------------------------------------
 # Distance helpers.
 # ----------------------------------------------------------------------------
@@ -136,6 +135,30 @@ def _clip_line_to_box(
     if d2[i_max, j_max] < 1e-18:
         return []
     return [np.array([arr[i_max], arr[j_max]])]
+
+
+def _densify_polyline(polyline: np.ndarray, n: int) -> np.ndarray:
+    """Linearly resample a polyline to ``n`` points along its arc length.
+
+    Straight-line bisectors come out of ``_bisector_in_subregion`` as
+    2-point polylines, but the global-bisector filter walks the polyline
+    point-by-point: when only the start and end are sampled, a segment
+    that crosses out of the global Voronoi diagram somewhere in the
+    middle is dropped wholesale.  Densifying to the same point count as
+    the parabolic arcs keeps the filter's transition detection uniform.
+    """
+    if len(polyline) >= n or len(polyline) < 2:
+        return polyline
+    deltas = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    total = float(deltas.sum())
+    if total < 1e-12:
+        return polyline
+    cum = np.concatenate(([0.0], np.cumsum(deltas)))
+    s = np.linspace(0.0, total, n)
+    return np.column_stack([
+        np.interp(s, cum, polyline[:, 0]),
+        np.interp(s, cum, polyline[:, 1]),
+    ])
 
 
 def _polylines_from_mask(
@@ -346,6 +369,7 @@ def _voronoi_boundary_segments(
                                 xlo, xhi, ylo, yhi, n_samples,
                             )
                             for poly in polylines:
+                                poly = _densify_polyline(poly, n_samples)
                                 segments.extend(
                                     _filter_by_other_rectangles(poly, rectangles, i, j)
                                 )
@@ -400,13 +424,6 @@ def main() -> None:
     xlim = (-6.0, 6.0)
     ylim = (-6.0, 6.0)
 
-    # Cell-map raster (used purely for the colored background).
-    xs = np.linspace(*xlim, args.grid)
-    ys = np.linspace(*ylim, args.grid)
-    X, Y = np.meshgrid(xs, ys)
-    grid_points = np.stack([X.ravel(), Y.ravel()], axis=-1)
-    labels = _min_distances(grid_points, rectangles).argmin(-1).reshape(X.shape)
-
     # Analytical boundaries.
     boundary_segments = _voronoi_boundary_segments(
         rectangles, viewport=(*xlim, *ylim), n_samples=args.bisector_samples,
@@ -449,9 +466,9 @@ def main() -> None:
     witness_target = _nearest_point(query_point, rectangles[witness_idx])
     midpoint = 0.5 * (query_point + witness_target)
     ax_a.text(
-        midpoint[0] + 0.2, midpoint[1] + 0.1,
+        midpoint[0] - 0.4, midpoint[1] + 0.4,
         rf"$d(p, R_{{{witness_idx + 1}}})$",
-        fontsize=8, color="#222222", ha="left", va="bottom", zorder=7,
+        fontsize=8, color="#222222", ha="right", va="top", zorder=7,
     )
     ax_a.set_xlim(*xlim)
     ax_a.set_ylim(*ylim)
@@ -463,41 +480,28 @@ def main() -> None:
     )
 
     # --- Panel (b): generalized--Voronoi partition. ---
+    xs = np.linspace(*xlim, args.grid)
+    ys = np.linspace(*ylim, args.grid)
+    X, Y = np.meshgrid(xs, ys)
+    labels = _min_distances(
+        np.stack([X.ravel(), Y.ravel()], axis=-1), rectangles
+    ).argmin(-1).reshape(X.shape)
     palette = [
-        to_rgba(CLUSTER_PALETTE[i % len(CLUSTER_PALETTE)], alpha=0.30) for i in range(K)
+        to_rgba(CLUSTER_PALETTE[i % len(CLUSTER_PALETTE)], alpha=0.30)
+        for i in range(K)
     ]
-    cmap = ListedColormap(palette)
     ax_b.imshow(
         labels,
         origin="lower",
         extent=[*xlim, *ylim],
-        cmap=cmap,
+        cmap=ListedColormap(palette),
         interpolation="nearest",
         zorder=0,
         aspect="equal",
     )
-    # Densify every polyline to >= 16 vertices: some PDF readers drop
-    # perfectly axis-aligned 2-point paths during hairline optimization, so
-    # an identical multi-vertex representation makes all segments render.
-    densified: list[np.ndarray] = []
-    for seg in boundary_segments:
-        if len(seg) < 2:
-            continue
-        if len(seg) >= 16:
-            densified.append(seg)
-            continue
-        t = np.linspace(0.0, 1.0, 16)
-        # Linear interpolation along the existing polyline.
-        cum = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(seg, axis=0), axis=1))))
-        if cum[-1] < 1e-12:
-            continue
-        s = t * cum[-1]
-        x_new = np.interp(s, cum, seg[:, 0])
-        y_new = np.interp(s, cum, seg[:, 1])
-        densified.append(np.column_stack([x_new, y_new]))
     boundary_collection = LineCollection(
-        densified,
-        colors="#101010", linewidths=1.1, capstyle="round",
+        [seg for seg in boundary_segments if len(seg) >= 2],
+        colors="#101010", linewidths=1.1, capstyle="round", joinstyle="round",
         zorder=2,
     )
     ax_b.add_collection(boundary_collection)
