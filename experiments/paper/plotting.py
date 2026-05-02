@@ -20,7 +20,9 @@ HALFWIDTH = 0.50 * TEXTWIDTH  # for \begin{minipage}{0.50\textwidth}
 
 plt.rcParams.update(
 	{
+		"text.usetex": True,
 		"font.family": "serif",
+		"font.serif": ["Computer Modern Roman"],
 		"mathtext.fontset": "cm",
 		"font.size": 10,
 		"axes.labelsize": 10,
@@ -353,7 +355,6 @@ def plot_final_timestep_examples(
 		noisy_end[..., 0].reshape(-1),
 		single_end[..., 0].reshape(-1),
 		clust_end[..., 0].reshape(-1),
-		x_traj[..., 0].reshape(-1),
 		region_lower_final[..., 0].reshape(-1),
 		region_upper_final[..., 0].reshape(-1),
 		sc_lower_final[..., 0].reshape(-1),
@@ -364,34 +365,39 @@ def plot_final_timestep_examples(
 		noisy_end[..., 1].reshape(-1),
 		single_end[..., 1].reshape(-1),
 		clust_end[..., 1].reshape(-1),
-		x_traj[..., 1].reshape(-1),
 		region_lower_final[..., 1].reshape(-1),
 		region_upper_final[..., 1].reshape(-1),
 		sc_lower_final[..., 1].reshape(-1),
 		sc_upper_final[..., 1].reshape(-1),
 	])
-	x_pad = max((float(all_x_coords.max()) - float(all_x_coords.min())) * 0.12, 0.5)
-	y_pad = max((float(all_y_coords.max()) - float(all_y_coords.min())) * 0.12, 0.5)
-	x_lim = (float(all_x_coords.min()) - x_pad, float(all_x_coords.max()) + x_pad)
-	y_lim = (float(all_y_coords.min()) - y_pad, float(all_y_coords.max()) + y_pad)
-	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
-	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
+	# Hard-clip the view to [-10, 10] in both axes.
+	x_lim = (-10.0, 10.0)
+	y_lim = (-10.0, 10.0)
+	x_extent = 10.0
+	y_extent = 10.0
 
 	col_titles = (r"$h_{w}(x)$", r"$h_{w}(x+\varepsilon)$", r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing")
-	agent_colors = ("#000000", "#0B3C5D")
-	agent_labels = ("Agent", "Ego agent")
+	# Map flat column index to (row, col) in the 2x2 grid
+	_grid_pos = {0: (0, 0), 1: (0, 1), 2: (1, 0), 3: (1, 1)}
+	agent_colors = ("#008A2E",)
+	agent_labels = ("Agent",)
 
 	def _assign_to_centroids(points_np: np.ndarray, centroids_np: np.ndarray) -> np.ndarray:
 		diff = points_np[:, None, :] - centroids_np[None, :, :]
 		d2 = np.sum(diff * diff, axis=-1)
 		return np.argmin(d2, axis=1)
 
-	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 4, figsize=(_w, 0.25 * _w * nx), sharex=True, sharey=True, constrained_layout=True)
-	if nx == 1:
-		axes = np.array([axes])
+	# Figure size suitable for a scientific article (full-width 2-column figure)
+	_fig_w = 6.5
+	_fig_h = 5.8
+
+	chart_paths: list[Path] = []
 
 	for i in range(nx):
+		fig, axes = plt.subplots(2, 2, figsize=(_fig_w, _fig_w), sharex=True, sharey=True, constrained_layout=False)
+		fig.subplots_adjust(left=0.08, right=0.99, top=0.94, bottom=0.07, hspace=0.18, wspace=0.0)
+		fig.patch.set_facecolor("#FFFFFF")
+
 		single_centroids_i = _to_numpy(single_cluster_centroids[i])
 		clust_centroids_i = _to_numpy(clusterized_centroids[i])
 
@@ -403,8 +409,11 @@ def plot_final_timestep_examples(
 		)
 
 		for col_idx, (endpoints, centroids_ref) in enumerate(column_data):
-			ax = axes[i, col_idx]
+			r, c = _grid_pos[col_idx]
+			ax = axes[r, c]
+			ax.set_facecolor("#FFFFFF")
 			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
+			ax.set_aspect("equal", adjustable="box")
 
 			if centroids_ref is None:
 				labels_np = np.zeros(endpoints.shape[0], dtype=np.int64)
@@ -421,7 +430,7 @@ def plot_final_timestep_examples(
 				ax.scatter(
 					endpoints[mask_j, 0],
 					endpoints[mask_j, 1],
-					s=8,
+					s=10,
 					alpha=0.45,
 					color=color_j,
 					linewidths=0,
@@ -431,78 +440,83 @@ def plot_final_timestep_examples(
 			# Overlay certified final-step rectangles on smoother columns.
 			if col_idx == 2:
 				sc_k = int(single_cluster_region.lower.shape[1])
-				for c in range(sc_k):
-					color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
-					x_lo, y_lo = sc_lower_final[i, c]
-					x_hi, y_hi = sc_upper_final[i, c]
+				for k_c in range(sc_k):
+					color = CLUSTER_PALETTE[k_c % len(CLUSTER_PALETTE)]
+					x_lo, y_lo = sc_lower_final[i, k_c]
+					x_hi, y_hi = sc_upper_final[i, k_c]
 					rect = mpatches.Rectangle(
 						(x_lo, y_lo),
 						x_hi - x_lo,
 						y_hi - y_lo,
 						edgecolor=color,
 						facecolor=to_rgba(color, alpha=0.12),
-						linewidth=0.8,
+						linewidth=0.9,
 						linestyle="-",
 						zorder=3,
 					)
 					ax.add_patch(rect)
 			elif col_idx == 3:
 				k = int(region.lower.shape[1])
-				for c in range(k):
-					color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
-					x_lo, y_lo = region_lower_final[i, c]
-					x_hi, y_hi = region_upper_final[i, c]
+				for k_c in range(k):
+					color = CLUSTER_PALETTE[k_c % len(CLUSTER_PALETTE)]
+					x_lo, y_lo = region_lower_final[i, k_c]
+					x_hi, y_hi = region_upper_final[i, k_c]
 					rect = mpatches.Rectangle(
 						(x_lo, y_lo),
 						x_hi - x_lo,
 						y_hi - y_lo,
 						edgecolor=color,
 						facecolor=to_rgba(color, alpha=0.12),
-						linewidth=0.8,
+						linewidth=0.9,
 						linestyle="-",
 						zorder=3,
 					)
 					ax.add_patch(rect)
 
-			for agent_idx in range(num_input_agents):
-				agent_traj = x_traj[i, agent_idx]
-				color = agent_colors[agent_idx % len(agent_colors)]
-				label = None
-				if i == 0 and col_idx == 0 and agent_idx < len(agent_labels):
-					label = agent_labels[agent_idx]
-				ax.plot(
-					agent_traj[:, 0],
-					agent_traj[:, 1],
-					color=color,
-					linestyle="None",
-					marker="o",
-					markersize=2.0,
-					markerfacecolor=color,
-					markeredgecolor=color,
-					markeredgewidth=0.2,
-					zorder=6,
-					label=label,
-				)
+			agent_traj = x_traj[i, 0]
+			color = agent_colors[0]
 
+			next_idx = 1 if agent_traj.shape[0] > 1 else 0
+			_plot_car_icon(
+				ax,
+				start=agent_traj[0],
+				next_point=agent_traj[next_idx],
+				color=color,
+				car_length=1.55,
+				alpha=0.3,
+				edge_width=2.2,
+				road_aligned=True,
+			)
+
+			ax.set_title(col_titles[col_idx], fontsize=9)
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
 
-		for y_col in (1, 2, 3):
-			axes[i, y_col].tick_params(axis="y", which="both", left=False, labelleft=False)
+		# Suppress tick labels on shared edges to keep the grid seamless.
+		for r in range(2):
+			axes[r, 1].tick_params(axis="y", which="both", left=False, labelleft=False)
+		for c in range(2):
+			axes[0, c].tick_params(axis="x", which="both", bottom=False, labelbottom=False)
 
+		# x-labels on bottom row only, y-label on left column only
+		for c in range(2):
+			axes[1, c].set_xlabel(r"$x_1$", fontsize=9)
+		for r in range(2):
+			axes[r, 0].set_ylabel(r"$x_2$", fontsize=9)
+
+		# Legend only on the top-left panel of the first figure
 		if i == 0:
-			for col_idx in range(4):
-				axes[i, col_idx].set_title(col_titles[col_idx], fontsize=8)
+			handles = [
+				mpatches.Patch(facecolor=to_rgba(agent_colors[0], alpha=0.3), edgecolor=agent_colors[0], label=agent_labels[0]),
+			]
+			axes[0, 0].legend(handles=handles, loc="best", frameon=True, fontsize=8)
 
-	handles, labels = axes[0, 0].get_legend_handles_labels()
-	fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=True, fontsize=8)
-	fig.supxlabel("x (m)", fontsize=8, y=-0.02)
-	fig.supylabel("y (m)", fontsize=8)
-	fig_path = output_dir / "final_timestep_examples.pdf"
-	fig.savefig(fig_path, dpi=180)
-	plt.close(fig)
+		fig_path = output_dir / f"final_timestep_examples_{i}.pdf"
+		fig.savefig(fig_path, dpi=180)
+		plt.close(fig)
+		chart_paths.append(fig_path)
 
-	return [fig_path]
+	return chart_paths
 
 
 def _plot_street_marks(ax: plt.Axes, x_extent: float, y_extent: float) -> None:
@@ -526,8 +540,8 @@ def _plot_street_marks(ax: plt.Axes, x_extent: float, y_extent: float) -> None:
 		ax.plot(
 			line[:, 0],
 			line[:, 1],
-			color="#4C4C4C",
-			linewidth=1.6,
+			color="#1A1A1A",
+			linewidth=1.8,
 			solid_capstyle="round",
 			zorder=0,
 		)
@@ -536,9 +550,9 @@ def _plot_street_marks(ax: plt.Axes, x_extent: float, y_extent: float) -> None:
 		ax.plot(
 			line[:, 0],
 			line[:, 1],
-			color="#6B6B6B",
-			linewidth=1.2,
-			linestyle=(0, (5, 5)),
+			color="#A2A2A2",
+			linewidth=1.4,
+			linestyle=(0, (4, 4)),
 			solid_capstyle="round",
 			zorder=0,
 		)
@@ -550,18 +564,27 @@ def _plot_car_icon(
 	next_point: np.ndarray,
 	color: str,
 	car_length: float,
+	alpha: float = 0.3,
+	edge_width: float = 1.8,
+	road_aligned: bool = False,
 ) -> None:
 	"""Draw a simple rotated rectangle to indicate vehicle pose at trajectory start."""
 	heading = float(np.arctan2(next_point[1] - start[1], next_point[0] - start[0]))
-	car_width = car_length * 0.40
+	if road_aligned:
+		# Snap to nearest road axis: 0, pi/2, pi, -pi/2.
+		axes_headings = np.array([0.0, 0.5 * np.pi, np.pi, -0.5 * np.pi])
+		delta = np.arctan2(np.sin(heading - axes_headings), np.cos(heading - axes_headings))
+		heading = float(axes_headings[np.argmin(np.abs(delta))])
+	car_width = car_length * 0.45
 	rect = mpatches.Rectangle(
 		(start[0] - 0.5 * car_length, start[1] - 0.5 * car_width),
 		car_length,
 		car_width,
-		facecolor=color,
-		edgecolor="#FFFFFF",
-		linewidth=0.6,
+		facecolor=to_rgba(color, alpha=alpha),
+		edgecolor=color,
+		linewidth=edge_width,
 		zorder=7,
+		joinstyle="round",
 	)
 	rect.set_transform(mtransforms.Affine2D().rotate_around(start[0], start[1], heading) + ax.transData)
 	ax.add_patch(rect)
