@@ -1,0 +1,129 @@
+{
+  "config": {
+    "selected_indices": [
+      57
+    ],
+    "num_inputs": 300,
+    "metric_samples": 20,
+    "sigma": 1.0,
+    "smoothing_N": 10,
+    "alpha": 0.35,
+    "coverage": 0.8,
+    "cluster_strategy": "behavior_split",
+    "input_mode": "control",
+    "behavior_stay_radius": 1.0,
+    "behavior_min_down": 0.5,
+    "behavior_min_left": 0.0,
+    "dbscan_eps": 0.5,
+    "dbscan_min_samples": 500,
+    "noise_sub_batch_size": 300,
+    "confidence_num_samples": 1000,
+    "input_batch_size": 1,
+    "seed": 0,
+    "attack_radius": 1.0,
+    "attack_steps": 2,
+    "attack_probe": 0.05,
+    "attack_step_size": 0.25,
+    "attack_eval_samples": 8
+  },
+  "aggregate": {
+    "original": {
+      "mean_of_mean_distance": 10.459009170532227,
+      "mean_of_std_distance": 0.5560621023178101
+    },
+    "noisy_input": {
+      "mean_of_mean_distance": 10.36732006072998,
+      "mean_of_std_distance": 1.7218226194381714
+    },
+    "smoothed_k1": {
+      "mean_of_mean_distance": 10.371862411499023,
+      "mean_of_std_distance": 0.5625531673431396
+    },
+    "smoothed_k3": {
+      "mean_of_mean_distance": 9.565409660339355,
+      "mean_of_std_distance": 1.8760992288589478
+    }
+  },
+  "attack_summary": {
+    "mean_objective_gain": 4.821104526519775,
+    "median_objective_gain": 4.821104526519775,
+    "mean_delta_l2_norm": 1.0,
+    "max_delta_l2_norm": 1.0
+  },
+  "per_input": [
+    {
+      "dataset_index": 57,
+      "original": {
+        "mean_distance": 10.459009170532227,
+        "std_distance": 0.5560621023178101
+      },
+      "noisy_input": {
+        "mean_distance": 10.36732006072998,
+        "std_distance": 1.7218226194381714
+      },
+      "smoothed_k1": {
+        "mean_distance": 10.371862411499023,
+        "std_distance": 0.5625531673431396
+      },
+      "smoothed_k3": {
+        "mean_distance": 9.565409660339355,
+        "std_distance": 1.8760992288589478
+      }
+    }
+  ],
+  "adversarial_optimization": [
+    {
+      "dataset_index": 57,
+      "clean_objective": 4.923385143280029,
+      "adversarial_objective": 9.744489669799805,
+      "objective_gain": 4.821104526519775,
+      "delta_l2_norm": 1.0,
+      "delta_flat": [
+        0.06799356639385223,
+        -0.10940556228160858,
+        0.20933644473552704,
+        -0.16285718977451324,
+        0.1791214793920517,
+        -0.16528268158435822,
+        0.16879549622535706,
+        0.1200358048081398,
+        -0.16646915674209595,
+        0.015059983357787132,
+        0.04658902436494827,
+        0.1345864087343216,
+        -0.15129375457763672,
+        -0.018292659893631935,
+        0.02566303126513958,
+        -0.4110478460788727,
+        -0.048923805356025696,
+        -0.08645860105752945,
+        0.05444268882274628,
+        -0.09528852254152298,
+        0.15277351438999176,
+        0.1520092487335205,
+        0.03857649117708206,
+        -0.09497480094432831,
+        -0.07591821253299713,
+        -0.3555649518966675,
+        -0.17557375133037567,
+        -0.08720199018716812,
+        -0.054763130843639374,
+        -0.16927684843540192,
+        -0.36682942509651184,
+        -0.24158266186714172,
+        -0.05784236267209053,
+        -0.09569147974252701,
+        0.15768012404441833,
+        -0.010419818572700024,
+        -0.06493988633155823,
+        0.09352508187294006,
+        -0.14892037212848663,
+        -0.15169203281402588
+      ]
+    }
+  ],
+  "artifacts": {
+    "mean_plot": "C:\\Git\\RandomizedSmoothing\\experiments\\data\\figures\\trajflow_adversarial_average_distance.pdf",
+    "std_plot": "C:\\Git\\RandomizedSmoothing\\experiments\\data\\figures\\trajflow_adversarial_std_distance.pdf"
+  }
+}
