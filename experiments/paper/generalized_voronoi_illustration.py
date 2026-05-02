@@ -397,7 +397,7 @@ def _draw_rectangles(ax: plt.Axes, rectangles: np.ndarray) -> None:
         ax.text(
             0.5 * (xmin + xmax),
             0.5 * (ymin + ymax),
-            rf"$R_{{{i + 1}}}$",
+            rf"$\mathcal{{R}}_{{{i + 1}}}$",
             ha="center", va="center",
             color="white", fontsize=9, fontweight="bold",
             zorder=5,
@@ -467,7 +467,7 @@ def main() -> None:
     midpoint = 0.5 * (query_point + witness_target)
     ax_a.text(
         midpoint[0] - 0.4, midpoint[1] + 0.4,
-        rf"$d(p, R_{{{witness_idx + 1}}})$",
+        rf"$d(p, \mathcal{{R}}_{witness_idx + 1})$",
         fontsize=8, color="#222222", ha="right", va="top", zorder=7,
     )
     ax_a.set_xlim(*xlim)
@@ -476,7 +476,7 @@ def main() -> None:
     ax_a.set_xlabel(r"$x_1$")
     ax_a.set_ylabel(r"$x_2$")
     ax_a.set_title(
-        r"(a) $d(p, R) = \min_{r \in R} \|p - r\|_2$", fontsize=9,
+        r"(a) $d(p, \mathcal{R}) = \min_{r \in \mathcal{R}} \|p - r\|_2$", fontsize=9,
     )
 
     # --- Panel (b): generalized--Voronoi partition. ---
@@ -512,7 +512,7 @@ def main() -> None:
     ax_b.set_xlabel(r"$x_1$")
     ax_b.tick_params(axis="y", labelleft=False)
     ax_b.set_title(
-        r"(b) Generalized--Voronoi partition $\{V_i\}_{i=1}^{K}$", fontsize=9,
+        r"(b) Generalized--Voronoi partition", fontsize=9,
     )
 
     out_dir = Path(args.out_dir)
