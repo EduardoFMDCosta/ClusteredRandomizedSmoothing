@@ -33,11 +33,35 @@ def _parse_indices(text: str) -> np.ndarray:
     return np.array([int(v) for v in values], dtype=int)
 
 
+def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents: int = 2) -> torch.Tensor:
+    nx = x_positions.shape[0]
+    num_input_timesteps = x_positions.shape[1] // (2 * num_input_agents)
+    x_traj = x_positions.reshape(nx, num_input_agents, num_input_timesteps, 2)
+    return x_traj[:, 0, 0, :]
+
+
 def main():
     parser = argparse.ArgumentParser(description="TrajFlow smoothing experiment with plotting.")
-    parser.add_argument("--selected-indices", type=str, default="480,114,129,665",
+    parser.add_argument("--selected-indices", type=str, default="605,631,574,647,772",
                         help="Comma-separated dataset indices to analyze.")
-    parser.add_argument("--num-plot-samples", type=int, default=200,
+    parser.add_argument(
+        "--cluster-strategy",
+        type=str,
+        choices=("dbscan", "behavior_split"),
+        default="behavior_split",
+        help="Clustering strategy for the multi-cluster smoother.",
+    )
+    parser.add_argument("--behavior-stay-radius", type=float, default=1.0,
+                        help="Stay mode threshold: ||y - y_init|| <= radius.")
+    parser.add_argument("--behavior-min-down", type=float, default=0.5,
+                        help="Turn mode threshold on axis x2: y2 - y2_init <= -min_down.")
+    parser.add_argument("--behavior-min-left", type=float, default=0.0,
+                        help="Turn mode threshold on axis x1: y1 - y1_init <= -min_left.")
+    parser.add_argument("--dbscan-eps", type=float, default=0.5,
+                        help="DBSCAN eps used by the smoothing clusterer.")
+    parser.add_argument("--dbscan-min-samples", type=int, default=500,
+                        help="DBSCAN min_samples used by the smoothing clusterer.")
+    parser.add_argument("--num-plot-samples", type=int, default=500,
                         help="Monte Carlo samples used for plotting distributions.")
     parser.add_argument("--confidence-num-samples", type=int, default=5000,
                         help="num_samples used in confidence (Clopper-Pearson) estimation.")
@@ -81,10 +105,14 @@ def main():
     params = Parameters(
         smoothing=SmoothingParameters(N=10, alpha=0.35),
         clustering=ClusteringParameters(
-            max_num_clusters=3,
+            max_num_clusters=2,
             coverage=coverage,
-            dbscan_eps=0.5,
-            dbscan_min_samples=10,
+            strategy=args.cluster_strategy,
+            dbscan_eps=args.dbscan_eps,
+            dbscan_min_samples=args.dbscan_min_samples,
+            behavior_stay_radius=args.behavior_stay_radius,
+            behavior_min_down=args.behavior_min_down,
+            behavior_min_left=args.behavior_min_left,
         ),
         confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
     )
@@ -95,6 +123,7 @@ def main():
         sigma=sigma,
         parameters=params,
         h=helper,
+        cluster_anchor=_extract_target_initial_position(x),
     )
 
     smoothed_distribution = smoother.smooth()
@@ -107,8 +136,9 @@ def main():
         clustering=ClusteringParameters(
             max_num_clusters=1,
             coverage=coverage,
-            dbscan_eps=0.5,
-            dbscan_min_samples=10,
+            strategy="dbscan",
+            dbscan_eps=args.dbscan_eps,
+            dbscan_min_samples=args.dbscan_min_samples,
         ),
         confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
     )
@@ -119,6 +149,7 @@ def main():
         sigma=sigma,
         parameters=params_single,
         h=helper,
+        cluster_anchor=_extract_target_initial_position(x),
     )
     smoother_single.smooth()
 
@@ -166,6 +197,8 @@ def main():
     print(f"x shape: {tuple(x.shape)}")
     print(f"smoothed locs shape: {tuple(smoothed_distribution.locs.shape)}")
     print(f"smoothed probs shape: {tuple(smoothed_distribution.probs.shape)}")
+    print(f"cluster strategy: {args.cluster_strategy}")
+    print(f"dbscan k_per_row: {smoother.cluster.k_per_row.tolist()}")
     print(f"monte carlo samples shape: {tuple(mc_samples.shape)}")
     print(f"certificate radius shape: {tuple(certificate.radius.shape)}")
     print(f"certificate probs shape: {tuple(certificate.probs.shape)}")
@@ -173,6 +206,12 @@ def main():
     print(f"certificate radius: {certificate.radius}")
     print(f"certificate probs: {certificate.probs}")
     print(f"total prob: {certificate.total_probs}")
+    if args.cluster_strategy == "behavior_split":
+        print("behavior-split partition probabilities [stay, turn-left/down]:")
+        for i, dataset_idx in enumerate(selected_indices.tolist()):
+            p_stay = float(smoother.cluster.probs_partition[i, 0].item())
+            p_turn = float(smoother.cluster.probs_partition[i, 1].item())
+            print(f"  idx={dataset_idx}: [{p_stay:.3f}, {p_turn:.3f}]")
 
     print("")
     print("Saved charts:")
