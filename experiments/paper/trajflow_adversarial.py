@@ -412,6 +412,7 @@ def _plot_metric_histogram(
     values: dict[str, np.ndarray],
     xlabel: str,
     output_path: Path,
+    tail_quantile: float,
 ) -> None:
     _configure_plot_style()
 
@@ -421,6 +422,8 @@ def _plot_metric_histogram(
         "smoothed_k1": "#4C78A8",
         "smoothed_k3": "#2A9D8F",
     }
+    mean_color = "#1B1B1B"
+    tail_color = "#C73E1D"
     titles = {
         "original": r"$h_w(x + \delta)$",
         "noisy_input": r"$h_w(x + \delta + \varepsilon)$",
@@ -434,6 +437,11 @@ def _plot_metric_histogram(
         for key in ordered_keys
     }
     all_values = np.concatenate([clean_values[key] for key in ordered_keys])
+    tail_threshold = float(np.quantile(all_values, tail_quantile))
+    tail_probability = {
+        key: float(np.mean(clean_values[key] > tail_threshold))
+        for key in ordered_keys
+    }
     min_v = float(np.min(all_values))
     max_v = float(np.max(all_values))
     if np.isclose(min_v, max_v):
@@ -447,7 +455,7 @@ def _plot_metric_histogram(
     for panel_index, (ax, key) in enumerate(zip(axes.flat, ordered_keys)):
         data = clean_values[key]
         weights = np.full(data.shape, 1.0 / len(data), dtype=float)
-        ax.hist(
+        hist = ax.hist(
             data,
             bins=bins,
             weights=weights,
@@ -458,12 +466,38 @@ def _plot_metric_histogram(
             histtype="stepfilled",
             color=colors[key],
         )
-        ax.axvline(float(np.mean(data)), color="black", linestyle="--", linewidth=1.1, alpha=0.9)
+        mean_line = ax.axvline(
+            float(np.mean(data)),
+            color=mean_color,
+            linestyle="--",
+            linewidth=1.1,
+            alpha=0.95,
+            label="Mean",
+        )
+        tail_line = ax.axvline(
+            tail_threshold,
+            color=tail_color,
+            linestyle="-.",
+            linewidth=1.1,
+            alpha=0.95,
+            label=f"Quantile at {tail_quantile:.0%}",
+        )
         ax.set_title(titles[key])
         if panel_index >= 2:
             ax.set_xlabel(xlabel)
         ax.set_ylabel("Frequency")
         ax.grid(True, linestyle=":", alpha=0.35)
+
+        if panel_index == 0:
+            legend_handles = [mean_line, tail_line]
+            legend_labels = ["Mean", f"Quantile at {tail_quantile:.0%}"]
+            ax.legend(
+                legend_handles,
+                legend_labels,
+                loc="upper left",
+                fontsize=8,
+                frameon=True,
+            )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
@@ -537,6 +571,12 @@ def main() -> None:
         type=int,
         default=64,
         help="Number of stochastic samples for each adversarial objective estimate.",
+    )
+    parser.add_argument(
+        "--tail-quantile",
+        type=float,
+        default=0.90,
+        help="Quantile defining common tail threshold tau for histogram tail probability P(X>tau).",
     )
     parser.add_argument(
         "--attack-log-every",
@@ -660,6 +700,8 @@ def main() -> None:
         raise ValueError("attack-step-size must be positive")
     if args.attack_eval_samples <= 0:
         raise ValueError("attack-eval-samples must be positive")
+    if not (0.0 < args.tail_quantile < 1.0):
+        raise ValueError("tail-quantile must be in (0, 1)")
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -752,11 +794,13 @@ def main() -> None:
         values={k: metrics[k]["mean"] for k in metrics},
         xlabel="Average error",
         output_path=mean_plot,
+        tail_quantile=args.tail_quantile,
     )
     _plot_metric_histogram(
         values={k: metrics[k]["std"] for k in metrics},
         xlabel="Average error std deviation",
         output_path=std_plot,
+        tail_quantile=args.tail_quantile,
     )
 
     analysis_dir = Path(args.analysis_dir)
@@ -793,6 +837,15 @@ def main() -> None:
         }
         for key in metrics
     }
+    mean_tail_threshold = float(
+        np.quantile(np.concatenate([metrics[key]["mean"] for key in metrics]), args.tail_quantile)
+    )
+    std_tail_threshold = float(
+        np.quantile(np.concatenate([metrics[key]["std"] for key in metrics]), args.tail_quantile)
+    )
+    for key in metrics:
+        aggregate[key]["tail_probability_mean"] = float(np.mean(metrics[key]["mean"] > mean_tail_threshold))
+        aggregate[key]["tail_probability_std"] = float(np.mean(metrics[key]["std"] > std_tail_threshold))
 
     attack_gain = np.array([row["objective_gain"] for row in attack_rows], dtype=float)
     attack_norms = np.array([row["delta_l2_norm"] for row in attack_rows], dtype=float)
@@ -822,6 +875,7 @@ def main() -> None:
             "attack_probe": args.attack_probe,
             "attack_step_size": args.attack_step_size,
             "attack_eval_samples": args.attack_eval_samples,
+            "tail_quantile": args.tail_quantile,
         },
         "aggregate": aggregate,
         "attack_summary": {
