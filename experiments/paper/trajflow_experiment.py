@@ -42,7 +42,7 @@ def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents
 
 def main():
     parser = argparse.ArgumentParser(description="TrajFlow smoothing experiment with plotting.")
-    parser.add_argument("--selected-indices", type=str, default="605,631,574,647,772",
+    parser.add_argument("--selected-indices", type=str, default="157,203,153,2,41",
                         help="Comma-separated dataset indices to analyze.")
     parser.add_argument(
         "--cluster-strategy",
