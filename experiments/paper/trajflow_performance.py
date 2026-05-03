@@ -467,7 +467,7 @@ def main() -> None:
         "--plot-top-k",
         type=int,
         default=100,
-        help="Top-k inputs where k2 beats k1 to include in selected plots. Use <=0 for all.",
+        help="Top-k inputs with largest distance from the target initial position to GT final position. Use <=0 for all.",
     )
     parser.add_argument(
         "--plot-tail-quantile",
