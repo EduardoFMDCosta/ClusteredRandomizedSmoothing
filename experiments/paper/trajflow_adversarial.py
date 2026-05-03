@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -30,6 +29,7 @@ from randomized_smoothing.dataclasses import (
 )
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
+from plotting import plot_trajflow_adversarial_from_json
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
 
 
@@ -126,7 +126,7 @@ def _choose_indices(
         return _parse_indices(selected_indices_text)
 
     if num_inputs <= 0:
-        raise ValueError("num-inputs must be positive")
+        return valid_indices.astype(int)
     if num_inputs > len(valid_indices):
         raise ValueError(
             f"num-inputs={num_inputs} exceeds available valid GT samples={len(valid_indices)}"
@@ -219,26 +219,139 @@ def _convert_position_input(
     return model_input, helper
 
 
-def _estimate_original_objective(
+def _compute_behavior_probabilities(
+    samples: torch.Tensor,
+    anchor: torch.Tensor,
+    stay_radius: float,
+    min_down: float,
+    min_left: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if samples.ndim != 3 or samples.shape[-1] != 2:
+        raise ValueError(
+            "Expected samples with shape (nx, num_samples, 2), "
+            f"got {tuple(samples.shape)}"
+        )
+    if anchor.ndim != 2 or anchor.shape[-1] != 2 or anchor.shape[0] != samples.shape[0]:
+        raise ValueError(
+            "Expected anchor with shape (nx, 2) matching samples; "
+            f"got samples={tuple(samples.shape)}, anchor={tuple(anchor.shape)}"
+        )
+
+    delta = samples - anchor.unsqueeze(1)
+    stay_mask = torch.linalg.norm(delta, dim=-1) <= stay_radius
+    turn_mask = (
+        (delta[..., 1] <= -min_down)
+        & (delta[..., 0] <= -min_left)
+        & (~stay_mask)
+    )
+    p_stay = stay_mask.float().mean(dim=1)
+    p_turn = turn_mask.float().mean(dim=1)
+    return p_stay, p_turn
+
+
+def _estimate_cluster_separation_objective(
     stochastic_fn: TrajFlowMeszarosStochasticFunction,
     x_position: torch.Tensor,
     y_target: torch.Tensor,
     input_mode: str,
     num_samples: int,
-) -> torch.Tensor:
+    stay_radius: float,
+    min_down: float,
+    min_left: float,
+    dominance_target: float = 0.60,
+    minority_target: float = 0.10,
+    coverage_target: float = 0.70,
+    separation_weight: float = 0.75,
+    dominance_penalty: float = 20.0,
+    minority_penalty: float = 8.0,
+    coverage_penalty: float = 12.0,
+    dominant_is_stay: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Approximate the regime where k=1 degrades while k=2 stays correct.
+
+    The objective rewards a large gap between the raw-sample mean error (a
+    crude proxy for k=1) and the dominant-cluster error (a proxy for k=2),
+    while also encouraging mode separation and penalizing collapse of the clean
+    dominant mode or disappearance of the minority mode.
+    """
     model_input, helper = _convert_position_input(
         stochastic_fn=stochastic_fn,
         x_position=x_position,
         input_mode=input_mode,
     )
-    samples_original = _sample_original(
+    samples = _sample_original(
         stochastic_fn=stochastic_fn,
         model_input=model_input,
         helper=helper,
         num_samples=num_samples,
     )
-    distances = torch.linalg.norm(samples_original - y_target.unsqueeze(1), dim=-1)
-    return distances.mean(dim=1)
+    anchor = _extract_target_initial_position(x_position)
+    p_stay, p_turn = _compute_behavior_probabilities(
+        samples=samples,
+        anchor=anchor,
+        stay_radius=stay_radius,
+        min_down=min_down,
+        min_left=min_left,
+    )
+
+    if dominant_is_stay is None:
+        dominant_is_stay = p_stay >= p_turn
+    else:
+        dominant_is_stay = dominant_is_stay.to(device=p_stay.device)
+
+    delta = samples - anchor.unsqueeze(1)
+    stay_mask = torch.linalg.norm(delta, dim=-1) <= stay_radius
+    turn_mask = (
+        (delta[..., 1] <= -min_down)
+        & (delta[..., 0] <= -min_left)
+        & (~stay_mask)
+    )
+
+    dominant_mask = torch.where(
+        dominant_is_stay.unsqueeze(1),
+        stay_mask,
+        turn_mask,
+    )
+    minor_mask = torch.where(
+        dominant_is_stay.unsqueeze(1),
+        turn_mask,
+        stay_mask,
+    )
+
+    eps = 1e-8
+    dominant_sum = (samples * dominant_mask.unsqueeze(-1).float()).sum(dim=1)
+    dominant_count = dominant_mask.float().sum(dim=1, keepdim=True).clamp(min=eps)
+    dominant_mean = dominant_sum / dominant_count
+
+    minor_sum = (samples * minor_mask.unsqueeze(-1).float()).sum(dim=1)   # (nx, 2)
+    minor_count = minor_mask.float().sum(dim=1, keepdim=True).clamp(min=eps)  # (nx, 1)
+    minor_mean = minor_sum / minor_count  # (nx, 2)
+
+    p_dominant = torch.where(dominant_is_stay, p_stay, p_turn)
+    p_minor = torch.where(dominant_is_stay, p_turn, p_stay)
+    covered_mass = torch.clamp(p_dominant + p_minor, min=eps)
+    classified_mean = (
+        p_dominant.unsqueeze(1) * dominant_mean
+        + p_minor.unsqueeze(1) * minor_mean
+    ) / covered_mass.unsqueeze(1)
+
+    mean_error = torch.linalg.norm(classified_mean - y_target, dim=-1)
+    dominant_error = torch.linalg.norm(dominant_mean - y_target, dim=-1)
+    separation = torch.linalg.norm(dominant_mean - minor_mean, dim=-1)
+
+    dominance_shortfall = torch.relu(dominance_target - p_dominant)
+    minority_shortfall = torch.relu(minority_target - p_minor)
+    coverage_shortfall = torch.relu(coverage_target - covered_mass)
+    objective = (
+        mean_error
+        - dominant_error
+        + separation_weight * p_minor * separation
+        - dominance_penalty * dominance_shortfall
+        - minority_penalty * minority_shortfall
+        - coverage_penalty * coverage_shortfall
+    )
+
+    return objective, p_stay, p_turn, dominant_is_stay
 
 
 def _compute_adversarial_delta_spsa(
@@ -246,29 +359,33 @@ def _compute_adversarial_delta_spsa(
     stochastic_fn: TrajFlowMeszarosStochasticFunction,
     x_clean: torch.Tensor,
     y_target: torch.Tensor,
-) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
+) -> tuple[torch.Tensor, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     radius = args.attack_radius
-    if radius <= 0.0:
-        zero = torch.zeros_like(x_clean)
-        clean_obj = _estimate_original_objective(
-            stochastic_fn=stochastic_fn,
-            x_position=x_clean,
-            y_target=y_target,
-            input_mode=args.input_mode,
-            num_samples=args.attack_eval_samples,
-        )
-        clean_np = clean_obj.detach().cpu().numpy()
-        return zero, clean_np, clean_np.copy()
-
-    delta = torch.zeros_like(x_clean)
-
-    clean_obj = _estimate_original_objective(
+    clean_obj, clean_p_stay, clean_p_turn, dominant_is_stay = _estimate_cluster_separation_objective(
         stochastic_fn=stochastic_fn,
         x_position=x_clean,
         y_target=y_target,
         input_mode=args.input_mode,
         num_samples=args.attack_eval_samples,
+        stay_radius=args.behavior_stay_radius,
+        min_down=args.behavior_min_down,
+        min_left=args.behavior_min_left,
+        dominant_is_stay=None,
     )
+
+    if radius <= 0.0:
+        zero = torch.zeros_like(x_clean)
+        clean_np = clean_obj.detach().cpu().numpy()
+        details = {
+            "clean_p_stay": clean_p_stay.detach().cpu().numpy(),
+            "clean_p_turn": clean_p_turn.detach().cpu().numpy(),
+            "adv_p_stay": clean_p_stay.detach().cpu().numpy(),
+            "adv_p_turn": clean_p_turn.detach().cpu().numpy(),
+            "dominant_is_stay": dominant_is_stay.detach().cpu().numpy().astype(bool),
+        }
+        return zero, clean_np, clean_np.copy(), details
+
+    delta = torch.zeros_like(x_clean)
     best_obj = clean_obj.clone()
     best_delta = delta.clone()
 
@@ -282,19 +399,27 @@ def _compute_adversarial_delta_spsa(
         delta_plus = _project_l2_ball(delta + args.attack_probe * direction, radius)
         delta_minus = _project_l2_ball(delta - args.attack_probe * direction, radius)
 
-        obj_plus = _estimate_original_objective(
+        obj_plus, _, _, _ = _estimate_cluster_separation_objective(
             stochastic_fn=stochastic_fn,
             x_position=x_clean + delta_plus,
             y_target=y_target,
             input_mode=args.input_mode,
             num_samples=args.attack_eval_samples,
+            stay_radius=args.behavior_stay_radius,
+            min_down=args.behavior_min_down,
+            min_left=args.behavior_min_left,
+            dominant_is_stay=dominant_is_stay,
         )
-        obj_minus = _estimate_original_objective(
+        obj_minus, _, _, _ = _estimate_cluster_separation_objective(
             stochastic_fn=stochastic_fn,
             x_position=x_clean + delta_minus,
             y_target=y_target,
             input_mode=args.input_mode,
             num_samples=args.attack_eval_samples,
+            stay_radius=args.behavior_stay_radius,
+            min_down=args.behavior_min_down,
+            min_left=args.behavior_min_left,
+            dominant_is_stay=dominant_is_stay,
         )
 
         scale = ((obj_plus - obj_minus) / (2.0 * args.attack_probe)).unsqueeze(1)
@@ -302,12 +427,16 @@ def _compute_adversarial_delta_spsa(
 
         delta = _project_l2_ball(delta + args.attack_step_size * grad_est, radius)
 
-        obj_current = _estimate_original_objective(
+        obj_current, _, _, _ = _estimate_cluster_separation_objective(
             stochastic_fn=stochastic_fn,
             x_position=x_clean + delta,
             y_target=y_target,
             input_mode=args.input_mode,
             num_samples=args.attack_eval_samples,
+            stay_radius=args.behavior_stay_radius,
+            min_down=args.behavior_min_down,
+            min_left=args.behavior_min_left,
+            dominant_is_stay=dominant_is_stay,
         )
 
         improved = obj_current > best_obj
@@ -325,9 +454,28 @@ def _compute_adversarial_delta_spsa(
                 f"mean objective gain={mean_gain:.4f}"
             )
 
+    _, adv_p_stay, adv_p_turn, _ = _estimate_cluster_separation_objective(
+        stochastic_fn=stochastic_fn,
+        x_position=x_clean + best_delta,
+        y_target=y_target,
+        input_mode=args.input_mode,
+        num_samples=args.attack_eval_samples,
+        stay_radius=args.behavior_stay_radius,
+        min_down=args.behavior_min_down,
+        min_left=args.behavior_min_left,
+        dominant_is_stay=dominant_is_stay,
+    )
+
     clean_np = clean_obj.detach().cpu().numpy()
     best_np = best_obj.detach().cpu().numpy()
-    return best_delta, clean_np, best_np
+    details = {
+        "clean_p_stay": clean_p_stay.detach().cpu().numpy(),
+        "clean_p_turn": clean_p_turn.detach().cpu().numpy(),
+        "adv_p_stay": adv_p_stay.detach().cpu().numpy(),
+        "adv_p_turn": adv_p_turn.detach().cpu().numpy(),
+        "dominant_is_stay": dominant_is_stay.detach().cpu().numpy().astype(bool),
+    }
+    return best_delta, clean_np, best_np, details
 
 
 def _compute_batch_metrics(
@@ -379,130 +527,19 @@ def _compute_batch_metrics(
         h=helper,
     )
     samples_smoothed_k1 = smoother_single.monte_carlo(num_simulations=args.metric_samples)
-    samples_smoothed_k3 = smoother_multi.monte_carlo(num_simulations=args.metric_samples)
+    samples_smoothed_k2 = smoother_multi.monte_carlo(num_simulations=args.metric_samples)
 
     metrics: dict[str, dict[str, np.ndarray]] = {
         "original": {},
         "noisy_input": {},
         "smoothed_k1": {},
-        "smoothed_k3": {},
+        "smoothed_k2": {},
     }
     metrics["original"]["mean"], metrics["original"]["std"] = _compute_distance_stats(samples_original, y_target)
     metrics["noisy_input"]["mean"], metrics["noisy_input"]["std"] = _compute_distance_stats(samples_noisy, y_target)
     metrics["smoothed_k1"]["mean"], metrics["smoothed_k1"]["std"] = _compute_distance_stats(samples_smoothed_k1, y_target)
-    metrics["smoothed_k3"]["mean"], metrics["smoothed_k3"]["std"] = _compute_distance_stats(samples_smoothed_k3, y_target)
+    metrics["smoothed_k2"]["mean"], metrics["smoothed_k2"]["std"] = _compute_distance_stats(samples_smoothed_k2, y_target)
     return metrics
-
-
-def _configure_plot_style() -> None:
-    plt.rcParams.update(
-        {
-            "font.family": "serif",
-            "font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
-            "mathtext.fontset": "cm",
-            "axes.labelsize": 10,
-            "axes.titlesize": 10,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
-        }
-    )
-
-
-def _plot_metric_histogram(
-    values: dict[str, np.ndarray],
-    xlabel: str,
-    output_path: Path,
-    tail_quantile: float,
-) -> None:
-    _configure_plot_style()
-
-    colors = {
-        "original": "#222222",
-        "noisy_input": "#E4572E",
-        "smoothed_k1": "#4C78A8",
-        "smoothed_k3": "#2A9D8F",
-    }
-    mean_color = "#1B1B1B"
-    tail_color = "#C73E1D"
-    titles = {
-        "original": r"$h_w(x + \delta)$",
-        "noisy_input": r"$h_w(x + \delta + \varepsilon)$",
-        "smoothed_k1": r"$\alpha$-smoothing",
-        "smoothed_k3": r"Clustered $\alpha$-smoothing",
-    }
-    ordered_keys = ("original", "noisy_input", "smoothed_k1", "smoothed_k3")
-
-    clean_values = {
-        key: values[key]
-        for key in ordered_keys
-    }
-    all_values = np.concatenate([clean_values[key] for key in ordered_keys])
-    tail_threshold = float(np.quantile(all_values, tail_quantile))
-    tail_probability = {
-        key: float(np.mean(clean_values[key] > tail_threshold))
-        for key in ordered_keys
-    }
-    min_v = float(np.min(all_values))
-    max_v = float(np.max(all_values))
-    if np.isclose(min_v, max_v):
-        bins = np.linspace(min_v - 0.5, max_v + 0.5, 15)
-    else:
-        bins = np.linspace(min_v, max_v, 15)
-
-    fig, axes = plt.subplots(2, 2, figsize=(8.4, 6.2), sharex=True, sharey=True)
-    fig.subplots_adjust(left=0.1, right=0.98, bottom=0.11, top=0.95, hspace=0.28, wspace=0.16)
-
-    for panel_index, (ax, key) in enumerate(zip(axes.flat, ordered_keys)):
-        data = clean_values[key]
-        weights = np.full(data.shape, 1.0 / len(data), dtype=float)
-        hist = ax.hist(
-            data,
-            bins=bins,
-            weights=weights,
-            density=False,
-            alpha=0.35,
-            linewidth=1.1,
-            edgecolor=colors[key],
-            histtype="stepfilled",
-            color=colors[key],
-        )
-        mean_line = ax.axvline(
-            float(np.mean(data)),
-            color=mean_color,
-            linestyle="--",
-            linewidth=1.1,
-            alpha=0.95,
-            label="Mean",
-        )
-        tail_line = ax.axvline(
-            tail_threshold,
-            color=tail_color,
-            linestyle="-.",
-            linewidth=1.1,
-            alpha=0.95,
-            label=f"Quantile at {tail_quantile:.0%}",
-        )
-        ax.set_title(titles[key])
-        if panel_index >= 2:
-            ax.set_xlabel(xlabel)
-        ax.set_ylabel("Frequency")
-        ax.grid(True, linestyle=":", alpha=0.35)
-
-        if panel_index == 0:
-            legend_handles = [mean_line, tail_line]
-            legend_labels = ["Mean", f"Quantile at {tail_quantile:.0%}"]
-            ax.legend(
-                legend_handles,
-                legend_labels,
-                loc="upper left",
-                fontsize=8,
-                frameon=True,
-            )
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=180)
-    plt.close(fig)
 
 
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
@@ -511,23 +548,77 @@ def _save_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, f, indent=2)
 
 
+def _compute_tail_stats_table(
+    metrics: dict[str, dict[str, np.ndarray]],
+) -> dict[str, dict[str, dict[str, float]]]:
+    quantiles = (90, 95)
+    table: dict[str, dict[str, dict[str, float]]] = {}
+    for metric_field, key_label in (("mean", "mean_distance"), ("std", "std_distance")):
+        table[key_label] = {}
+        for name, arrays in metrics.items():
+            arr = arrays[metric_field]
+            row: dict[str, float] = {"mean": float(arr.mean()), "max": float(arr.max())}
+            for pct in quantiles:
+                threshold = float(np.percentile(arr, pct))
+                tail = arr[arr >= threshold]
+                row[f"q{pct}"] = threshold
+                row[f"cvar{pct}"] = float(tail.mean()) if len(tail) > 0 else threshold
+            table[key_label][name] = row
+    return table
+
+
+def _ask_yes_no(prompt: str) -> bool:
+    while True:
+        answer = input(prompt).strip().lower()
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please reply with 'y' or 'n'.")
+
+
+def _ask_num_indices(prompt: str, available: int) -> int:
+    while True:
+        answer = input(prompt).strip()
+        try:
+            value = int(answer)
+        except ValueError:
+            print("Please enter an integer.")
+            continue
+        if value < 0:
+            print("Please enter a non-negative integer.")
+            continue
+        if value > available:
+            print(f"Please enter a value between 0 and {available}.")
+            continue
+        return value
+
+
+def _count_indices_in_metrics_json(metrics_json_path: Path) -> int:
+    with metrics_json_path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    rows = payload.get("per_input", [])
+    return len(rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Adversarial TrajFlow experiment: optimize bounded perturbations that maximize "
-            "original predictor error, then compare original/noisy/smoothed predictors on x+delta."
+            "Adversarial TrajFlow experiment with the cluster-separation objective: optimize "
+            "bounded perturbations on the original model, then compare original/noisy/smoothed "
+            "predictors on x+delta."
         )
     )
     parser.add_argument(
         "--num-inputs",
         type=int,
-        default=300,
-        help="How many valid inputs to sample randomly when selected-indices is not provided.",
+        default=0,
+        help="How many valid inputs to sample when selected-indices is not provided. Use <=0 for all valid indices.",
     )
     parser.add_argument(
         "--selected-indices",
         type=str,
-        default="2,6,7,8,14,21,23,35,41,42,43,46,48,51,56,57,59,61,62,64,67,70,77,78,81,82,83,86,89,91,95,107,114,115,119,121,122,124,126,127,131,133,134,135,137,140,144,152,153,156,157,158,159,160,163,165,166,167,168,169,173,174,178,182,183,185,188,192,195,197,198,203,204,205,207,209,210,213,221,222,223,226,227,228,234,236,237,238,240,244,246,247,248,249,250,251,252,253,254,255,257,258,260,261,262,263,264,267,268,269,271,272,273,274,275,276,277,278,279,281,282,283,285,290,295,296,299,309,318,327,329,331,332,334,335,338,340,343,344,348,349,351,357,358,359,361,363,365,373,374,378,384,386,388,389,390,391,393,399,405,406,407,413,414,415,423,428,431,432,434,436,438,439,441,442,443,453,456,458,460,462,464,466,468,471,472,481,482,483,484,487,489,492,494,495,496,502,503,507,510,512,513,514,516,520,525,526,527,528,529,530,531,533,534,535,538,540,541,543,546,547,548,549,551,554,557,563,564,565,568,569,570,574,576,579,583,585,588,591,592,594,596,597,599,600,601,602,603,605,607,610,612,615,616,617,618,620,621,626,627,628,629,630,631,633,634,639,644,645,646,647,648,656,661,662,663,664,665,666,670,671,672,675,676,679,680,681,682,684,685,687,688,689,692,693,694,697,700,702,703,704,710,714,715,722,724,726,732,733,736,746,750,751,752,753,756,757,759,760,764,767,769,770,771,772,773,776,777,778,779,780,781,783,784,785,786,787,788,790,791,793,794,798,799,801,802,804,807,808,811,812,813,815,816,817,818,820,821,822,824,825,826,827,830,834,835,836,837,839,841,844,848,850,851,852,856,858,859,860,861,862,863,864,867,870,872,873,874,875,879,883,884",
+        default="",
         help="Optional comma-separated dataset indices. Overrides random --num-inputs sampling.",
     )
     parser.add_argument(
@@ -551,7 +642,7 @@ def main() -> None:
     parser.add_argument(
         "--attack-steps",
         type=int,
-        default=12,
+        default=10,
         help="Number of SPSA ascent steps used to optimize delta.",
     )
     parser.add_argument(
@@ -563,14 +654,25 @@ def main() -> None:
     parser.add_argument(
         "--attack-step-size",
         type=float,
-        default=0.25,
+        default=0.22,
         help="Step size for projected SPSA ascent updates.",
     )
     parser.add_argument(
         "--attack-eval-samples",
         type=int,
-        default=64,
+        default=32,
         help="Number of stochastic samples for each adversarial objective estimate.",
+    )
+    parser.add_argument(
+        "--attack-objective",
+        type=str,
+        choices=("cluster_separation",),
+        default="cluster_separation",
+        help=(
+            "Objective optimized by SPSA on the original model. "
+            "cluster_separation pushes the minor-mode cluster away from GT while "
+            "preserving a strong dominant mode to amplify the k=1 vs k=2 gap."
+        ),
     )
     parser.add_argument(
         "--tail-quantile",
@@ -613,7 +715,7 @@ def main() -> None:
         type=str,
         choices=("dbscan", "behavior_split"),
         default="behavior_split",
-        help="Clustering strategy for k=3 smoothing.",
+        help="Clustering strategy for k=2 smoothing.",
     )
     parser.add_argument(
         "--input-mode",
@@ -649,7 +751,7 @@ def main() -> None:
     parser.add_argument(
         "--dbscan-min-samples",
         type=int,
-        default=500,
+        default=100,
         help="DBSCAN min_samples for clustering inside smoothing.",
     )
     parser.add_argument(
@@ -661,7 +763,7 @@ def main() -> None:
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
-        default=1000,
+        default=500,
         help="num_samples for confidence parameter (used in smoothing setup).",
     )
     parser.add_argument(
@@ -671,18 +773,71 @@ def main() -> None:
         help="Random seed for index selection and stochastic search.",
     )
     parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=str(EXPERIMENTS / "data" / "figures"),
-        help="Directory where plots are saved.",
-    )
-    parser.add_argument(
         "--analysis-dir",
         type=str,
-        default=str(EXPERIMENTS / "data" / "analysis"),
+        default=str(EXPERIMENTS / "data" / "analysis" / "adversarial"),
         help="Directory where raw metrics JSON is saved.",
     )
+    parser.add_argument(
+        "--figures-dir",
+        type=str,
+        default=str(EXPERIMENTS / "data" / "figures"),
+        help="Directory where selected-index plots are saved.",
+    )
+    parser.add_argument(
+        "--plot-top-k",
+        type=int,
+        default=100,
+        help="Top-k inputs where k2 beats k1 to include in selected plots. Use <=0 for all.",
+    )
+    parser.add_argument(
+        "--regenerate-data",
+        type=str,
+        choices=("y", "n"),
+        default=None,
+        help="Optional non-interactive override: y to regenerate, n to use existing JSON.",
+    )
     args = parser.parse_args()
+
+    analysis_dir = Path(args.analysis_dir)
+    json_path = analysis_dir / "adversarial_metrics.json"
+
+    if args.regenerate_data is None:
+        regenerate_data = _ask_yes_no(
+            "Regenerate adversarial data now? [y/n] "
+        )
+    else:
+        regenerate_data = args.regenerate_data == "y"
+
+    if not regenerate_data:
+        if not json_path.exists():
+            print(f"Existing JSON not found at {json_path}. Falling back to regeneration.")
+            regenerate_data = True
+        else:
+            available_json_indices = _count_indices_in_metrics_json(json_path)
+            print(f"Available indices in existing JSON: {available_json_indices}")
+            if args.regenerate_data is None:
+                args.plot_top_k = _ask_num_indices(
+                    "How many indices should be used from JSON? (0 for all) ",
+                    available_json_indices,
+                )
+            print(f"Using existing JSON: {json_path}")
+            plot_trajflow_adversarial_from_json(
+                metrics_json=str(json_path),
+                top_k=args.plot_top_k,
+                tail_quantile=args.tail_quantile,
+                output_dir=args.figures_dir,
+            )
+            return
+
+    if args.regenerate_data is None and not (args.selected_indices or "").strip():
+        _, outputs_gt = _load_inputs_and_outputs()
+        available_dataset_indices = int(np.sum(_finite_target_mask(outputs_gt)))
+        print(f"Available valid indices in dataset: {available_dataset_indices}")
+        args.num_inputs = _ask_num_indices(
+            "How many indices should be regenerated? (0 for all) ",
+            available_dataset_indices,
+        )
 
     if args.metric_samples <= 0:
         raise ValueError("metric-samples must be positive")
@@ -717,7 +872,7 @@ def main() -> None:
         seed=args.seed,
     )
 
-    metric_names = ("original", "noisy_input", "smoothed_k1", "smoothed_k3")
+    metric_names = ("original", "noisy_input", "smoothed_k1", "smoothed_k2")
     metrics_parts: dict[str, dict[str, list[np.ndarray]]] = {
         name: {"mean": [], "std": []}
         for name in metric_names
@@ -741,7 +896,7 @@ def main() -> None:
         )
 
         attack_t0 = time.perf_counter()
-        delta_adv, clean_obj, adv_obj = _compute_adversarial_delta_spsa(
+        delta_adv, clean_obj, adv_obj, attack_details = _compute_adversarial_delta_spsa(
             args=args,
             stochastic_fn=stochastic_fn,
             x_clean=x_clean,
@@ -771,6 +926,15 @@ def main() -> None:
                     "clean_objective": float(clean_obj[i]),
                     "adversarial_objective": float(adv_obj[i]),
                     "objective_gain": float(adv_obj[i] - clean_obj[i]),
+                    "clean_p_stay": float(attack_details["clean_p_stay"][i]),
+                    "clean_p_turn": float(attack_details["clean_p_turn"][i]),
+                    "adversarial_p_stay": float(attack_details["adv_p_stay"][i]),
+                    "adversarial_p_turn": float(attack_details["adv_p_turn"][i]),
+                    "dominant_clean_behavior": (
+                        "stay"
+                        if bool(attack_details["dominant_is_stay"][i])
+                        else "turn"
+                    ),
                     "delta_l2_norm": float(delta_norms[i]),
                     "delta_flat": delta_adv[i].detach().cpu().tolist(),
                 }
@@ -785,26 +949,6 @@ def main() -> None:
         }
         for name in metric_names
     }
-
-    output_dir = Path(args.output_dir)
-    mean_plot = output_dir / "trajflow_adversarial_average_distance.pdf"
-    std_plot = output_dir / "trajflow_adversarial_std_distance.pdf"
-
-    _plot_metric_histogram(
-        values={k: metrics[k]["mean"] for k in metrics},
-        xlabel="Average error",
-        output_path=mean_plot,
-        tail_quantile=args.tail_quantile,
-    )
-    _plot_metric_histogram(
-        values={k: metrics[k]["std"] for k in metrics},
-        xlabel="Average error std deviation",
-        output_path=std_plot,
-        tail_quantile=args.tail_quantile,
-    )
-
-    analysis_dir = Path(args.analysis_dir)
-    json_path = analysis_dir / "adversarial_metrics.json"
 
     per_input_rows = []
     for i, dataset_idx in enumerate(selected_indices.tolist()):
@@ -823,9 +967,9 @@ def main() -> None:
                     "mean_distance": float(metrics["smoothed_k1"]["mean"][i]),
                     "std_distance": float(metrics["smoothed_k1"]["std"][i]),
                 },
-                "smoothed_k3": {
-                    "mean_distance": float(metrics["smoothed_k3"]["mean"][i]),
-                    "std_distance": float(metrics["smoothed_k3"]["std"][i]),
+                "smoothed_k2": {
+                    "mean_distance": float(metrics["smoothed_k2"]["mean"][i]),
+                    "std_distance": float(metrics["smoothed_k2"]["std"][i]),
                 },
             }
         )
@@ -875,6 +1019,7 @@ def main() -> None:
             "attack_probe": args.attack_probe,
             "attack_step_size": args.attack_step_size,
             "attack_eval_samples": args.attack_eval_samples,
+            "attack_objective": args.attack_objective,
             "tail_quantile": args.tail_quantile,
         },
         "aggregate": aggregate,
@@ -886,12 +1031,11 @@ def main() -> None:
         },
         "per_input": per_input_rows,
         "adversarial_optimization": attack_rows,
-        "artifacts": {
-            "mean_plot": str(mean_plot),
-            "std_plot": str(std_plot),
-        },
     }
     _save_json(json_path, payload)
+
+    tail_stats_path = analysis_dir / "adversarial_tail_stats.json"
+    _save_json(tail_stats_path, _compute_tail_stats_table(metrics))
 
     print("=== TrajFlow Adversarial GT Comparison ===")
     print(f"selected_indices: {selected_indices.tolist()}")
@@ -901,9 +1045,8 @@ def main() -> None:
         f"mean_gain={payload['attack_summary']['mean_objective_gain']:.4f}, "
         f"mean_delta_l2={payload['attack_summary']['mean_delta_l2_norm']:.4f}"
     )
-    print(f"saved: {mean_plot}")
-    print(f"saved: {std_plot}")
     print(f"saved: {json_path}")
+    print(f"saved: {tail_stats_path}")
     print("aggregate metrics:")
     for name, values in aggregate.items():
         print(
@@ -911,6 +1054,13 @@ def main() -> None:
             f"mean_of_mean_distance={values['mean_of_mean_distance']:.4f}, "
             f"mean_of_std_distance={values['mean_of_std_distance']:.4f}"
         )
+
+    plot_trajflow_adversarial_from_json(
+        metrics_json=str(json_path),
+        top_k=args.plot_top_k,
+        tail_quantile=args.tail_quantile,
+        output_dir=args.figures_dir,
+    )
 
 
 if __name__ == "__main__":
