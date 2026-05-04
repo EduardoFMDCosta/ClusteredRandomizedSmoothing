@@ -50,7 +50,7 @@ def _robustified_action(
     """Build a smoother at ``state`` and return one action from the
     robustified ``MixtureDirac``.
     """
-    x = torch.tensor(normalize_state(state, "uav_3d"), dtype=torch.float32).unsqueeze(0)
+    x = torch.tensor(normalize_state(state), dtype=torch.float32).unsqueeze(0)
     smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=x,
@@ -99,7 +99,7 @@ def _rollout(
 
 def _raw_policy_action_fn(policy: VariationalPolicy):
     def f(state: np.ndarray) -> np.ndarray:
-        state_t = torch.tensor(normalize_state(state, "uav_3d"), dtype=torch.float32).unsqueeze(0)
+        state_t = torch.tensor(normalize_state(state), dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action_t, _, _ = policy.sample(state_t)
         return action_t.squeeze(0).cpu().numpy().astype(np.float32)

@@ -112,6 +112,38 @@ def main():
     rekavandi_mc_samples = rekavandi_smoother.monte_carlo(num_simulations=5000)
     clustered_mc_samples = smoother.monte_carlo(num_simulations=5000)
 
+    # Share bins, x- and y-axis limits across the two plots so the
+    # original-model histogram is identical on both panels.
+    import numpy as np
+
+    raw_np = raw_outputs[:, :, 0].detach().cpu().numpy().reshape(-1)
+    rekavandi_np = rekavandi_mc_samples[:, :, 0].detach().cpu().numpy().reshape(-1)
+    clustered_np = clustered_mc_samples[:, :, 0].detach().cpu().numpy().reshape(-1)
+    raw_bin_edges = np.histogram_bin_edges(raw_np, bins=60)
+    mc_bin_edges = np.histogram_bin_edges(
+        np.concatenate([rekavandi_np, clustered_np]), bins=45
+    )
+    raw_bin_width = float(raw_bin_edges[1] - raw_bin_edges[0])
+    mc_bin_width = float(mc_bin_edges[1] - mc_bin_edges[0])
+    raw_density_max = (
+        np.histogram(raw_np, bins=raw_bin_edges)[0].max() / (raw_np.size * raw_bin_width)
+    )
+    rekavandi_density_max = (
+        np.histogram(rekavandi_np, bins=mc_bin_edges)[0].max()
+        / (rekavandi_np.size * mc_bin_width)
+    )
+    clustered_density_max = (
+        np.histogram(clustered_np, bins=mc_bin_edges)[0].max()
+        / (clustered_np.size * mc_bin_width)
+    )
+    all_data = np.concatenate([raw_np, rekavandi_np, clustered_np])
+    margin = 0.05 * (all_data.max() - all_data.min())
+    shared_xlim = (float(all_data.min() - margin), float(all_data.max() + margin))
+    shared_ylim = (
+        0.0,
+        1.10 * float(max(raw_density_max, rekavandi_density_max, clustered_density_max)),
+    )
+
     figures_dir = EXPERIMENTS / "data" / "figures"
     alpha_path = plot_single_smoother_distribution(
         x=x,
@@ -121,6 +153,10 @@ def main():
         output_path=figures_dir / "alpha_smoothing_distribution.pdf",
         smoother_label=r"$\alpha$-smoothing (Rekavandi et al, 2024)",
         smoother_color="#E31A1C",
+        raw_bins=raw_bin_edges,
+        mc_bins=mc_bin_edges,
+        xlim=shared_xlim,
+        ylim=shared_ylim,
     )
     clustered_path = plot_single_smoother_distribution(
         x=x,
@@ -130,6 +166,10 @@ def main():
         output_path=figures_dir / "clustered_alpha_smoothing_distribution.pdf",
         smoother_label=r"Clustered $\alpha$-smoothing",
         smoother_color="#1F78B4",
+        raw_bins=raw_bin_edges,
+        mc_bins=mc_bin_edges,
+        xlim=shared_xlim,
+        ylim=shared_ylim,
     )
     chart_paths = [alpha_path, clustered_path]
 

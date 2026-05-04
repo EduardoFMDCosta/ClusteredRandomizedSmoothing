@@ -212,7 +212,7 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    policy, _, _ = load_policy(Path(args.checkpoint))
+    policy, _ = load_policy(Path(args.checkpoint))
     if policy.num_components < 2:
         print(f"[warn] Checkpoint has K={policy.num_components}; bimodality visualization assumes K>=2.")
 
