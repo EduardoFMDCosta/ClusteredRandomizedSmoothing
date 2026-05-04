@@ -229,76 +229,6 @@ def _find_variance_maximizing_delta(
     return delta
 
 
-def _monte_carlo_with_fixed_cluster(
-    smoother: GaussianAlphaTrimmingSmoothing,
-    x_eval: torch.Tensor,
-    helper_eval: list[torch.Tensor],
-    num_simulations: int,
-) -> torch.Tensor:
-    if num_simulations <= 0:
-        raise ValueError("num_simulations must be positive")
-
-    nx = x_eval.shape[0]
-    num_samples = smoother.parameters.smoothing.N
-    total_samples = num_samples * num_simulations
-
-    outputs = smoother.stochastic_function.sample_from_noisy_inputs(
-        x=x_eval,
-        smoothing_distribution=smoother.smoothing_distribution,
-        num_samples=total_samples,
-        h=helper_eval,
-        noise_sub_batch_size=smoother.parameters.runtime.noise_sub_batch_size,
-    )
-
-    output_dim = outputs.shape[-1]
-    outputs = outputs.view(nx, num_simulations, num_samples, output_dim)
-
-    cluster = smoother.cluster
-    centroids = cluster.centroids
-    probs_partition = cluster.probs_partition
-    num_clusters = cluster.num_clusters
-
-    diff = outputs.unsqueeze(3) - centroids.unsqueeze(1).unsqueeze(1)
-    squared_distances = (diff * diff).sum(dim=-1)
-    assignments = squared_distances.argmin(dim=3)
-
-    trimmed_mean = torch.zeros(
-        (nx, num_simulations, num_clusters, output_dim),
-        dtype=outputs.dtype,
-        device=outputs.device,
-    )
-    positions = torch.arange(num_samples, device=outputs.device).view(1, 1, num_samples, 1)
-    inf = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
-    zero = torch.zeros(1, device=outputs.device, dtype=outputs.dtype)
-
-    for j in range(num_clusters):
-        cluster_mask = assignments == j
-        cluster_values = torch.where(cluster_mask.unsqueeze(-1), outputs, inf)
-        sorted_cluster_values = cluster_values.sort(dim=2).values
-
-        counts = cluster_mask.sum(dim=2)
-        left = torch.floor(smoother.parameters.smoothing.alpha * counts.to(outputs.dtype)).to(torch.long)
-        right = counts - left
-
-        in_trimmed_core = (positions >= left.view(nx, num_simulations, 1, 1)) & (
-            positions < right.view(nx, num_simulations, 1, 1)
-        )
-        trimmed_sum = torch.where(in_trimmed_core, sorted_cluster_values, zero).sum(dim=2)
-        trimmed_count = (right - left).to(outputs.dtype).view(nx, num_simulations, 1)
-
-        cluster_trimmed_mean = trimmed_sum / trimmed_count.clamp(min=1)
-        has_trimmed_points = trimmed_count.squeeze(-1) > 0
-        trimmed_mean[:, :, j, :] = torch.where(
-            has_trimmed_points.unsqueeze(-1),
-            cluster_trimmed_mean,
-            centroids[:, j, :].unsqueeze(1),
-        )
-
-    sampled_cluster = torch.multinomial(probs_partition, num_samples=num_simulations, replacement=True)
-    gather_idx = sampled_cluster.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 1, output_dim)
-    return trimmed_mean.gather(dim=2, index=gather_idx).squeeze(2)
-
-
 def _build_parameters(args: argparse.Namespace, max_num_clusters: int) -> Parameters:
     return Parameters(
         smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
@@ -567,18 +497,8 @@ def _compute_batch_table_rows(
     containment_k2 = noisy_inside_k2.float().mean(dim=1)
     containment_k1 = noisy_inside_k1.float().mean(dim=1)
 
-    mc_samples_k2 = _monte_carlo_with_fixed_cluster(
-        smoother=smoother_k2,
-        x_eval=model_input_eval,
-        helper_eval=helper,
-        num_simulations=args.mc_containment_samples,
-    )
-    mc_samples_k1 = _monte_carlo_with_fixed_cluster(
-        smoother=smoother_k1,
-        x_eval=model_input_eval,
-        helper_eval=helper,
-        num_simulations=args.mc_containment_samples,
-    )
+    mc_samples_k2 = smoother_k2.monte_carlo(num_simulations=args.mc_containment_samples, z=model_input_eval)
+    mc_samples_k1 = smoother_k1.monte_carlo(num_simulations=args.mc_containment_samples, z=model_input_eval)
     mc_inside_k2 = smoother_k2.regions.contains(mc_samples_k2).any(dim=-1)
     mc_inside_k1 = smoother_k1.regions.contains(mc_samples_k1).any(dim=-1)
     mc_containment_k2 = mc_inside_k2.float().mean(dim=1)
