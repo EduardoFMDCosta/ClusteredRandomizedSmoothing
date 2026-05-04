@@ -38,7 +38,7 @@ from randomized_smoothing.dataclasses import (
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from plotting import plot_trajflow_wasserstein_histograms
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
-from trajflow_performance import (
+from trajflow_robustness import (
     _ask_num_indices,
     _choose_indices,
     _extract_target_initial_position,

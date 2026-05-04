@@ -16,7 +16,7 @@ class Smoothing(ABC):
     def smooth(self) -> Distribution:
         raise NotImplementedError
 
-    def monte_carlo(self, num_simulations: int) -> torch.Tensor:
+    def monte_carlo(self, num_simulations: int, z: torch.Tensor | None = None) -> torch.Tensor:
         if num_simulations <= 0:
             raise ValueError("num_simulations must be positive")
 
@@ -115,16 +115,17 @@ class AlphaTrimmingSmoothing(Smoothing):
 
         return MixtureDirac(locs=trimmed_mean, probs=probs_partition)
 
-    def monte_carlo(self, num_simulations: int) -> torch.Tensor:
+    def monte_carlo(self, num_simulations: int, z: torch.Tensor | None = None) -> torch.Tensor:
         if num_simulations <= 0:
             raise ValueError("num_simulations must be positive")
 
-        nx = self.x.shape[0]
+        x_inference = z if z is not None else self.x
+        nx = x_inference.shape[0]
         num_samples = self.parameters.smoothing.N
         total_samples = num_samples * num_simulations
 
         outputs = self.stochastic_function.sample_from_noisy_inputs(
-            x=self.x,
+            x=x_inference,
             smoothing_distribution=self.smoothing_distribution,
             num_samples=total_samples,
             h=self.h,
