@@ -92,6 +92,10 @@ def plot_single_smoother_distribution(
 	output_path: Path,
 	smoother_label: str,
 	smoother_color: str,
+	raw_bins: np.ndarray | int = 60,
+	mc_bins: np.ndarray | int = 45,
+	xlim: tuple[float, float] | None = None,
+	ylim: tuple[float, float] | None = None,
 ) -> Path:
 	"""Plot original-model histogram and one smoother's MC histogram.
 
@@ -101,6 +105,14 @@ def plot_single_smoother_distribution(
 	step histogram per cluster, with vertical lines at the cluster splits.
 	In 1D each split sits at the midpoint between adjacent regions'
 	closest endpoints — exactly where the region-distance argmin flips.
+
+	Per-cluster histograms are normalised so that their sum across clusters
+	equals the full ``density=True`` histogram of the original outputs —
+	letting two plots with different cluster counts share the same y-axis.
+
+	``raw_bins``/``mc_bins`` may be either a bin count or precomputed bin
+	edges; pass shared edges to align across multiple plots. ``xlim`` and
+	``ylim`` override matplotlib's autoscaling.
 	"""
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -121,7 +133,12 @@ def plot_single_smoother_distribution(
 
 	for i, ax in enumerate(axes):
 		k_regions = region_lower_np.shape[1]
-		shared_bins = np.histogram_bin_edges(outputs_np[i], bins=60)
+		if isinstance(raw_bins, np.ndarray):
+			shared_bins = np.asarray(raw_bins, dtype=float)
+		else:
+			shared_bins = np.histogram_bin_edges(outputs_np[i], bins=raw_bins)
+		bin_width = float(shared_bins[1] - shared_bins[0])
+		n_total = int(outputs_np[i].size)
 
 		# Order regions left-to-right by their center for consistent coloring.
 		region_centers_i = 0.5 * (region_lower_np[i] + region_upper_np[i])
@@ -135,11 +152,15 @@ def plot_single_smoother_distribution(
 				if not np.any(cluster_mask):
 					continue
 				cluster_color = CLUSTER_PALETTE[rank % len(CLUSTER_PALETTE)]
+				n_cluster = int(cluster_mask.sum())
+				# Per-cluster weights ``1 / (n_total * bin_width)`` give the
+				# same scale as ``density=True`` over the full data, so the
+				# stack across clusters reproduces the full histogram.
 				ax.hist(
 					outputs_np[i][cluster_mask],
 					bins=shared_bins,
 					density=False,
-					weights=np.full(int(cluster_mask.sum()), 1.0 / outputs_np[i].size),
+					weights=np.full(n_cluster, 1.0 / (n_total * bin_width)),
 					histtype="stepfilled",
 					linewidth=1.6,
 					edgecolor=cluster_color,
@@ -159,7 +180,7 @@ def plot_single_smoother_distribution(
 
 		ax.hist(
 			smoother_mc_np[i],
-			bins=45,
+			bins=mc_bins,
 			density=True,
 			alpha=0.30,
 			color=smoother_color,
@@ -213,6 +234,10 @@ def plot_single_smoother_distribution(
 		ax.set_xlabel("Output")
 		ax.set_ylabel("Density")
 		ax.grid(alpha=0.25, linestyle=":")
+		if xlim is not None:
+			ax.set_xlim(*xlim)
+		if ylim is not None:
+			ax.set_ylim(*ylim)
 
 	fig.tight_layout()
 	fig.savefig(output_path, dpi=180)
