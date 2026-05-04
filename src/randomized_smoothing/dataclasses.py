@@ -19,8 +19,13 @@ class SmoothingParameters:
 class ClusteringParameters:
     max_num_clusters: int
     coverage: float
+    strategy: str = "dbscan"
     dbscan_eps: float = 0.5
     dbscan_min_samples: int = 10
+    behavior_stay_radius: float = 1.0
+    behavior_min_down: float = 0.5
+    behavior_min_left: float = 0.0
+    behavior_force_two_clusters: bool = True
     max_iter: int = 1000
     tol: float = 1e-5
     elbow_threshold: float = 0.05
@@ -28,8 +33,13 @@ class ClusteringParameters:
     def __post_init__(self) -> None:
         self.max_num_clusters = int(self.max_num_clusters)
         self.coverage = float(self.coverage)
+        self.strategy = str(self.strategy)
         self.dbscan_eps = float(self.dbscan_eps)
         self.dbscan_min_samples = int(self.dbscan_min_samples)
+        self.behavior_stay_radius = float(self.behavior_stay_radius)
+        self.behavior_min_down = float(self.behavior_min_down)
+        self.behavior_min_left = float(self.behavior_min_left)
+        self.behavior_force_two_clusters = bool(self.behavior_force_two_clusters)
         self.max_iter = int(self.max_iter)
         self.tol = float(self.tol)
         self.elbow_threshold = float(self.elbow_threshold)
@@ -38,10 +48,18 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
+        if self.strategy not in ("dbscan", "behavior_split"):
+            raise ValueError("strategy must be one of: 'dbscan', 'behavior_split'")
         if self.dbscan_eps <= 0.0:
             raise ValueError("dbscan_eps must be positive")
         if self.dbscan_min_samples <= 0:
             raise ValueError("dbscan_min_samples must be positive")
+        if self.behavior_stay_radius < 0.0:
+            raise ValueError("behavior_stay_radius must be non-negative")
+        if self.behavior_min_down < 0.0:
+            raise ValueError("behavior_min_down must be non-negative")
+        if self.behavior_min_left < 0.0:
+            raise ValueError("behavior_min_left must be non-negative")
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")
         if self.tol <= 0:

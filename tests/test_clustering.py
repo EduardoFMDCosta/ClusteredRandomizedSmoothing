@@ -195,3 +195,51 @@ def test_partition_probabilities_follow_nearest_region_distance() -> None:
 
     assert torch.equal(cluster.partition_assignments, expected_assignments)
     assert torch.allclose(cluster.probs_partition, expected_probs)
+
+
+def test_behavior_split_requires_anchor() -> None:
+    outputs = _make_outputs()
+    with pytest.raises(ValueError):
+        Cluster(
+            outputs=outputs,
+            parameters=ClusteringParameters(
+                max_num_clusters=3,
+                coverage=0.8,
+                strategy="behavior_split",
+            ),
+        )
+
+
+def test_behavior_split_finds_stay_and_turn_modes() -> None:
+    row = torch.tensor(
+        [
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [-0.1, 0.1],
+            [0.2, -0.2],
+            [-2.0, -2.5],
+            [-2.2, -2.3],
+            [-1.8, -2.6],
+            [-2.1, -2.4],
+        ],
+        dtype=torch.float64,
+    ).unsqueeze(0)
+    anchor = torch.tensor([[0.0, 0.0]], dtype=torch.float64)
+
+    cluster = Cluster(
+        outputs=row,
+        parameters=ClusteringParameters(
+            max_num_clusters=3,
+            coverage=0.8,
+            strategy="behavior_split",
+            behavior_stay_radius=0.6,
+            behavior_min_down=0.4,
+            behavior_min_left=0.0,
+        ),
+        behavior_anchor=anchor,
+    )
+
+    assert int(cluster.k_per_row[0].item()) == 2
+    assert cluster.num_clusters == 2
+    assert float(cluster.probs_partition[0, 0].item()) > 0.0
+    assert float(cluster.probs_partition[0, 1].item()) > 0.0

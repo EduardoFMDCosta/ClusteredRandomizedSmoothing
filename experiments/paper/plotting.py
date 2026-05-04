@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -9,7 +10,7 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import torch
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
 	from randomized_smoothing.clusters import Cluster
@@ -34,6 +35,50 @@ plt.rcParams.update(
 )
 
 CLUSTER_PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9"]
+
+
+def _resolve_trajflow_gt_file(data_dir: Path) -> Path:
+	candidates = [
+		data_dir / "Outputs_gt.npy",
+		data_dir / "Output_gt.npy",
+	]
+	for path in candidates:
+		if path.exists():
+			return path
+	raise FileNotFoundError(
+		"Could not find ground-truth output file. Expected one of: "
+		f"{', '.join(str(p) for p in candidates)}"
+	)
+
+
+def _load_trajflow_target_displacements() -> np.ndarray:
+	data_dir = Path(__file__).resolve().parent.parent / "TrajFlowExperiment" / "Data"
+	inputs = np.load(str(data_dir / "Inputs.npy"))
+	outputs_gt = np.load(str(_resolve_trajflow_gt_file(data_dir)))
+
+	if outputs_gt.ndim != 4 or outputs_gt.shape[-1] != 2:
+		raise ValueError(
+			"Expected GT outputs with shape (num_samples, num_agents, num_timesteps, 2); "
+			f"got {tuple(outputs_gt.shape)}"
+		)
+	if outputs_gt.shape[1] != 1:
+		raise ValueError(
+			"Expected GT outputs to contain exactly one target-agent trajectory; "
+			f"got shape {tuple(outputs_gt.shape)}"
+		)
+	if inputs.shape[0] != outputs_gt.shape[0]:
+		raise ValueError(
+			"Inputs and GT outputs have different sample counts: "
+			f"Inputs={inputs.shape[0]}, GT={outputs_gt.shape[0]}"
+		)
+
+	# Raw TrajFlow inputs store the tracked/target vehicle at agent index 1.
+	target_initial = inputs[:, 1, 0, :2]
+	target_final = outputs_gt[:, 0, -1, :]
+	finite_mask = np.isfinite(target_initial).all(axis=1) & np.isfinite(target_final).all(axis=1)
+	displacements = np.full(inputs.shape[0], np.inf, dtype=float)
+	displacements[finite_mask] = np.linalg.norm(target_final[finite_mask] - target_initial[finite_mask], axis=1)
+	return displacements
 
 
 def _to_numpy(x: torch.Tensor) -> np.ndarray:
@@ -1104,4 +1149,270 @@ def plot_bound_clusterized_grid(
 	plt.close(fig)
 
 	return output_path
+
+
+def _configure_trajflow_hist_plot_style() -> None:
+	plt.rcParams.update(
+		{
+			"text.usetex": False,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 10,
+			"axes.titlesize": 10,
+			"xtick.labelsize": 9,
+			"ytick.labelsize": 9,
+		}
+	)
+
+
+def _unit_interval_bins(min_v: float, max_v: float) -> np.ndarray:
+	bin_width = 0.5
+	left = np.floor(min_v / bin_width) * bin_width
+	right = np.ceil(max_v / bin_width) * bin_width
+	if np.isclose(left, right):
+		right = left + bin_width
+	return np.arange(left, right + bin_width, bin_width, dtype=float)
+
+
+def _gaussian_kde_curve(data: np.ndarray, bins: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+	if len(data) < 2:
+		return None
+	std = float(np.std(data, ddof=1))
+	if not np.isfinite(std) or std <= 0.0:
+		return None
+	bandwidth = 1.06 * std * (len(data) ** (-1.0 / 5.0))
+	bandwidth = max(bandwidth, 1e-3)
+	x_grid = np.linspace(float(bins[0]), float(bins[-1]), 400)
+	diff = (x_grid[:, None] - data[None, :]) / bandwidth
+	kernel = np.exp(-0.5 * diff * diff) / np.sqrt(2.0 * np.pi)
+	density = kernel.mean(axis=1) / bandwidth
+	return x_grid, density
+
+
+def _plot_trajflow_metric_histogram(
+	values: dict[str, np.ndarray],
+	xlabel: str,
+	output_path: Path,
+	tail_quantile: float,
+	adversarial_titles: bool,
+) -> None:
+	_configure_trajflow_hist_plot_style()
+
+	colors = {
+		"original": "#222222",
+		"noisy_input": "#E4572E",
+		"smoothed_k1": "#4C78A8",
+		"smoothed_k2": "#2A9D8F",
+	}
+	mean_color = "#1B1B1B"
+	tail_color = "#C73E1D"
+	if adversarial_titles:
+		titles = {
+			"original": r"$h_w(x + \delta)$",
+			"noisy_input": r"$h_w(x + \delta + \varepsilon)$",
+			"smoothed_k1": r"$\alpha$-smoothing",
+			"smoothed_k2": r"Clustered $\alpha$-smoothing",
+		}
+	else:
+		titles = {
+			"original": r"$h_w(x)$",
+			"noisy_input": r"$h_w(x + \varepsilon)$",
+			"smoothed_k1": r"$\alpha$-smoothing",
+			"smoothed_k2": r"Clustered $\alpha$-smoothing",
+		}
+
+	ordered_keys = ("original", "noisy_input", "smoothed_k1", "smoothed_k2")
+	clean_values = {key: values[key] for key in ordered_keys}
+	all_values = np.concatenate([clean_values[key] for key in ordered_keys])
+	min_v = float(np.min(all_values))
+	max_v = float(np.max(all_values))
+	bins = _unit_interval_bins(min_v, max_v)
+
+	fig, axes = plt.subplots(2, 2, figsize=(8.4, 6.2), sharex=True, sharey=True)
+	fig.subplots_adjust(left=0.1, right=0.98, bottom=0.11, top=0.95, hspace=0.28, wspace=0.16)
+
+	for panel_index, (ax, key) in enumerate(zip(axes.flat, ordered_keys)):
+		data = clean_values[key]
+		ax.hist(
+			data,
+			bins=bins,
+			density=True,
+			alpha=0.35,
+			linewidth=1.1,
+			edgecolor=colors[key],
+			histtype="stepfilled",
+			color=colors[key],
+		)
+		kde_curve = _gaussian_kde_curve(data, bins)
+		if kde_curve is not None:
+			x_grid, density = kde_curve
+			ax.plot(x_grid, density, color=colors[key], linewidth=1.5, alpha=0.4)
+		mean_line = ax.axvline(
+			float(np.mean(data)),
+			color=mean_color,
+			linestyle="--",
+			linewidth=1.1,
+			alpha=0.95,
+			label="Mean",
+		)
+		cvar_q = float(np.percentile(data, tail_quantile * 100))
+		cvar_tail = data[data >= cvar_q]
+		cvar_value = float(cvar_tail.mean()) if len(cvar_tail) > 0 else cvar_q
+		tail_line = ax.axvline(
+			cvar_value,
+			color=tail_color,
+			linestyle="-.",
+			linewidth=1.1,
+			alpha=0.95,
+			label=f"CVaR {tail_quantile:.0%}",
+		)
+		ax.set_title(titles[key])
+		if panel_index >= 2:
+			ax.set_xlabel(xlabel)
+		if panel_index % 2 == 0:
+			ax.set_ylabel("Density")
+		ax.grid(True, linestyle=":", alpha=0.35)
+
+		if panel_index == 0:
+			ax.legend([mean_line, tail_line], ["Mean", f"CVaR {tail_quantile:.0%}"], loc="upper left", fontsize=8, frameon=True)
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	fig.tight_layout()
+	fig.savefig(output_path, dpi=180)
+	plt.close(fig)
+
+
+def _select_rows(payload: dict[str, Any], top_k: int) -> tuple[list[dict[str, Any]], list[float]]:
+	rows = payload.get("per_input", [])
+	target_displacements = _load_trajflow_target_displacements()
+	scored: list[tuple[float, dict[str, Any]]] = []
+	for row in rows:
+		dataset_index = int(row["dataset_index"])
+		if dataset_index < 0 or dataset_index >= len(target_displacements):
+			raise ValueError(f"dataset_index {dataset_index} is out of range for TrajFlow data")
+		score = float(target_displacements[dataset_index])
+		scored.append((score, row))
+
+	scored.sort(key=lambda x: x[0], reverse=True)
+	if top_k > 0:
+		scored = scored[:top_k]
+
+	selected_rows = [row for _, row in scored]
+	scores = [score for score, _ in scored]
+	return selected_rows, scores
+
+
+def _values_from_rows(rows: list[dict[str, Any]], field: str) -> dict[str, np.ndarray]:
+	return {
+		"original": np.array([float(r["original"][field]) for r in rows], dtype=float),
+		"noisy_input": np.array([float(r["noisy_input"][field]) for r in rows], dtype=float),
+		"smoothed_k1": np.array([float(r["smoothed_k1"][field]) for r in rows], dtype=float),
+		"smoothed_k2": np.array([float(r["smoothed_k2"][field]) for r in rows], dtype=float),
+	}
+
+
+def _save_json_payload(path: Path, payload: dict[str, Any]) -> None:
+	path.parent.mkdir(parents=True, exist_ok=True)
+	with path.open("w", encoding="utf-8") as f:
+		json.dump(payload, f, indent=2)
+
+
+def plot_trajflow_selected_from_json(
+	metrics_json: str,
+	top_k: int,
+	tail_quantile: float,
+	output_dir: str | None,
+	name_prefix: str,
+	adversarial_titles: bool,
+) -> tuple[Path, Path, Path]:
+	metrics_path = Path(metrics_json)
+	with metrics_path.open("r", encoding="utf-8") as f:
+		payload = json.load(f)
+
+	selected_rows, scores = _select_rows(payload, top_k)
+	if not selected_rows:
+		raise ValueError("No input rows found in metrics JSON.")
+
+	out_dir = Path(output_dir) if output_dir else (metrics_path.parent / "plots_selected")
+	mean_plot = out_dir / f"{name_prefix}_average_distance.pdf"
+	std_plot = out_dir / f"{name_prefix}_std_distance.pdf"
+
+	mean_values = _values_from_rows(selected_rows, "mean_distance")
+	std_values = _values_from_rows(selected_rows, "std_distance")
+
+	_plot_trajflow_metric_histogram(
+		values=mean_values,
+		xlabel="Average error",
+		output_path=mean_plot,
+		tail_quantile=tail_quantile,
+		adversarial_titles=adversarial_titles,
+	)
+	_plot_trajflow_metric_histogram(
+		values=std_values,
+		xlabel="Average error std deviation",
+		output_path=std_plot,
+		tail_quantile=tail_quantile,
+		adversarial_titles=adversarial_titles,
+	)
+
+	summary = {
+		"source_metrics_json": str(metrics_path),
+		"top_k": top_k,
+		"selection_criterion": "target_initial_to_gt_final_distance_descending",
+		"selected_count": len(selected_rows),
+		"selected_indices": [int(r["dataset_index"]) for r in selected_rows],
+		"selection_scores": scores,
+		"artifacts": {
+			"mean_plot": str(mean_plot),
+			"std_plot": str(std_plot),
+		},
+	}
+	summary_path = metrics_path.parent / f"{name_prefix}_selection_summary.json"
+	_save_json_payload(summary_path, summary)
+
+	print(f"selected_count: {len(selected_rows)}")
+	print(f"saved: {mean_plot}")
+	print(f"saved: {std_plot}")
+	print(f"saved: {summary_path}")
+
+	return mean_plot, std_plot, summary_path
+
+
+def plot_trajflow_performance_from_json(
+	metrics_json: str | None = None,
+	top_k: int = 100,
+	tail_quantile: float = 0.90,
+	output_dir: str | None = None,
+) -> tuple[Path, Path, Path]:
+	base = Path(__file__).resolve().parent.parent
+	metrics_path = metrics_json or str(base / "data" / "analysis" / "performance" / "performance_metrics.json")
+	out_dir = output_dir or str(base / "data" / "figures")
+	return plot_trajflow_selected_from_json(
+		metrics_json=metrics_path,
+		top_k=top_k,
+		tail_quantile=tail_quantile,
+		output_dir=out_dir,
+		name_prefix="trajflow_performance_selected",
+		adversarial_titles=False,
+	)
+
+
+def plot_trajflow_adversarial_from_json(
+	metrics_json: str | None = None,
+	top_k: int = 100,
+	tail_quantile: float = 0.90,
+	output_dir: str | None = None,
+) -> tuple[Path, Path, Path]:
+	base = Path(__file__).resolve().parent.parent
+	metrics_path = metrics_json or str(base / "data" / "analysis" / "adversarial" / "adversarial_metrics.json")
+	out_dir = output_dir or str(base / "data" / "figures")
+	return plot_trajflow_selected_from_json(
+		metrics_json=metrics_path,
+		top_k=top_k,
+		tail_quantile=tail_quantile,
+		output_dir=out_dir,
+		name_prefix="trajflow_adversarial_selected",
+		adversarial_titles=True,
+	)
 

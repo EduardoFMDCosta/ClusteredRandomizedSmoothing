@@ -42,26 +42,36 @@ class Setting:
     r: float
 
 
-def load_inputs(batch_size: int | None = None) -> torch.Tensor:
+def load_inputs(
+    batch_size: int | None = None,
+    selected_indices: np.ndarray | None = None,
+) -> torch.Tensor:
     data_file = EXPERIMENTS / "TrajFlowExperiment" / "Data" / "Inputs.npy"
     data = np.load(str(data_file))
 
-    if batch_size is None:
-        batch_size = len(data)
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive")
-    if batch_size > len(data):
-        raise ValueError(f"batch_size={batch_size} exceeds available samples={len(data)}")
+    if selected_indices is not None:
+        if np.any(selected_indices < 0) or np.any(selected_indices >= len(data)):
+            raise ValueError(
+                f"selected_indices contains out-of-range values for dataset of size {len(data)}"
+            )
+        x_input = data[selected_indices, :, :, :2]
+    else:
+        if batch_size is None:
+            batch_size = len(data)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size > len(data):
+            raise ValueError(f"batch_size={batch_size} exceeds available samples={len(data)}")
+        x_input = data[:batch_size, :, :, :2]
 
-    x_input = data[:batch_size, :, :, :2]
     x_input = x_input[:, [1, 0]]  # Put the target agent in index 0.
-    return torch.from_numpy(x_input.reshape(batch_size, -1)).float()
+    return torch.from_numpy(x_input.reshape(len(x_input), -1)).float()
 
 
 def build_settings() -> list[Setting]:
     alphas = [0.0, 0.2, 0.4]
     Ns = [10, 20, 50]
-    max_clusters = [1, 3]
+    max_clusters = [1, 2]
     coverages = [0.7, 0.9]
     sigmas = [0.1, 0.5, 1.0]
 
@@ -95,6 +105,8 @@ def evaluate_setting(
     helper: list[torch.Tensor],
     confidence_num_samples: int,
     confidence_beta: float,
+    dbscan_eps: float,
+    dbscan_min_samples: int,
     seed: int = 0,
 ) -> dict[str, Any]:
     """Run one smoothing/certification setting and return serializable metrics."""
@@ -105,6 +117,8 @@ def evaluate_setting(
         clustering=ClusteringParameters(
             max_num_clusters=setting.max_num_clusters,
             coverage=setting.coverage,
+            dbscan_eps=dbscan_eps,
+            dbscan_min_samples=dbscan_min_samples,
         ),
         confidence=ConfidenceParameters(
             num_samples=confidence_num_samples,
@@ -191,6 +205,12 @@ def save_json(path: Path, payload: Any) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hyperparameter analysis for TrajFlow randomized smoothing.")
     parser.add_argument("--batch-size", type=int, default=None, help="How many input trajectories to evaluate (default: all).")
+    parser.add_argument(
+        "--selected-indices",
+        type=str,
+        default="57,257,276,277,282,327,859",
+        help="Comma-separated dataset indices to analyse. Overrides --batch-size.",
+    )
     parser.add_argument("--sample-batch-size", type=int, default=16, help="Number of samples processed per forward pass (default: 16).")
     parser.add_argument(
         "--input-mode",
@@ -210,6 +230,18 @@ def main() -> None:
         type=float,
         default=1e-5,
         help="beta used in confidence bounds.",
+    )
+    parser.add_argument(
+        "--dbscan-eps",
+        type=float,
+        default=0.5,
+        help="DBSCAN eps for clustering inside smoothing.",
+    )
+    parser.add_argument(
+        "--dbscan-min-samples",
+        type=int,
+        default=500,
+        help="DBSCAN min_samples for clustering inside smoothing.",
     )
     parser.add_argument(
         "--output-dir",
@@ -250,7 +282,11 @@ def main() -> None:
         raise ValueError("shard_index must satisfy 0 <= shard_index < num_shards")
 
     stochastic_fn = TrajFlowMeszarosStochasticFunction()
-    x = load_inputs(batch_size=args.batch_size)
+    selected_indices_arr: np.ndarray | None = None
+    if args.selected_indices is not None and args.selected_indices.strip():
+        values = [v.strip() for v in args.selected_indices.split(",") if v.strip()]
+        selected_indices_arr = np.array([int(v) for v in values], dtype=int)
+    x = load_inputs(batch_size=args.batch_size, selected_indices=selected_indices_arr)
 
     if args.input_mode == "position":
         model_input = x
@@ -310,6 +346,8 @@ def main() -> None:
                     helper=[h_i[batch_start:batch_end] for h_i in helper],
                     confidence_num_samples=args.confidence_num_samples,
                     confidence_beta=args.confidence_beta,
+                    dbscan_eps=args.dbscan_eps,
+                    dbscan_min_samples=args.dbscan_min_samples,
                     seed=seed,
                 )
                 seed_xs.append(result_i["xs"])
