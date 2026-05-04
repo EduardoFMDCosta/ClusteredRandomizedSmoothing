@@ -40,7 +40,6 @@ class VariationalPolicy(nn.Module):
         state_dim: int,
         action_dim: int,
         hidden_dim: int = 128,
-        prior_std: float = 1.0,
         action_scale: float = 1.0,
         num_components: int = 1,
         init_log_std: float = -1.2,
@@ -49,7 +48,6 @@ class VariationalPolicy(nn.Module):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
-        self.prior_std = prior_std
         self.action_scale = float(action_scale)
         self.num_components = int(num_components)
         assert self.num_components >= 1
@@ -135,7 +133,7 @@ class VariationalPolicy(nn.Module):
         log_prob_raw = torch.logsumexp(log_mix_weights + comp_log_prob, dim=-1)
         return log_prob_raw - self._tanh_correction(raw)
 
-    def sample(self, state: torch.Tensor):
+    def sample(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample a tanh-squashed action. Returns (action, raw, mixture_log_prob)."""
         means, log_stds, log_mix_w = self.distribution_params(state)
         stds = log_stds.exp()
@@ -211,14 +209,12 @@ class ValueNetwork(nn.Module):
 
 @dataclass
 class TrainConfig:
-    env_type: str = "uav_3d"
     episodes: int = 200000
     horizon: int = 64
     gamma: float = 0.99
     gae_lambda: float = 0.95
     lr: float = 3e-4
     hidden_dim: int = 128
-    prior_std: float = 1.0
     num_components: int = 2
     init_log_std: float = -1.2
     action_scale: float = 4.0
@@ -240,7 +236,7 @@ class TrainConfig:
     metrics_path: str = ""
 
 
-def normalize_state(state: np.ndarray, env_type: str = "uav_3d") -> np.ndarray:
+def normalize_state(state: np.ndarray) -> np.ndarray:
     """Normalize UAV3D state: [x_pos, x_vel, y_pos, y_vel, z_pos, z_vel]."""
     return np.array(
         [
@@ -434,27 +430,6 @@ def ppo_update(
         "clip_frac": float(np.mean(clipfracs)),
     }
 
-
-def deterministic_action(
-    policy: VariationalPolicy,
-    state_tensor: torch.Tensor,
-    mc_samples: int = 1,
-    env_type: str = "uav_3d",
-    action_scale: float | None = None,
-) -> np.ndarray:
-    """Deterministic action (mean of tanh-squashed distribution).
-
-    MC samples average only matter when ``state_dependent_std`` is True
-    (to integrate over sampled weights); here the network is deterministic,
-    so we just return ``action_scale * tanh(mean)``.
-    """
-    scale = float(action_scale if action_scale is not None else policy.action_scale)
-    with torch.no_grad():
-        mean, _ = policy(state_tensor)
-        action = torch.tanh(mean) * scale
-    return action.squeeze(0).cpu().numpy().astype(np.float32)
-
-
 def evaluate_policy(
     env: UAV3D,
     policy: VariationalPolicy,
@@ -471,9 +446,7 @@ def evaluate_policy(
         got_goal = 0
         for _ in range(horizon):
             s_t = torch.from_numpy(normalize_state(state)).unsqueeze(0)
-            with torch.no_grad():
-                mean, _ = policy(s_t)
-                action = torch.tanh(mean) * policy.action_scale
+            action, _, _ = policy.sample(s_t)
             a = action.squeeze(0).cpu().numpy().astype(np.float32)
             _, reward, state = env.step(a)
             total += float(reward)
@@ -510,7 +483,6 @@ def train(config: TrainConfig) -> tuple[VariationalPolicy, dict[str, list[float]
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=config.hidden_dim,
-        prior_std=config.prior_std,
         action_scale=config.action_scale,
         num_components=config.num_components,
         init_log_std=config.init_log_std,
@@ -610,14 +582,12 @@ def train(config: TrainConfig) -> tuple[VariationalPolicy, dict[str, list[float]
 
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser(description="PPO training for policy on UAV3D benchmark.")
-    parser.add_argument("--env-type", type=str, default="uav_3d", choices=["uav_3d"])
     parser.add_argument("--episodes", type=int, default=200000)
     parser.add_argument("--horizon", type=int, default=64)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--prior-std", type=float, default=1.0)
     parser.add_argument("--num-components", type=int, default=2,
                         help="Number of Gaussian components in the policy mixture.")
     parser.add_argument("--init-log-std", type=float, default=-1.2)
@@ -646,14 +616,12 @@ def parse_args() -> TrainConfig:
         metrics_path = "experiments/uav_3d/training_metrics.json"
 
     return TrainConfig(
-        env_type=args.env_type,
         episodes=args.episodes,
         horizon=args.horizon,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         lr=args.lr,
         hidden_dim=args.hidden_dim,
-        prior_std=args.prior_std,
         num_components=args.num_components,
         init_log_std=args.init_log_std,
         action_scale=args.action_scale,
@@ -681,11 +649,9 @@ def main() -> None:
     out_path = "experiments/uav_3d/policy.pt"
     checkpoint: dict[str, Any] = {
         "model_state_dict": policy.state_dict(),
-        "env_type": "uav_3d",
         "state_dim": policy.state_dim,
         "action_dim": policy.action_dim,
         "hidden_dim": config.hidden_dim,
-        "prior_std": config.prior_std,
         "num_components": config.num_components,
         "action_scale": config.action_scale,
     }

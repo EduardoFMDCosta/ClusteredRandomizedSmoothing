@@ -78,20 +78,15 @@ def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]
     if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
         raise ValueError("Expected checkpoint dict with model_state_dict (legacy checkpoints are not supported).")
 
-    required_fields = ["state_dim", "action_dim", "hidden_dim", "prior_std", "env_type", "action_scale"]
+    required_fields = ["state_dim", "action_dim", "hidden_dim", "action_scale"]
     missing_fields = [field for field in required_fields if field not in checkpoint]
     if missing_fields:
         raise ValueError(f"Checkpoint missing required fields: {missing_fields}")
-
-    env_type = str(checkpoint["env_type"])
-    if env_type != "uav_3d":
-        raise ValueError(f"Checkpoint env_type is {env_type}, expected uav_3d")
 
     model_state_dict = checkpoint["model_state_dict"]
     state_dim = int(checkpoint["state_dim"])
     action_dim = int(checkpoint["action_dim"])
     hidden_dim = int(checkpoint["hidden_dim"])
-    prior_std = float(checkpoint["prior_std"])
     action_scale = float(checkpoint["action_scale"])
     num_components = int(checkpoint.get("num_components", 1))
 
@@ -99,7 +94,6 @@ def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=hidden_dim,
-        prior_std=prior_std,
         action_scale=action_scale,
         num_components=num_components,
     )
