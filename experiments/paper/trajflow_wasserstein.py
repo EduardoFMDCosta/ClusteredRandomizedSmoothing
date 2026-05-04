@@ -243,7 +243,7 @@ def main() -> None:
     parser.add_argument(
         "--distribution-samples",
         type=int,
-        default=500,
+        default=150,
         help="Number of samples drawn from each distribution per input.",
     )
     parser.add_argument(
@@ -327,7 +327,7 @@ def main() -> None:
     parser.add_argument(
         "--dbscan-min-samples",
         type=int,
-        default=100,
+        default=35,
         help="DBSCAN min_samples for clustering inside smoothing.",
     )
     parser.add_argument(
@@ -339,7 +339,7 @@ def main() -> None:
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
-        default=1000,
+        default=350,
         help="num_samples for confidence parameter used in smoothing setup.",
     )
     parser.add_argument(

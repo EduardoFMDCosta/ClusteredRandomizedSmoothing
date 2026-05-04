@@ -111,6 +111,8 @@ class TrajFlowMeszaros(StochasticFunction):
             model = trajflow_meszaros()
 
         self.model = model
+        if hasattr(self.model, "eval"):
+            self.model.eval()
         self.dt = self.model.dt
         self.d_ctrl_max = torch.tensor([2.0, 0.05], device=self.model.device)  # max acceleration and curvature control
 
@@ -177,7 +179,8 @@ class TrajFlowMeszaros(StochasticFunction):
             x = self.ctrl_to_pos(x, start=h)
 
         model_device = getattr(self.model, "device", x.device)
-        y = self.model(x.to(model_device).contiguous())
+        with torch.inference_mode():
+            y = self.model(x.to(model_device).contiguous())
         return y.to(device=x.device, dtype=x.dtype)
 
 
