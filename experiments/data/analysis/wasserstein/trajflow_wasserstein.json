@@ -1,0 +1,41 @@
+{
+  "config": {
+    "selected_indices": [
+      603
+    ],
+    "distribution_samples": 8,
+    "ot_method": "sinkhorn",
+    "sinkhorn_reg": 0.2,
+    "sigma": 1.0,
+    "smoothing_N": 2,
+    "alpha": 0.35,
+    "coverage": 0.8,
+    "cluster_strategy": "behavior_split",
+    "input_mode": "control",
+    "behavior_stay_radius": 1.0,
+    "behavior_min_down": 0.5,
+    "behavior_min_left": 0.0,
+    "dbscan_eps": 0.5,
+    "dbscan_min_samples": 500,
+    "noise_sub_batch_size": 2,
+    "confidence_num_samples": 10,
+    "input_batch_size": 1,
+    "seed": 0,
+    "fixed_index_order_file": "C:\\Git\\RandomizedSmoothing\\experiments\\data\\fixed_random_index_order.json",
+    "hist_bins": 6,
+    "histogram_path": "experiments\\data\\figures\\trajflow_wasserstein_histograms.pdf"
+  },
+  "aggregate": {
+    "mean_w2_noisy_vs_k1": 1.3454183632984695,
+    "std_w2_noisy_vs_k1": 0.0,
+    "mean_w2_noisy_vs_k2": 3.737217035740901,
+    "std_w2_noisy_vs_k2": 0.0
+  },
+  "per_input": [
+    {
+      "dataset_index": 603,
+      "w2_noisy_vs_k1": 1.3454183632984695,
+      "w2_noisy_vs_k2": 3.737217035740901
+    }
+  ]
+}
