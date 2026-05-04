@@ -145,13 +145,17 @@ def plot_single_smoother_distribution(
 		region_order = np.argsort(region_centers_i)
 
 		if k_regions >= 2:
+			# Local palette tuned to contrast with both smoother colours
+			# (red ``#E31A1C`` and blue ``#1F78B4``) and to read clearly as
+			# step outlines over a filled smoothed-predictor histogram.
+			original_palette = ("#222222", "#D55E00", "#009E73", "#CC79A7", "#9467BD")
 			region_distances = _to_numpy(region.distance(outputs[i])[i])
 			assignments = np.argmin(region_distances, axis=-1)
 			for rank, region_idx in enumerate(region_order):
 				cluster_mask = assignments == region_idx
 				if not np.any(cluster_mask):
 					continue
-				cluster_color = CLUSTER_PALETTE[rank % len(CLUSTER_PALETTE)]
+				cluster_color = original_palette[rank % len(original_palette)]
 				n_cluster = int(cluster_mask.sum())
 				# Per-cluster weights ``1 / (n_total * bin_width)`` give the
 				# same scale as ``density=True`` over the full data, so the
@@ -161,10 +165,9 @@ def plot_single_smoother_distribution(
 					bins=shared_bins,
 					density=False,
 					weights=np.full(n_cluster, 1.0 / (n_total * bin_width)),
-					histtype="stepfilled",
-					linewidth=1.6,
+					histtype="step",
+					linewidth=2.0,
 					edgecolor=cluster_color,
-					facecolor=to_rgba(cluster_color, alpha=0.25),
 					label=f"Original model (cluster {rank + 1})",
 				)
 		else:
@@ -207,6 +210,9 @@ def plot_single_smoother_distribution(
 		legend_extra_labels: list[str] = ["Robustness region"]
 
 		if k_regions >= 2:
+			# Explicit (on, off) dash pattern: matplotlib's built-in ``"--"``
+			# scales with linewidth and reads as nearly solid at width 1.0.
+			split_dashes = (0, (5, 3))
 			for c_idx in range(len(region_order) - 1):
 				left_idx = int(region_order[c_idx])
 				right_idx = int(region_order[c_idx + 1])
@@ -216,13 +222,13 @@ def plot_single_smoother_distribution(
 				ax.axvline(
 					split_x,
 					color=split_color,
-					linestyle="-",
-					linewidth=2.0,
+					linestyle=split_dashes,
+					linewidth=1.0,
 					alpha=0.95,
 					zorder=5,
 				)
 			legend_extras.append(
-				plt.Line2D([0], [0], color=split_color, linewidth=2.0, label="Voronoi cell split"),
+				plt.Line2D([0], [0], color=split_color, linewidth=1.0, linestyle=split_dashes, label="Voronoi cell split"),
 			)
 			legend_extra_labels.append("Voronoi cell split")
 
