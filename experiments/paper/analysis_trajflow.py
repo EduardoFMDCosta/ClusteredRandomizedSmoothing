@@ -222,7 +222,7 @@ def main() -> None:
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
-        default=5000,
+        default=1000,
         help="num_samples used in confidence (Clopper-Pearson) estimation.",
     )
     parser.add_argument(
@@ -240,7 +240,7 @@ def main() -> None:
     parser.add_argument(
         "--dbscan-min-samples",
         type=int,
-        default=500,
+        default=100,
         help="DBSCAN min_samples for clustering inside smoothing.",
     )
     parser.add_argument(

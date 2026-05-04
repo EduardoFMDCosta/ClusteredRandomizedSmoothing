@@ -63,11 +63,11 @@ def main():
                         help="Turn mode threshold on axis x1: y1 - y1_init <= -min_left.")
     parser.add_argument("--dbscan-eps", type=float, default=0.5,
                         help="DBSCAN eps used by the smoothing clusterer.")
-    parser.add_argument("--dbscan-min-samples", type=int, default=500,
+    parser.add_argument("--dbscan-min-samples", type=int, default=100,
                         help="DBSCAN min_samples used by the smoothing clusterer.")
     parser.add_argument("--num-plot-samples", type=int, default=500,
                         help="Monte Carlo samples used for plotting distributions.")
-    parser.add_argument("--confidence-num-samples", type=int, default=5000,
+    parser.add_argument("--confidence-num-samples", type=int, default=1000,
                         help="num_samples used in confidence (Clopper-Pearson) estimation.")
     args = parser.parse_args()
 
