@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import time
@@ -29,7 +30,6 @@ from randomized_smoothing.dataclasses import (
 )
 from randomized_smoothing.distributions import MultivariateGaussian
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-from plotting import plot_trajflow_performance_from_json
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
 
 
@@ -78,20 +78,11 @@ def _finite_target_mask(outputs_gt: np.ndarray) -> np.ndarray:
     return np.isfinite(outputs_gt[:, 0, -1, :]).all(axis=1)
 
 
-def _prepare_inputs_and_targets(selected_indices: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
-    inputs, outputs_gt = _load_inputs_and_outputs()
-    return _prepare_inputs_and_targets_from_arrays(
-        selected_indices=selected_indices,
-        inputs=inputs,
-        outputs_gt=outputs_gt,
-    )
-
-
-def _prepare_inputs_and_targets_from_arrays(
+def _prepare_inputs_from_arrays(
     selected_indices: np.ndarray,
     inputs: np.ndarray,
     outputs_gt: np.ndarray,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     valid_mask = _finite_target_mask(outputs_gt)
 
     num_samples = inputs.shape[0]
@@ -113,21 +104,17 @@ def _prepare_inputs_and_targets_from_arrays(
             f"{invalid_selected.tolist()}"
         )
 
-    # Keep only x,y channels for TrajFlow input and put target agent at index 0.
     x_input = inputs[selected_indices, :, :, :2]
     x_input = x_input[:, [1, 0]]
     x = torch.from_numpy(x_input.reshape(len(selected_indices), -1)).float()
+    if not torch.isfinite(x).all():
+        raise ValueError("Encountered non-finite input values after selection")
 
-    # GT target is final (x,y) point of the tracked/target agent.
-    y_target = torch.from_numpy(outputs_gt[selected_indices, 0, -1, :]).float()
-    if not torch.isfinite(y_target).all():
-        raise ValueError("Encountered non-finite GT targets after selection")
-
-    return x, y_target
+    return x
 
 
 def _choose_indices(
-    valid_indices: np.ndarray,
+    fixed_random_order: np.ndarray,
     num_inputs: int,
     selected_indices_text: str | None,
 ) -> np.ndarray:
@@ -135,51 +122,29 @@ def _choose_indices(
         return _parse_indices(selected_indices_text)
 
     if num_inputs <= 0:
-        return valid_indices.astype(int)
-    if num_inputs > len(valid_indices):
+        return fixed_random_order.astype(int)
+    if num_inputs > len(fixed_random_order):
         raise ValueError(
-            f"num-inputs={num_inputs} exceeds available valid GT samples={len(valid_indices)}"
+            f"num-inputs={num_inputs} exceeds available valid GT samples={len(fixed_random_order)}"
         )
-    return valid_indices[:num_inputs].astype(int)
+    return fixed_random_order[:num_inputs].astype(int)
 
 
-def _sample_original(
-    stochastic_fn: TrajFlowMeszarosStochasticFunction,
-    model_input: torch.Tensor,
-    helper: list[torch.Tensor],
-    num_samples: int,
-) -> torch.Tensor:
-    x_rep = model_input.unsqueeze(1).expand(-1, num_samples, -1)
-    if helper:
-        helper_rep = [h_i.unsqueeze(1).expand(-1, num_samples, -1) for h_i in helper]
-        return stochastic_fn(x_rep, h=helper_rep)
-    return stochastic_fn(x_rep)
-
-
-def _compute_distance_stats(samples: torch.Tensor, y_target: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    if samples.ndim != 3 or samples.shape[-1] != 2:
-        raise ValueError(
-            "Expected samples with shape (nx, num_samples, 2), "
-            f"got {tuple(samples.shape)}"
-        )
-    if y_target.ndim != 2 or y_target.shape[-1] != 2:
-        raise ValueError(
-            "Expected y_target with shape (nx, 2), "
-            f"got {tuple(y_target.shape)}"
-        )
-
-    if not torch.isfinite(samples).all():
-        raise ValueError("Encountered non-finite predictor samples")
-    if not torch.isfinite(y_target).all():
-        raise ValueError("Encountered non-finite GT targets")
-
-    distances = torch.linalg.norm(samples - y_target.unsqueeze(1), dim=-1)
-    if not torch.isfinite(distances).all():
-        raise ValueError("Encountered non-finite distances")
-
-    mean_distance = distances.mean(dim=1).detach().cpu().numpy()
-    std_distance = distances.std(dim=1, unbiased=False).detach().cpu().numpy()
-    return mean_distance, std_distance
+def _ask_num_indices(prompt: str, available: int) -> int:
+    while True:
+        answer = input(prompt).strip()
+        try:
+            value = int(answer)
+        except ValueError:
+            print("Please enter an integer.")
+            continue
+        if value < 0:
+            print("Please enter a non-negative integer.")
+            continue
+        if value > available:
+            print(f"Please enter a value between 0 and {available}.")
+            continue
+        return value
 
 
 def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents: int = 2) -> torch.Tensor:
@@ -187,6 +152,151 @@ def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents
     num_input_timesteps = x_positions.shape[1] // (2 * num_input_agents)
     x_traj = x_positions.reshape(nx, num_input_agents, num_input_timesteps, 2)
     return x_traj[:, 0, 0, :]
+
+
+def _slice_helper(helper: list[torch.Tensor], idx: int) -> list[torch.Tensor]:
+    if not helper:
+        return []
+    return [h[idx: idx + 1] for h in helper]
+
+
+def _random_sphere_points(
+    num_points: int,
+    dimension: int,
+    radius: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    vec = torch.randn((num_points, dimension), device=device, dtype=dtype)
+    vec = vec / torch.linalg.norm(vec, dim=1, keepdim=True).clamp(min=1e-12)
+    return radius * vec
+
+
+def _find_variance_maximizing_delta(
+    stochastic_fn: TrajFlowMeszarosStochasticFunction,
+    model_input: torch.Tensor,
+    helper: list[torch.Tensor],
+    sigma: float,
+    radius: float,
+    num_candidates: int,
+    num_samples: int,
+) -> torch.Tensor:
+    if radius <= 0.0:
+        return torch.zeros_like(model_input)
+    if num_candidates <= 0:
+        raise ValueError("attack-num-candidates must be positive")
+    if num_samples <= 0:
+        raise ValueError("attack-num-samples must be positive")
+
+    dimension = model_input.shape[-1]
+    base_noise = MultivariateGaussian(
+        mean=torch.zeros(dimension, dtype=model_input.dtype, device=model_input.device),
+        cov=(sigma ** 2) * torch.eye(dimension, dtype=model_input.dtype, device=model_input.device),
+    )
+
+    delta = torch.zeros_like(model_input)
+    for i in range(model_input.shape[0]):
+        x_i = model_input[i: i + 1]
+        h_i = _slice_helper(helper, i)
+
+        candidates = _random_sphere_points(
+            num_points=num_candidates,
+            dimension=dimension,
+            radius=radius,
+            device=model_input.device,
+            dtype=model_input.dtype,
+        )
+
+        best_score = float("-inf")
+        best_delta = candidates[0]
+        for c in range(num_candidates):
+            delta_c = candidates[c: c + 1]
+            x_adv = x_i + delta_c
+            samples = stochastic_fn.sample_from_noisy_inputs(
+                x=x_adv,
+                smoothing_distribution=base_noise,
+                num_samples=num_samples,
+                h=h_i,
+            )
+            # Score = trace of empirical covariance of noisy outputs.
+            score = float(samples.var(dim=1, unbiased=False).sum().item())
+            if score > best_score:
+                best_score = score
+                best_delta = delta_c.squeeze(0)
+
+        delta[i] = best_delta
+
+    return delta
+
+
+def _monte_carlo_with_fixed_cluster(
+    smoother: GaussianAlphaTrimmingSmoothing,
+    x_eval: torch.Tensor,
+    helper_eval: list[torch.Tensor],
+    num_simulations: int,
+) -> torch.Tensor:
+    if num_simulations <= 0:
+        raise ValueError("num_simulations must be positive")
+
+    nx = x_eval.shape[0]
+    num_samples = smoother.parameters.smoothing.N
+    total_samples = num_samples * num_simulations
+
+    outputs = smoother.stochastic_function.sample_from_noisy_inputs(
+        x=x_eval,
+        smoothing_distribution=smoother.smoothing_distribution,
+        num_samples=total_samples,
+        h=helper_eval,
+        noise_sub_batch_size=smoother.parameters.runtime.noise_sub_batch_size,
+    )
+
+    output_dim = outputs.shape[-1]
+    outputs = outputs.view(nx, num_simulations, num_samples, output_dim)
+
+    cluster = smoother.cluster
+    centroids = cluster.centroids
+    probs_partition = cluster.probs_partition
+    num_clusters = cluster.num_clusters
+
+    diff = outputs.unsqueeze(3) - centroids.unsqueeze(1).unsqueeze(1)
+    squared_distances = (diff * diff).sum(dim=-1)
+    assignments = squared_distances.argmin(dim=3)
+
+    trimmed_mean = torch.zeros(
+        (nx, num_simulations, num_clusters, output_dim),
+        dtype=outputs.dtype,
+        device=outputs.device,
+    )
+    positions = torch.arange(num_samples, device=outputs.device).view(1, 1, num_samples, 1)
+    inf = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
+    zero = torch.zeros(1, device=outputs.device, dtype=outputs.dtype)
+
+    for j in range(num_clusters):
+        cluster_mask = assignments == j
+        cluster_values = torch.where(cluster_mask.unsqueeze(-1), outputs, inf)
+        sorted_cluster_values = cluster_values.sort(dim=2).values
+
+        counts = cluster_mask.sum(dim=2)
+        left = torch.floor(smoother.parameters.smoothing.alpha * counts.to(outputs.dtype)).to(torch.long)
+        right = counts - left
+
+        in_trimmed_core = (positions >= left.view(nx, num_simulations, 1, 1)) & (
+            positions < right.view(nx, num_simulations, 1, 1)
+        )
+        trimmed_sum = torch.where(in_trimmed_core, sorted_cluster_values, zero).sum(dim=2)
+        trimmed_count = (right - left).to(outputs.dtype).view(nx, num_simulations, 1)
+
+        cluster_trimmed_mean = trimmed_sum / trimmed_count.clamp(min=1)
+        has_trimmed_points = trimmed_count.squeeze(-1) > 0
+        trimmed_mean[:, :, j, :] = torch.where(
+            has_trimmed_points.unsqueeze(-1),
+            cluster_trimmed_mean,
+            centroids[:, j, :].unsqueeze(1),
+        )
+
+    sampled_cluster = torch.multinomial(probs_partition, num_samples=num_simulations, replacement=True)
+    gather_idx = sampled_cluster.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 1, output_dim)
+    return trimmed_mean.gather(dim=2, index=gather_idx).squeeze(2)
 
 
 def _build_parameters(args: argparse.Namespace, max_num_clusters: int) -> Parameters:
@@ -207,33 +317,199 @@ def _build_parameters(args: argparse.Namespace, max_num_clusters: int) -> Parame
     )
 
 
-def _compute_batch_metrics(
+def _save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object in {path}")
+    return payload
+
+
+def _build_fixed_random_order(valid_indices: np.ndarray, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(valid_indices)
+    return order.astype(int)
+
+
+def _load_or_create_fixed_random_order(
+    path: Path,
+    valid_indices: np.ndarray,
+    seed: int,
+) -> np.ndarray:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        payload = _load_json(path)
+        ordered_indices = payload.get("ordered_indices", None)
+        if not isinstance(ordered_indices, list):
+            raise ValueError(f"Invalid ordered_indices in {path}")
+
+        order = np.array([int(v) for v in ordered_indices], dtype=int)
+        valid_set = set(int(v) for v in valid_indices.tolist())
+        order_set = set(int(v) for v in order.tolist())
+
+        if len(order) == len(valid_indices) and order_set == valid_set:
+            return order
+
+    order = _build_fixed_random_order(valid_indices=valid_indices, seed=seed)
+    payload = {
+        "seed": int(seed),
+        "num_valid_indices": int(len(valid_indices)),
+        "ordered_indices": order.tolist(),
+    }
+    _save_json(path, payload)
+    return order
+
+
+def _save_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "",
+                "Clustered alpha-smoothing",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "alpha-smoothing",
+                "",
+                "",
+                "",
+            ]
+        )
+        writer.writerow(
+            [
+                "x_index",
+                "set_containment_k2",
+                "mc_set_containment_k2",
+                "total_area_k2",
+                "bound_region_1_k2",
+                "bound_region_2_k2",
+                "total_bound_k2",
+                "set_containment_k1",
+                "mc_set_containment_k1",
+                "total_area_k1",
+                "total_bound_k1",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["x_index"],
+                    row["set_containment_k2"],
+                    row["mc_set_containment_k2"],
+                    row["total_area_k2"],
+                    row["bound_region_1_k2"],
+                    row["bound_region_2_k2"],
+                    row["total_bound_k2"],
+                    row["set_containment_k1"],
+                    row["mc_set_containment_k1"],
+                    row["total_area_k1"],
+                    row["total_bound_k1"],
+                ]
+            )
+
+
+def _format_float(value: float) -> str:
+    if np.isnan(value):
+        return "nan"
+    return f"{value:.6f}"
+
+
+def _print_table(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        print("No rows to print.")
+        return
+
+    group_header = [
+        "",
+        "Clustered alpha-smoothing",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "alpha-smoothing",
+        "",
+        "",
+        "",
+    ]
+    header = [
+        "x_index",
+        "set_contain_k2",
+        "mc_set_contain_k2",
+        "total_area_k2",
+        "bound_r1_k2",
+        "bound_r2_k2",
+        "total_k2",
+        "set_contain_k1",
+        "mc_set_contain_k1",
+        "total_area_k1",
+        "total_k1",
+    ]
+    body = []
+    for row in rows:
+        body.append(
+            [
+                str(row["x_index"]),
+                _format_float(float(row["set_containment_k2"])),
+                _format_float(float(row["mc_set_containment_k2"])),
+                _format_float(float(row["total_area_k2"])),
+                _format_float(float(row["bound_region_1_k2"])),
+                _format_float(float(row["bound_region_2_k2"])),
+                _format_float(float(row["total_bound_k2"])),
+                _format_float(float(row["set_containment_k1"])),
+                _format_float(float(row["mc_set_containment_k1"])),
+                _format_float(float(row["total_area_k1"])),
+                _format_float(float(row["total_bound_k1"])),
+            ]
+        )
+
+    widths = [
+        max(len(header[i]), len(group_header[i]), *(len(r[i]) for r in body))
+        for i in range(len(header))
+    ]
+
+    def _fmt(values: list[str]) -> str:
+        return " | ".join(v.ljust(widths[i]) for i, v in enumerate(values))
+
+    print(_fmt(group_header))
+    print(_fmt(header))
+    print("-+-".join("-" * w for w in widths))
+    for values in body:
+        print(_fmt(values))
+
+
+def _compute_batch_table_rows(
     args: argparse.Namespace,
     stochastic_fn: TrajFlowMeszarosStochasticFunction,
     batch_indices: np.ndarray,
     inputs: np.ndarray,
     outputs_gt: np.ndarray,
-) -> dict[str, dict[str, np.ndarray]]:
-    x, y_target = _prepare_inputs_and_targets_from_arrays(
+) -> list[dict[str, Any]]:
+    x_position = _prepare_inputs_from_arrays(
         selected_indices=batch_indices,
         inputs=inputs,
         outputs_gt=outputs_gt,
     )
-    cluster_anchor = _extract_target_initial_position(x)
+    cluster_anchor = _extract_target_initial_position(x_position)
 
     if args.input_mode == "position":
-        model_input = x
+        model_input = x_position
         helper: list[torch.Tensor] = []
     else:
-        model_input, helper = stochastic_fn.pos_to_ctrl(x)
+        model_input, helper = stochastic_fn.pos_to_ctrl(x_position)
 
-    base_noise = MultivariateGaussian(
-        mean=torch.zeros(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
-        cov=(args.sigma ** 2)
-        * torch.eye(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
-    )
-
-    smoother_single = GaussianAlphaTrimmingSmoothing(
+    smoother_k1 = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
         sigma=args.sigma,
@@ -241,7 +517,7 @@ def _compute_batch_metrics(
         h=helper,
         cluster_anchor=cluster_anchor,
     )
-    smoother_multi = GaussianAlphaTrimmingSmoothing(
+    smoother_k2 = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
         sigma=args.sigma,
@@ -250,102 +526,124 @@ def _compute_batch_metrics(
         cluster_anchor=cluster_anchor,
     )
 
-    samples_original = _sample_original(
-        stochastic_fn=stochastic_fn,
-        model_input=model_input,
-        helper=helper,
-        num_samples=args.metric_samples,
+    radius = torch.full(
+        (model_input.shape[0], 1),
+        fill_value=args.certification_radius,
+        dtype=model_input.dtype,
+        device=model_input.device,
     )
-    samples_noisy = stochastic_fn.sample_from_noisy_inputs(
-        x=model_input,
+    cert_k2 = smoother_k2.robust_certification(radius=radius)
+    cert_k1 = smoother_k1.robust_certification(radius=radius)
+
+    # Uniform flow: keep clusters/certification from clean x, then evaluate
+    # containment metrics on attacked x + delta (delta=0 when radius=0).
+    delta = torch.zeros_like(model_input)
+    if args.certification_radius > 0.0:
+        delta = _find_variance_maximizing_delta(
+            stochastic_fn=stochastic_fn,
+            model_input=model_input,
+            helper=helper,
+            sigma=args.sigma,
+            radius=args.certification_radius,
+            num_candidates=args.attack_num_candidates,
+            num_samples=args.attack_num_samples,
+        )
+    model_input_eval = model_input + delta
+
+    base_noise = MultivariateGaussian(
+        mean=torch.zeros(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
+        cov=(args.sigma ** 2)
+        * torch.eye(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
+    )
+
+    noisy_samples = stochastic_fn.sample_from_noisy_inputs(
+        x=model_input_eval,
         smoothing_distribution=base_noise,
-        num_samples=args.metric_samples,
+        num_samples=args.containment_samples,
         h=helper,
     )
-    samples_smoothed_k1 = smoother_single.monte_carlo(num_simulations=args.metric_samples)
-    samples_smoothed_k2 = smoother_multi.monte_carlo(num_simulations=args.metric_samples)
+    noisy_inside_k2 = smoother_k2.regions.contains(noisy_samples).any(dim=-1)
+    noisy_inside_k1 = smoother_k1.regions.contains(noisy_samples).any(dim=-1)
+    containment_k2 = noisy_inside_k2.float().mean(dim=1)
+    containment_k1 = noisy_inside_k1.float().mean(dim=1)
 
-    metrics: dict[str, dict[str, np.ndarray]] = {
-        "original": {},
-        "noisy_input": {},
-        "smoothed_k1": {},
-        "smoothed_k2": {},
-    }
-    metrics["original"]["mean"], metrics["original"]["std"] = _compute_distance_stats(samples_original, y_target)
-    metrics["noisy_input"]["mean"], metrics["noisy_input"]["std"] = _compute_distance_stats(samples_noisy, y_target)
-    metrics["smoothed_k1"]["mean"], metrics["smoothed_k1"]["std"] = _compute_distance_stats(samples_smoothed_k1, y_target)
-    metrics["smoothed_k2"]["mean"], metrics["smoothed_k2"]["std"] = _compute_distance_stats(samples_smoothed_k2, y_target)
-    return metrics
+    mc_samples_k2 = _monte_carlo_with_fixed_cluster(
+        smoother=smoother_k2,
+        x_eval=model_input_eval,
+        helper_eval=helper,
+        num_simulations=args.mc_containment_samples,
+    )
+    mc_samples_k1 = _monte_carlo_with_fixed_cluster(
+        smoother=smoother_k1,
+        x_eval=model_input_eval,
+        helper_eval=helper,
+        num_simulations=args.mc_containment_samples,
+    )
+    mc_inside_k2 = smoother_k2.regions.contains(mc_samples_k2).any(dim=-1)
+    mc_inside_k1 = smoother_k1.regions.contains(mc_samples_k1).any(dim=-1)
+    mc_containment_k2 = mc_inside_k2.float().mean(dim=1)
+    mc_containment_k1 = mc_inside_k1.float().mean(dim=1)
 
+    cert_k2_probs = cert_k2.probs.detach().cpu()
+    cert_k2_total = cert_k2.total_probs.detach().cpu()
+    cert_k1_total = cert_k1.total_probs.detach().cpu()
+    k2_used = smoother_k2.cluster.k_per_row.detach().cpu().to(torch.int64)
+    k1_used = smoother_k1.cluster.k_per_row.detach().cpu().to(torch.int64)
 
-def _save_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    k2_volume = smoother_k2.regions.volume.detach().cpu().to(torch.float64)
+    k1_volume = smoother_k1.regions.volume.detach().cpu().to(torch.float64)
+    k2_total_area = torch.zeros(k2_volume.shape[0], dtype=torch.float64)
+    k1_total_area = torch.zeros(k1_volume.shape[0], dtype=torch.float64)
+    for i in range(k2_volume.shape[0]):
+        k2_total_area[i] = k2_volume[i, : int(k2_used[i].item())].sum()
+        k1_total_area[i] = k1_volume[i, : int(k1_used[i].item())].sum()
 
+    rows: list[dict[str, Any]] = []
+    containment_k2_cpu = containment_k2.detach().cpu().numpy()
+    containment_k1_cpu = containment_k1.detach().cpu().numpy()
+    mc_containment_k2_cpu = mc_containment_k2.detach().cpu().numpy()
+    mc_containment_k1_cpu = mc_containment_k1.detach().cpu().numpy()
+    k2_total_area_cpu = k2_total_area.numpy()
+    k1_total_area_cpu = k1_total_area.numpy()
 
-def _compute_tail_stats_table(
-    metrics: dict[str, dict[str, np.ndarray]],
-) -> dict[str, dict[str, dict[str, float]]]:
-    quantiles = (90, 95)
-    table: dict[str, dict[str, dict[str, float]]] = {}
-    for metric_field, key_label in (("mean", "mean_distance"), ("std", "std_distance")):
-        table[key_label] = {}
-        for name, arrays in metrics.items():
-            arr = arrays[metric_field]
-            row: dict[str, float] = {"mean": float(arr.mean()), "max": float(arr.max())}
-            for pct in quantiles:
-                threshold = float(np.percentile(arr, pct))
-                tail = arr[arr >= threshold]
-                row[f"q{pct}"] = threshold
-                row[f"cvar{pct}"] = float(tail.mean()) if len(tail) > 0 else threshold
-            table[key_label][name] = row
-    return table
+    for i, dataset_idx in enumerate(batch_indices.tolist()):
+        row: dict[str, Any] = {
+            "x_index": int(dataset_idx),
+            "set_containment_k2": float(containment_k2_cpu[i]),
+            "mc_set_containment_k2": float(mc_containment_k2_cpu[i]),
+            "total_area_k2": float(k2_total_area_cpu[i]),
+            "bound_region_1_k2": float("nan"),
+            "bound_region_2_k2": float("nan"),
+            "total_bound_k2": float(cert_k2_total[i].item()),
+            "set_containment_k1": float(containment_k1_cpu[i]),
+            "mc_set_containment_k1": float(mc_containment_k1_cpu[i]),
+            "total_area_k1": float(k1_total_area_cpu[i]),
+            "total_bound_k1": float(cert_k1_total[i].item()),
+        }
+        if int(k2_used[i].item()) >= 1 and cert_k2_probs.shape[1] >= 1:
+            row["bound_region_1_k2"] = float(cert_k2_probs[i, 0].item())
+        if int(k2_used[i].item()) >= 2 and cert_k2_probs.shape[1] >= 2:
+            row["bound_region_2_k2"] = float(cert_k2_probs[i, 1].item())
+        rows.append(row)
 
-
-def _ask_yes_no(prompt: str) -> bool:
-    while True:
-        answer = input(prompt).strip().lower()
-        if answer in {"y", "yes"}:
-            return True
-        if answer in {"n", "no"}:
-            return False
-        print("Please reply with 'y' or 'n'.")
-
-
-def _ask_num_indices(prompt: str, available: int) -> int:
-    while True:
-        answer = input(prompt).strip()
-        try:
-            value = int(answer)
-        except ValueError:
-            print("Please enter an integer.")
-            continue
-        if value < 0:
-            print("Please enter a non-negative integer.")
-            continue
-        if value > available:
-            print(f"Please enter a value between 0 and {available}.")
-            continue
-        return value
-
-
-def _count_indices_in_metrics_json(metrics_json_path: Path) -> int:
-    with metrics_json_path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
-    rows = payload.get("per_input", [])
-    return len(rows)
+    return rows
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare TrajFlow predictors against GT final position using distance metrics."
+        description=(
+            "Compute per-input TrajFlow table with noisy set-containment and "
+            "robust certification bounds for k=1 and k=2 smoothers."
+        )
     )
     parser.add_argument(
         "--num-inputs",
         type=int,
-        default=0,
-        help="How many valid inputs to evaluate when selected-indices is not provided. Use <=0 for all valid indices.",
+        default=None,
+        help=(
+            "How many valid inputs to evaluate when selected-indices is not provided. "
+            "If omitted, the script asks interactively. Use 0 for all valid indices."
+        ),
     )
     parser.add_argument(
         "--selected-indices",
@@ -354,22 +652,46 @@ def main() -> None:
         help="Optional comma-separated dataset indices. Overrides --num-inputs.",
     )
     parser.add_argument(
-        "--metric-samples",
-        type=int,
-        default=100,
-        help="Number of stochastic samples per input used for distance metrics.",
-    )
-    parser.add_argument(
         "--input-batch-size",
         type=int,
         default=5,
-        help="How many selected inputs to process at once when computing metrics.",
+        help="How many selected inputs to process at once.",
+    )
+    parser.add_argument(
+        "--containment-samples",
+        type=int,
+        default=1000,
+        help="Number of h_w(x+epsilon) noisy samples per input used to estimate set-containment proportion.",
+    )
+    parser.add_argument(
+        "--mc-containment-samples",
+        type=int,
+        default=1000,
+        help="Number of Monte Carlo samples from each smoother used to estimate self-containment.",
+    )
+    parser.add_argument(
+        "--attack-num-candidates",
+        type=int,
+        default=64,
+        help="Number of random attack candidates per input when certification-radius > 0.",
+    )
+    parser.add_argument(
+        "--attack-num-samples",
+        type=int,
+        default=128,
+        help="Noisy samples per attack candidate used to score output variance.",
+    )
+    parser.add_argument(
+        "--certification-radius",
+        type=float,
+        default=0.0,
+        help="Input perturbation radius used in robust certification.",
     )
     parser.add_argument(
         "--sigma",
         type=float,
         default=1.0,
-        help="Gaussian input perturbation std used for noisy and smoothed predictors.",
+        help="Gaussian input perturbation std used for noisy sampling and smoothing.",
     )
     parser.add_argument(
         "--smoothing-N",
@@ -442,96 +764,48 @@ def main() -> None:
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
-        default=500,
+        default=1000,
         help="num_samples for confidence parameter (used in smoothing object setup).",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=0,
-        help="Random seed for input selection and torch sampling.",
+        help="Random seed for sampling.",
     )
     parser.add_argument(
         "--analysis-dir",
         type=str,
         default=str(EXPERIMENTS / "data" / "analysis" / "performance"),
-        help="Directory where raw metrics JSON is saved.",
+        help="Directory where table JSON/CSV are saved.",
     )
     parser.add_argument(
-        "--figures-dir",
+        "--fixed-index-order-file",
         type=str,
-        default=str(EXPERIMENTS / "data" / "figures"),
-        help="Directory where selected-index plots are saved.",
-    )
-    parser.add_argument(
-        "--plot-top-k",
-        type=int,
-        default=100,
-        help="Top-k inputs with largest distance from the target initial position to GT final position. Use <=0 for all.",
-    )
-    parser.add_argument(
-        "--plot-tail-quantile",
-        type=float,
-        default=0.90,
-        help="Tail quantile used for the CVaR marker in selected plots.",
-    )
-    parser.add_argument(
-        "--regenerate-data",
-        type=str,
-        choices=("y", "n"),
-        default=None,
-        help="Optional non-interactive override: y to regenerate, n to use existing JSON.",
+        default="",
+        help=(
+            "Optional path to the persistent random ordering JSON. "
+            "If omitted, uses <experiments-data>/fixed_random_index_order.json."
+        ),
     )
     args = parser.parse_args()
 
-    analysis_dir = Path(args.analysis_dir)
-    json_path = analysis_dir / "performance_metrics.json"
-
-    if args.regenerate_data is None:
-        regenerate_data = _ask_yes_no(
-            "Regenerate performance data now? [y/n] "
-        )
-    else:
-        regenerate_data = args.regenerate_data == "y"
-
-    if not regenerate_data:
-        if not json_path.exists():
-            print(f"Existing JSON not found at {json_path}. Falling back to regeneration.")
-            regenerate_data = True
-        else:
-            available_json_indices = _count_indices_in_metrics_json(json_path)
-            print(f"Available indices in existing JSON: {available_json_indices}")
-            if args.regenerate_data is None:
-                args.plot_top_k = _ask_num_indices(
-                    "How many indices should be used from JSON? (0 for all) ",
-                    available_json_indices,
-                )
-            print(f"Using existing JSON: {json_path}")
-            plot_trajflow_performance_from_json(
-                metrics_json=str(json_path),
-                top_k=args.plot_top_k,
-                tail_quantile=args.plot_tail_quantile,
-                output_dir=args.figures_dir,
-            )
-            return
-
-    if args.regenerate_data is None and not (args.selected_indices or "").strip():
-        _, outputs_gt = _load_inputs_and_outputs()
-        available_dataset_indices = int(np.sum(_finite_target_mask(outputs_gt)))
-        print(f"Available valid indices in dataset: {available_dataset_indices}")
-        args.num_inputs = _ask_num_indices(
-            "How many indices should be regenerated? (0 for all) ",
-            available_dataset_indices,
-        )
-
-    if args.metric_samples <= 0:
-        raise ValueError("metric-samples must be positive")
     if args.input_batch_size <= 0:
         raise ValueError("input-batch-size must be positive")
+    if args.containment_samples <= 0:
+        raise ValueError("containment-samples must be positive")
+    if args.mc_containment_samples <= 0:
+        raise ValueError("mc-containment-samples must be positive")
+    if args.attack_num_candidates <= 0:
+        raise ValueError("attack-num-candidates must be positive")
+    if args.attack_num_samples <= 0:
+        raise ValueError("attack-num-samples must be positive")
     if args.noise_sub_batch_size <= 0:
         raise ValueError("noise-sub-batch-size must be positive")
     if args.sigma <= 0.0:
         raise ValueError("sigma must be positive")
+    if args.certification_radius < 0.0:
+        raise ValueError("certification-radius must be non-negative")
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -540,80 +814,63 @@ def main() -> None:
 
     all_inputs, outputs_gt = _load_inputs_and_outputs()
     valid_indices = np.flatnonzero(_finite_target_mask(outputs_gt))
-    selected_indices = _choose_indices(
+    analysis_dir = Path(args.analysis_dir)
+    fixed_order_path = (
+        Path(args.fixed_index_order_file)
+        if args.fixed_index_order_file
+        else EXPERIMENTS / "data" / "fixed_random_index_order.json"
+    )
+    fixed_random_order = _load_or_create_fixed_random_order(
+        path=fixed_order_path,
         valid_indices=valid_indices,
+        seed=args.seed,
+    )
+
+    if args.num_inputs is None and not (args.selected_indices or "").strip():
+        print(f"Available valid indices in dataset: {len(valid_indices)}")
+        args.num_inputs = _ask_num_indices(
+            "How many xs should be analyzed? (0 for all) ",
+            len(valid_indices),
+        )
+    if args.num_inputs is None:
+        args.num_inputs = 0
+
+    selected_indices = _choose_indices(
+        fixed_random_order=fixed_random_order,
         num_inputs=args.num_inputs,
         selected_indices_text=args.selected_indices,
     )
-    metric_names = ("original", "noisy_input", "smoothed_k1", "smoothed_k2")
-    metrics_parts: dict[str, dict[str, list[np.ndarray]]] = {
-        name: {"mean": [], "std": []}
-        for name in metric_names
-    }
+
+    table_rows: list[dict[str, Any]] = []
     num_batches = (len(selected_indices) + args.input_batch_size - 1) // args.input_batch_size
     for batch_id, start in enumerate(range(0, len(selected_indices), args.input_batch_size), start=1):
         batch_t0 = time.perf_counter()
         batch_indices = selected_indices[start : start + args.input_batch_size]
         print(
             f"processing batch {batch_id}/{num_batches} "
-            f"with dataset indices {int(batch_indices[0])}..{int(batch_indices[-1])}"
+            f"with {len(batch_indices)} dataset indices"
         )
-        batch_metrics = _compute_batch_metrics(
+        rows = _compute_batch_table_rows(
             args=args,
             stochastic_fn=stochastic_fn,
             batch_indices=batch_indices,
             inputs=all_inputs,
             outputs_gt=outputs_gt,
         )
+        table_rows.extend(rows)
         print(f"batch {batch_id}/{num_batches} completed in {time.perf_counter() - batch_t0:.1f}s")
-        for name in metric_names:
-            metrics_parts[name]["mean"].append(batch_metrics[name]["mean"])
-            metrics_parts[name]["std"].append(batch_metrics[name]["std"])
 
-    metrics: dict[str, dict[str, np.ndarray]] = {
-        name: {
-            "mean": np.concatenate(metrics_parts[name]["mean"]),
-            "std": np.concatenate(metrics_parts[name]["std"]),
-        }
-        for name in metric_names
-    }
-
-    per_input_rows = []
-    for i, dataset_idx in enumerate(selected_indices.tolist()):
-        per_input_rows.append(
-            {
-                "dataset_index": int(dataset_idx),
-                "original": {
-                    "mean_distance": float(metrics["original"]["mean"][i]),
-                    "std_distance": float(metrics["original"]["std"][i]),
-                },
-                "noisy_input": {
-                    "mean_distance": float(metrics["noisy_input"]["mean"][i]),
-                    "std_distance": float(metrics["noisy_input"]["std"][i]),
-                },
-                "smoothed_k1": {
-                    "mean_distance": float(metrics["smoothed_k1"]["mean"][i]),
-                    "std_distance": float(metrics["smoothed_k1"]["std"][i]),
-                },
-                "smoothed_k2": {
-                    "mean_distance": float(metrics["smoothed_k2"]["mean"][i]),
-                    "std_distance": float(metrics["smoothed_k2"]["std"][i]),
-                },
-            }
-        )
-
-    aggregate = {
-        key: {
-            "mean_of_mean_distance": float(np.mean(metrics[key]["mean"])),
-            "mean_of_std_distance": float(np.mean(metrics[key]["std"])),
-        }
-        for key in metrics
-    }
+    json_path = analysis_dir / "performance_table.json"
+    csv_path = analysis_dir / "performance_table.csv"
 
     payload = {
         "config": {
             "selected_indices": selected_indices.tolist(),
-            "metric_samples": args.metric_samples,
+            "containment_samples": args.containment_samples,
+            "mc_containment_samples": args.mc_containment_samples,
+            "attack_num_candidates": args.attack_num_candidates,
+            "attack_num_samples": args.attack_num_samples,
+            "certification_radius": args.certification_radius,
             "sigma": args.sigma,
             "smoothing_N": args.smoothing_N,
             "alpha": args.alpha,
@@ -629,34 +886,36 @@ def main() -> None:
             "confidence_num_samples": args.confidence_num_samples,
             "input_batch_size": args.input_batch_size,
             "seed": args.seed,
+            "fixed_index_order_file": str(fixed_order_path),
         },
-        "aggregate": aggregate,
-        "per_input": per_input_rows,
+        "column_groups": [
+            {"label": "Clustered alpha-smoothing", "columns": [1, 2, 3, 4, 5, 6]},
+            {"label": "alpha-smoothing", "columns": [7, 8, 9, 10]},
+        ],
+        "columns": [
+            "x_index",
+            "set_containment_k2",
+            "mc_set_containment_k2",
+            "total_area_k2",
+            "bound_region_1_k2",
+            "bound_region_2_k2",
+            "total_bound_k2",
+            "set_containment_k1",
+            "mc_set_containment_k1",
+            "total_area_k1",
+            "total_bound_k1",
+        ],
+        "rows": table_rows,
     }
+
     _save_json(json_path, payload)
+    _save_csv(csv_path, table_rows)
 
-    tail_stats_path = analysis_dir / "performance_tail_stats.json"
-    _save_json(tail_stats_path, _compute_tail_stats_table(metrics))
-
-    print("=== TrajFlow Performance GT Comparison ===")
+    print("=== TrajFlow Performance Table ===")
     print(f"selected_indices: {selected_indices.tolist()}")
-    print(f"metric_samples: {args.metric_samples}")
     print(f"saved: {json_path}")
-    print(f"saved: {tail_stats_path}")
-    print("aggregate metrics:")
-    for name, values in aggregate.items():
-        print(
-            f"  - {name}: "
-            f"mean_of_mean_distance={values['mean_of_mean_distance']:.4f}, "
-            f"mean_of_std_distance={values['mean_of_std_distance']:.4f}"
-        )
-
-    plot_trajflow_performance_from_json(
-        metrics_json=str(json_path),
-        top_k=args.plot_top_k,
-        tail_quantile=args.plot_tail_quantile,
-        output_dir=args.figures_dir,
-    )
+    print(f"saved: {csv_path}")
+    _print_table(table_rows)
 
 
 if __name__ == "__main__":

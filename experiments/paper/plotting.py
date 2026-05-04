@@ -1283,6 +1283,77 @@ def _plot_trajflow_metric_histogram(
 	plt.close(fig)
 
 
+def plot_trajflow_wasserstein_histograms(
+	w_noisy_vs_k1: np.ndarray,
+	w_noisy_vs_k2: np.ndarray,
+	output_path: Path,
+	bins: int = 24,
+) -> Path:
+	"""Plot side-by-side Wasserstein histograms for k1 and k2 smoothers."""
+	if bins <= 0:
+		raise ValueError("bins must be positive")
+	if len(w_noisy_vs_k1) == 0 or len(w_noisy_vs_k2) == 0:
+		raise ValueError("Wasserstein arrays must be non-empty")
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	combined = np.concatenate([w_noisy_vs_k1, w_noisy_vs_k2]).astype(float)
+	min_v = float(np.min(combined))
+	max_v = float(np.max(combined))
+	if np.isclose(min_v, max_v):
+		eps = 1e-6 if abs(min_v) < 1e-3 else abs(min_v) * 1e-3
+		bin_edges = np.linspace(min_v - eps, max_v + eps, bins + 1)
+	else:
+		bin_edges = np.linspace(min_v, max_v, bins + 1)
+
+	with plt.rc_context(
+		{
+			"text.usetex": True,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 10,
+			"axes.titlesize": 10,
+			"xtick.labelsize": 9,
+			"ytick.labelsize": 9,
+			"legend.fontsize": 9,
+		}
+	):
+		fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.6), sharey=True)
+		fig.subplots_adjust(left=0.10, right=0.98, top=0.86, bottom=0.20, wspace=0.16)
+
+		panels = (
+			(axes[0], w_noisy_vs_k1.astype(float), r"$W_2(h_w(x+\varepsilon), k_1)$", "#4C78A8"),
+			(axes[1], w_noisy_vs_k2.astype(float), r"$W_2(h_w(x+\varepsilon), k_2)$", "#2A9D8F"),
+		)
+		for ax, values, title, color in panels:
+			ax.hist(
+				values,
+				bins=bin_edges,
+				density=False,
+				color=color,
+				alpha=0.35,
+				edgecolor=color,
+				linewidth=1.0,
+			)
+			mean_value = float(np.mean(values))
+			ax.axvline(
+				mean_value,
+				color="#202020",
+				linestyle="--",
+				linewidth=1.2,
+				label=f"Mean: {mean_value:.1f}",
+			)
+			ax.set_xlabel("2-Wasserstein distance")
+			ax.grid(True, linestyle=":", alpha=0.35)
+			ax.legend(loc="upper right", frameon=True)
+
+		axes[0].set_ylabel("Frequency")
+		fig.savefig(output_path, dpi=200)
+		plt.close(fig)
+
+	return output_path
+
+
 def _select_rows(payload: dict[str, Any], top_k: int) -> tuple[list[dict[str, Any]], list[float]]:
 	rows = payload.get("per_input", [])
 	target_displacements = _load_trajflow_target_displacements()
@@ -1377,25 +1448,6 @@ def plot_trajflow_selected_from_json(
 	print(f"saved: {summary_path}")
 
 	return mean_plot, std_plot, summary_path
-
-
-def plot_trajflow_performance_from_json(
-	metrics_json: str | None = None,
-	top_k: int = 100,
-	tail_quantile: float = 0.90,
-	output_dir: str | None = None,
-) -> tuple[Path, Path, Path]:
-	base = Path(__file__).resolve().parent.parent
-	metrics_path = metrics_json or str(base / "data" / "analysis" / "performance" / "performance_metrics.json")
-	out_dir = output_dir or str(base / "data" / "figures")
-	return plot_trajflow_selected_from_json(
-		metrics_json=metrics_path,
-		top_k=top_k,
-		tail_quantile=tail_quantile,
-		output_dir=out_dir,
-		name_prefix="trajflow_performance_selected",
-		adversarial_titles=False,
-	)
 
 
 def plot_trajflow_adversarial_from_json(
