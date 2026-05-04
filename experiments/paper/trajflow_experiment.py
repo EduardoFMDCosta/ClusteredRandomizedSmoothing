@@ -8,8 +8,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-
-
 ROOT = Path(__file__).resolve().parent
 EXPERIMENTS = ROOT.parent
 REPO_ROOT = EXPERIMENTS.parent
@@ -19,11 +17,17 @@ if str(SRC) not in sys.path:
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from randomized_smoothing.distributions import MultivariateGaussian
-from randomized_smoothing.dataclasses import ClusteringParameters, ConfidenceParameters, Parameters, SmoothingParameters
-from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-from stochastic_functions import TrajFlowMeszarosStochasticFunction
 from plotting import plot_final_timestep_examples
+from stochastic_functions import TrajFlowMeszarosStochasticFunction
+
+from randomized_smoothing.dataclasses import (
+    ClusteringParameters,
+    ConfidenceParameters,
+    Parameters,
+    SmoothingParameters,
+)
+from randomized_smoothing.distributions import MultivariateGaussian
+from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 
 
 def _parse_indices(text: str) -> np.ndarray:
@@ -176,16 +180,16 @@ def main():
         original_mc_samples = stochastic_fn(original_inputs)
 
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=num_plot_samples)
-    clusterized_mc_samples = smoother.monte_carlo(num_simulations=num_plot_samples)
+    clustered_mc_samples = smoother.monte_carlo(num_simulations=num_plot_samples)
 
     chart_paths = plot_final_timestep_examples(
         x=x,
         original_mc_samples=original_mc_samples,
         noisy_mc_samples=mc_samples,
         single_cluster_mc_samples=single_cluster_mc_samples,
-        clusterized_mc_samples=clusterized_mc_samples,
+        clustered_mc_samples=clustered_mc_samples,
         single_cluster_centroids=smoother_single.cluster.centroids,
-        clusterized_centroids=smoother.cluster.centroids,
+        clustered_centroids=smoother.cluster.centroids,
         region=smoother.regions,
         single_cluster_region=smoother_single.regions,
         output_dir=EXPERIMENTS / "data" / "figures",

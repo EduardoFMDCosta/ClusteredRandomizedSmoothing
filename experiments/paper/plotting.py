@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.colors import to_rgba
+import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
 import torch
-
-from typing import Any, TYPE_CHECKING
+from matplotlib.colors import to_rgba
 
 if TYPE_CHECKING:
 	from randomized_smoothing.clusters import Cluster
@@ -85,11 +84,147 @@ def _to_numpy(x: torch.Tensor) -> np.ndarray:
 	return x.detach().cpu().numpy()
 
 
+def plot_single_smoother_distribution(
+	x: torch.Tensor,
+	outputs: torch.Tensor,
+	smoother_mc_samples: torch.Tensor,
+	region,
+	output_path: Path,
+	smoother_label: str,
+	smoother_color: str,
+) -> Path:
+	"""Plot original-model histogram and one smoother's MC histogram.
+
+	When ``region`` has ``k >= 2`` regions, the original-model samples are
+	split by nearest-region (the same partition rule the smoother uses for
+	``smooth``, ``monte_carlo``, and the certificate) and plotted as one
+	step histogram per cluster, with vertical lines at the cluster splits.
+	In 1D each split sits at the midpoint between adjacent regions'
+	closest endpoints — exactly where the region-distance argmin flips.
+	"""
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+
+	outputs_np = _to_numpy(outputs[:, :, 0])
+	smoother_mc_np = _to_numpy(smoother_mc_samples[:, :, 0])
+	region_lower_np = _to_numpy(region.lower[:, :, 0])
+	region_upper_np = _to_numpy(region.upper[:, :, 0])
+
+	m = outputs_np.shape[0]
+	raw_color = "#111111"
+	region_color = "#7A7A7A"
+	split_color = "#D62728"
+
+	_w = 0.80 * TEXTWIDTH
+	fig, axes = plt.subplots(m, 1, figsize=(_w, 0.8 * _w * m), sharex=False)
+	if m == 1:
+		axes = [axes]
+
+	for i, ax in enumerate(axes):
+		k_regions = region_lower_np.shape[1]
+		shared_bins = np.histogram_bin_edges(outputs_np[i], bins=60)
+
+		# Order regions left-to-right by their center for consistent coloring.
+		region_centers_i = 0.5 * (region_lower_np[i] + region_upper_np[i])
+		region_order = np.argsort(region_centers_i)
+
+		if k_regions >= 2:
+			region_distances = _to_numpy(region.distance(outputs[i])[i])
+			assignments = np.argmin(region_distances, axis=-1)
+			for rank, region_idx in enumerate(region_order):
+				cluster_mask = assignments == region_idx
+				if not np.any(cluster_mask):
+					continue
+				cluster_color = CLUSTER_PALETTE[rank % len(CLUSTER_PALETTE)]
+				ax.hist(
+					outputs_np[i][cluster_mask],
+					bins=shared_bins,
+					density=False,
+					weights=np.full(int(cluster_mask.sum()), 1.0 / outputs_np[i].size),
+					histtype="stepfilled",
+					linewidth=1.6,
+					edgecolor=cluster_color,
+					facecolor=to_rgba(cluster_color, alpha=0.25),
+					label=f"Original model (cluster {rank + 1})",
+				)
+		else:
+			ax.hist(
+				outputs_np[i],
+				bins=shared_bins,
+				density=True,
+				histtype="step",
+				linewidth=2.2,
+				color=raw_color,
+				label="Original model",
+			)
+
+		ax.hist(
+			smoother_mc_np[i],
+			bins=45,
+			density=True,
+			alpha=0.30,
+			color=smoother_color,
+			edgecolor=smoother_color,
+			linewidth=1.4,
+			label=smoother_label,
+		)
+
+		for j in range(k_regions):
+			left = region_lower_np[i, j]
+			right = region_upper_np[i, j]
+			ax.axvspan(left, right, color=region_color, alpha=0.15, lw=0)
+			ax.axvline(left, color=region_color, linestyle="--", linewidth=1.0, alpha=0.7)
+			ax.axvline(right, color=region_color, linestyle="--", linewidth=1.0, alpha=0.7)
+
+		legend_extras: list = [
+			mpatches.Patch(
+				facecolor=to_rgba(region_color, alpha=0.15),
+				edgecolor=region_color,
+				linestyle="--",
+				label="Robustness region",
+			)
+		]
+		legend_extra_labels: list[str] = ["Robustness region"]
+
+		if k_regions >= 2:
+			for c_idx in range(len(region_order) - 1):
+				left_idx = int(region_order[c_idx])
+				right_idx = int(region_order[c_idx + 1])
+				split_x = 0.5 * (
+					region_upper_np[i, left_idx] + region_lower_np[i, right_idx]
+				)
+				ax.axvline(
+					split_x,
+					color=split_color,
+					linestyle="-",
+					linewidth=2.0,
+					alpha=0.95,
+					zorder=5,
+				)
+			legend_extras.append(
+				plt.Line2D([0], [0], color=split_color, linewidth=2.0, label="Voronoi cell split"),
+			)
+			legend_extra_labels.append("Voronoi cell split")
+
+		handles, labels = ax.get_legend_handles_labels()
+		handles.extend(legend_extras)
+		labels.extend(legend_extra_labels)
+		ax.legend(handles=handles, labels=labels, loc="upper left")
+
+		ax.set_xlabel("Output")
+		ax.set_ylabel("Density")
+		ax.grid(alpha=0.25, linestyle=":")
+
+	fig.tight_layout()
+	fig.savefig(output_path, dpi=180)
+	plt.close(fig)
+	return output_path
+
+
 def plot_experiment_results(
 	x: torch.Tensor,
 	outputs: torch.Tensor,
 	rekavandi_mc_samples: torch.Tensor,
-	clusterized_mc_samples: torch.Tensor,
+	clustered_mc_samples: torch.Tensor,
 	output_dir: Path,
 	region=None,
 	plot_region_shading: bool = False,
@@ -100,7 +235,7 @@ def plot_experiment_results(
 	x_np = _to_numpy(x[:, 0])
 	outputs_np = _to_numpy(outputs[:, :, 0])
 	rekavandi_mc_np = _to_numpy(rekavandi_mc_samples[:, :, 0])
-	clusterized_mc_np = _to_numpy(clusterized_mc_samples[:, :, 0])
+	clustered_mc_np = _to_numpy(clustered_mc_samples[:, :, 0])
 	region_lower_np = _to_numpy(region.lower[:, :, 0]) if region is not None else None
 	region_upper_np = _to_numpy(region.upper[:, :, 0]) if region is not None else None
 
@@ -138,14 +273,14 @@ def plot_experiment_results(
 			label=r"$\alpha$-smoothing (Rekavandi et al, 2024)",
 		)
 		ax.hist(
-			clusterized_mc_np[i],
+			clustered_mc_np[i],
 			bins=45,
 			density=True,
 			alpha=0.30,
 			color=colors["cluster_mc"],
 			edgecolor=colors["cluster_mc"],
 			linewidth=1.4,
-			label=r"Clusterized $\alpha$-smoothing",
+			label=r"Clustered $\alpha$-smoothing",
 		)
 
 		if plot_region_shading and region_lower_np is not None and region_upper_np is not None:
@@ -192,15 +327,15 @@ def plot_final_timestep_density(
 	original_mc_samples: torch.Tensor,
 	noisy_mc_samples: torch.Tensor,
 	single_cluster_mc_samples: torch.Tensor,
-	clusterized_mc_samples: torch.Tensor,
+	clustered_mc_samples: torch.Tensor,
 	single_cluster_centroids: torch.Tensor,
-	clusterized_centroids: torch.Tensor,
+	clustered_centroids: torch.Tensor,
 	output_dir: Path,
 	num_input_agents: int = 2,
 ) -> list[Path]:
 	"""Plot final-step endpoint samples colored by smoother-induced clusters.
 
-	Columns are Original / Noisy / single-cluster smoother / clusterized smoother.
+	Columns are Original / Noisy / single-cluster smoother / clustered smoother.
 	Samples are colored by nearest smoother centroids (Voronoi attribution).
 
 	Args:
@@ -209,9 +344,9 @@ def plot_final_timestep_density(
 		original_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		noisy_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		single_cluster_mc_samples: same shape, single-cluster smoother.
-		clusterized_mc_samples: same shape, multi-cluster smoother.
+		clustered_mc_samples: same shape, multi-cluster smoother.
 		single_cluster_centroids: Tensor (nx, k1, 2) for single-cluster smoother.
-		clusterized_centroids: Tensor (nx, k2, 2) for multi-cluster smoother.
+		clustered_centroids: Tensor (nx, k2, 2) for multi-cluster smoother.
 		output_dir: Directory to save the chart.
 		num_input_agents: Number of agents encoded in x.
 	"""
@@ -221,7 +356,7 @@ def plot_final_timestep_density(
 	original = _reshape_trajectory_samples(original_mc_samples)
 	noisy = _reshape_trajectory_samples(noisy_mc_samples)
 	single = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clust = _reshape_trajectory_samples(clusterized_mc_samples)
+	clust = _reshape_trajectory_samples(clustered_mc_samples)
 	x_np = _to_numpy(x)
 	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
 	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
@@ -272,7 +407,7 @@ def plot_final_timestep_density(
 
 	for i in range(nx):
 		single_centroids_i = _to_numpy(single_cluster_centroids[i])
-		clust_centroids_i = _to_numpy(clusterized_centroids[i])
+		clust_centroids_i = _to_numpy(clustered_centroids[i])
 
 		column_data = (
 			(original_end[i], None),
@@ -355,9 +490,9 @@ def plot_final_timestep_examples(
 	original_mc_samples: torch.Tensor,
 	noisy_mc_samples: torch.Tensor,
 	single_cluster_mc_samples: torch.Tensor,
-	clusterized_mc_samples: torch.Tensor,
+	clustered_mc_samples: torch.Tensor,
 	single_cluster_centroids: torch.Tensor,
-	clusterized_centroids: torch.Tensor,
+	clustered_centroids: torch.Tensor,
 	region,
 	single_cluster_region,
 	output_dir: Path,
@@ -365,7 +500,7 @@ def plot_final_timestep_examples(
 ) -> list[Path]:
 	"""Plot final-step endpoint samples and certified rectangles in one chart.
 
-	Columns are Original / Noisy / single-cluster smoother / clusterized smoother.
+	Columns are Original / Noisy / single-cluster smoother / clustered smoother.
 	Certified final-step rectangles are overlaid on the smoother columns.
 	"""
 
@@ -374,7 +509,7 @@ def plot_final_timestep_examples(
 	original = _reshape_trajectory_samples(original_mc_samples)
 	noisy = _reshape_trajectory_samples(noisy_mc_samples)
 	single = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clust = _reshape_trajectory_samples(clusterized_mc_samples)
+	clust = _reshape_trajectory_samples(clustered_mc_samples)
 	x_np = _to_numpy(x)
 	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
 	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
@@ -444,7 +579,7 @@ def plot_final_timestep_examples(
 		fig.patch.set_facecolor("#FFFFFF")
 
 		single_centroids_i = _to_numpy(single_cluster_centroids[i])
-		clust_centroids_i = _to_numpy(clusterized_centroids[i])
+		clust_centroids_i = _to_numpy(clustered_centroids[i])
 
 		column_data = (
 			(original_end[i], None),
@@ -639,7 +774,7 @@ def plot_trajectory_samples(
 	x: torch.Tensor,
 	mc_samples: torch.Tensor,
 	single_cluster_mc_samples: torch.Tensor,
-	clusterized_mc_samples: torch.Tensor,
+	clustered_mc_samples: torch.Tensor,
 	output_dir: Path,
 	num_input_agents: int = 2,
 ) -> list[Path]:
@@ -651,7 +786,7 @@ def plot_trajectory_samples(
 		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		single_cluster_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps)
 		   from a smoother with max_num_clusters=1.
-		clusterized_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
+		clustered_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
 		output_dir: Folder to save charts.
 		num_input_agents: Number of agents encoded in x.
 	"""
@@ -659,7 +794,7 @@ def plot_trajectory_samples(
 
 	raw = _reshape_trajectory_samples(mc_samples)
 	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
+	clustered = _reshape_trajectory_samples(clustered_mc_samples)
 	x_np = _to_numpy(x)
 	if num_input_agents < 1:
 		raise ValueError("num_input_agents must be >= 1")
@@ -670,8 +805,8 @@ def plot_trajectory_samples(
 	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
 	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
 
-	if raw.shape != clusterized.shape:
-		raise ValueError("mc_samples and clusterized_mc_samples must have identical shapes")
+	if raw.shape != clustered.shape:
+		raise ValueError("mc_samples and clustered_mc_samples must have identical shapes")
 	if raw.shape[0] != x_traj.shape[0]:
 		raise ValueError("x and trajectory samples must have the same first dimension")
 
@@ -685,7 +820,7 @@ def plot_trajectory_samples(
 		(
 			raw[:, :, :, 0].reshape(-1),
 			single_cluster[:, :, :, 0].reshape(-1),
-			clusterized[:, :, :, 0].reshape(-1),
+			clustered[:, :, :, 0].reshape(-1),
 			x_traj[:, :, :, 0].reshape(-1),
 		)
 	)
@@ -693,7 +828,7 @@ def plot_trajectory_samples(
 		(
 			raw[:, :, :, 1].reshape(-1),
 			single_cluster[:, :, :, 1].reshape(-1),
-			clusterized[:, :, :, 1].reshape(-1),
+			clustered[:, :, :, 1].reshape(-1),
 			x_traj[:, :, :, 1].reshape(-1),
 		)
 	)
@@ -741,7 +876,7 @@ def plot_trajectory_samples(
 				label=None,
 			)
 
-			traj_cluster = clusterized[i, j]
+			traj_cluster = clustered[i, j]
 			ax_cluster.plot(
 				traj_cluster[:, 0],
 				traj_cluster[:, 1],
@@ -821,7 +956,7 @@ def plot_timestep_rectangles_visualization(
 	original_mc_samples: torch.Tensor,
 	noisy_mc_samples: torch.Tensor,
 	single_cluster_mc_samples: torch.Tensor,
-	clusterized_mc_samples: torch.Tensor,
+	clustered_mc_samples: torch.Tensor,
 	region,
 	single_cluster_region,
 	output_dir: Path,
@@ -838,7 +973,7 @@ def plot_timestep_rectangles_visualization(
 	original = _reshape_trajectory_samples(original_mc_samples)
 	noisy = _reshape_trajectory_samples(noisy_mc_samples)
 	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clusterized = _reshape_trajectory_samples(clusterized_mc_samples)
+	clustered = _reshape_trajectory_samples(clustered_mc_samples)
 	x_np = _to_numpy(x)
 
 	if x_np.ndim != 2 or x_np.shape[1] % (2 * num_input_agents) != 0:
@@ -877,8 +1012,8 @@ def plot_timestep_rectangles_visualization(
 		axes = np.array([axes])
 
 	# Compute limits using all data (not just x_index) to match trajectory_samples figure
-	all_x = np.concatenate((original[:, :, :, 0].reshape(-1), noisy[:, :, :, 0].reshape(-1), single_cluster[:, :, :, 0].reshape(-1), clusterized[:, :, :, 0].reshape(-1), x_traj[:, :, :, 0].reshape(-1)))
-	all_y = np.concatenate((original[:, :, :, 1].reshape(-1), noisy[:, :, :, 1].reshape(-1), single_cluster[:, :, :, 1].reshape(-1), clusterized[:, :, :, 1].reshape(-1), x_traj[:, :, :, 1].reshape(-1)))
+	all_x = np.concatenate((original[:, :, :, 0].reshape(-1), noisy[:, :, :, 0].reshape(-1), single_cluster[:, :, :, 0].reshape(-1), clustered[:, :, :, 0].reshape(-1), x_traj[:, :, :, 0].reshape(-1)))
+	all_y = np.concatenate((original[:, :, :, 1].reshape(-1), noisy[:, :, :, 1].reshape(-1), single_cluster[:, :, :, 1].reshape(-1), clustered[:, :, :, 1].reshape(-1), x_traj[:, :, :, 1].reshape(-1)))
 	x_min, x_max = np.min(all_x), np.max(all_x)
 	y_min, y_max = np.min(all_y), np.max(all_y)
 	x_pad = max((x_max - x_min) * 0.05, 1e-6)
@@ -896,7 +1031,7 @@ def plot_timestep_rectangles_visualization(
 			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
 
 		single_cluster_i = single_cluster[i]
-		clusterized_i = clusterized[i]
+		clustered_i = clustered[i]
 		x_traj_i = x_traj[i]
 
 		lower = _to_numpy(region.lower[i]).reshape(region.lower.shape[1], -1, 2)
@@ -910,7 +1045,7 @@ def plot_timestep_rectangles_visualization(
 		for j in range(single_cluster_i.shape[0]):
 			traj_single = single_cluster_i[j]
 			ax_single.plot(traj_single[:, 0], traj_single[:, 1], color="#D55E00", alpha=0.20, linewidth=0.9, zorder=1)
-			traj_cluster = clusterized_i[j]
+			traj_cluster = clustered_i[j]
 			ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#009E73", alpha=0.20, linewidth=0.9, zorder=1)
 
 		# Draw multi-cluster rectangles on right panel only.
@@ -1089,7 +1224,7 @@ def plot_comparison(
 	return paths
 
 
-def plot_bound_clusterized_grid(
+def plot_bound_clustered_grid(
 	ratio_values: np.ndarray,
 	alphas: list[float],
 	p_v_values: list[float],
@@ -1144,7 +1279,7 @@ def plot_bound_clusterized_grid(
 		framealpha=0.95,
 	)
 
-	output_path = output_dir / "bound_clusterized_grid.pdf"
+	output_path = output_dir / "bound_clustered_grid.pdf"
 	fig.savefig(output_path, dpi=180, bbox_inches="tight")
 	plt.close(fig)
 

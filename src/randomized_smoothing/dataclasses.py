@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
+
 import torch
+
 
 @dataclass
 class SmoothingParameters:
@@ -22,6 +24,10 @@ class ClusteringParameters:
     strategy: str = "dbscan"
     dbscan_eps: float = 0.5
     dbscan_min_samples: int = 10
+    hdbscan_min_cluster_size: int = 5
+    hdbscan_min_samples: int | None = None
+    hdbscan_cluster_selection_epsilon: float = 0.0
+    hdbscan_cluster_selection_method: str = "eom"
     behavior_stay_radius: float = 1.0
     behavior_min_down: float = 0.5
     behavior_min_left: float = 0.0
@@ -36,6 +42,11 @@ class ClusteringParameters:
         self.strategy = str(self.strategy)
         self.dbscan_eps = float(self.dbscan_eps)
         self.dbscan_min_samples = int(self.dbscan_min_samples)
+        self.hdbscan_min_cluster_size = int(self.hdbscan_min_cluster_size)
+        if self.hdbscan_min_samples is not None:
+            self.hdbscan_min_samples = int(self.hdbscan_min_samples)
+        self.hdbscan_cluster_selection_epsilon = float(self.hdbscan_cluster_selection_epsilon)
+        self.hdbscan_cluster_selection_method = str(self.hdbscan_cluster_selection_method)
         self.behavior_stay_radius = float(self.behavior_stay_radius)
         self.behavior_min_down = float(self.behavior_min_down)
         self.behavior_min_left = float(self.behavior_min_left)
@@ -48,12 +59,20 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
-        if self.strategy not in ("dbscan", "behavior_split"):
-            raise ValueError("strategy must be one of: 'dbscan', 'behavior_split'")
+        if self.strategy not in ("dbscan", "hdbscan", "behavior_split"):
+            raise ValueError("strategy must be one of: 'dbscan', 'hdbscan', 'behavior_split'")
         if self.dbscan_eps <= 0.0:
             raise ValueError("dbscan_eps must be positive")
         if self.dbscan_min_samples <= 0:
             raise ValueError("dbscan_min_samples must be positive")
+        if self.hdbscan_min_cluster_size <= 1:
+            raise ValueError("hdbscan_min_cluster_size must be > 1")
+        if self.hdbscan_min_samples is not None and self.hdbscan_min_samples <= 0:
+            raise ValueError("hdbscan_min_samples must be positive")
+        if self.hdbscan_cluster_selection_epsilon < 0.0:
+            raise ValueError("hdbscan_cluster_selection_epsilon must be non-negative")
+        if self.hdbscan_cluster_selection_method not in ("eom", "leaf"):
+            raise ValueError("hdbscan_cluster_selection_method must be 'eom' or 'leaf'")
         if self.behavior_stay_radius < 0.0:
             raise ValueError("behavior_stay_radius must be non-negative")
         if self.behavior_min_down < 0.0:

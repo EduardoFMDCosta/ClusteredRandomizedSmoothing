@@ -1,4 +1,7 @@
+import numpy as np
 import torch
+from sklearn.cluster import DBSCAN, HDBSCAN
+from sklearn.mixture import GaussianMixture
 
 
 # -----------------------------------------------------------------------------
@@ -16,71 +19,23 @@ def _compute_centroids_from_assignments(
     return centroids
 
 
-def _assign_to_nearest_centroid(data: torch.Tensor, centroids: torch.Tensor) -> torch.Tensor:
-    diff = data.unsqueeze(1) - centroids.unsqueeze(0)
-    squared_distances = (diff * diff).sum(dim=-1)
-    return squared_distances.argmin(dim=1)
-
-
 def _run_dbscan(
     data: torch.Tensor,
     eps: float,
     min_samples: int,
 ) -> torch.Tensor:
-    """Return DBSCAN labels for one row of samples.
+    """Return DBSCAN labels for one row of samples via :class:`sklearn.cluster.DBSCAN`.
 
-    Labels are contiguous cluster ids ``0..k-1`` and ``-1`` for noise.
+    Labels are contiguous cluster ids ``0..k-1`` and ``-1`` for noise, matching
+    sklearn's convention.
     """
     n = data.shape[0]
     if n == 0:
         return torch.empty((0,), dtype=torch.long, device=data.device)
 
-    eps2 = float(eps) * float(eps)
-    diff = data.unsqueeze(1) - data.unsqueeze(0)
-    squared_distances = (diff * diff).sum(dim=-1)
-    neighbor_mask = squared_distances <= eps2
-
-    unassigned = -2
-    noise = -1
-    labels = torch.full((n,), unassigned, dtype=torch.long, device=data.device)
-    cluster_id = 0
-
-    for i in range(n):
-        if labels[i].item() != unassigned:
-            continue
-
-        neighbors = torch.where(neighbor_mask[i])[0]
-        if int(neighbors.numel()) < min_samples:
-            labels[i] = noise
-            continue
-
-        labels[i] = cluster_id
-        seeds = neighbors.tolist()
-        in_seeds = torch.zeros(n, dtype=torch.bool, device=data.device)
-        in_seeds[neighbors] = True
-
-        idx = 0
-        while idx < len(seeds):
-            q = seeds[idx]
-            idx += 1
-
-            if labels[q].item() == noise:
-                labels[q] = cluster_id
-            if labels[q].item() != unassigned:
-                continue
-
-            labels[q] = cluster_id
-            q_neighbors = torch.where(neighbor_mask[q])[0]
-            if int(q_neighbors.numel()) >= min_samples:
-                candidates = q_neighbors[~in_seeds[q_neighbors]]
-                if candidates.numel() > 0:
-                    in_seeds[candidates] = True
-                    seeds.extend(candidates.tolist())
-
-        cluster_id += 1
-
-    labels[labels == unassigned] = noise
-    return labels
+    data_np = data.detach().cpu().numpy()
+    sk_labels = DBSCAN(eps=float(eps), min_samples=int(min_samples)).fit_predict(data_np)
+    return torch.as_tensor(sk_labels, dtype=torch.long, device=data.device)
 
 
 def _merge_to_max_clusters(
@@ -97,8 +52,26 @@ def _merge_to_max_clusters(
     keep = torch.topk(counts, k=max_num_clusters, largest=True, sorted=False).indices
     keep = keep.sort().values
 
-    reduced_centroids = _compute_centroids_from_assignments(data, assignments, num_clusters)[keep]
-    reduced_assignments = _assign_to_nearest_centroid(data, reduced_centroids)
+    # Map kept old cluster ids → new contiguous ids 0..max_num_clusters-1.
+    new_id = torch.full((num_clusters,), -1, dtype=torch.long, device=data.device)
+    new_id[keep] = torch.arange(max_num_clusters, dtype=torch.long, device=data.device)
+
+    keep_mask = torch.zeros(num_clusters, dtype=torch.bool, device=data.device)
+    keep_mask[keep] = True
+    in_kept = keep_mask[assignments]
+
+    reduced_assignments = torch.empty_like(assignments)
+    reduced_assignments[in_kept] = new_id[assignments[in_kept]]
+
+    if (~in_kept).any():
+        kept_pts = data[in_kept]
+        kept_new_ids = reduced_assignments[in_kept]
+        # Single-link reassignment: each dropped-cluster point joins the
+        # cluster of its nearest kept-cluster sample.
+        distances = torch.cdist(data[~in_kept], kept_pts, p=2)
+        nearest_idx = distances.argmin(dim=1)
+        reduced_assignments[~in_kept] = kept_new_ids[nearest_idx]
+
     reduced_centroids = _compute_centroids_from_assignments(
         data,
         reduced_assignments,
@@ -131,6 +104,87 @@ def _select_num_clusters(
         return centroids, assignments, 1
 
     labels = _run_dbscan(data=data, eps=dbscan_eps, min_samples=dbscan_min_samples)
+    return _finalize_density_labels(
+        data=data,
+        labels=labels,
+        max_num_clusters=max_num_clusters,
+    )
+
+
+def _run_hdbscan(
+    data: torch.Tensor,
+    min_cluster_size: int,
+    min_samples: int | None,
+    cluster_selection_epsilon: float,
+    cluster_selection_method: str,
+) -> torch.Tensor:
+    """Return HDBSCAN labels for one row of samples via :class:`sklearn.cluster.HDBSCAN`.
+
+    Labels match sklearn's convention: contiguous cluster ids ``0..k-1`` and
+    ``-1`` for noise.
+    """
+    n = data.shape[0]
+    if n == 0:
+        return torch.empty((0,), dtype=torch.long, device=data.device)
+
+    data_np = data.detach().cpu().numpy()
+    sk_labels = HDBSCAN(
+        allow_single_cluster=True,
+        min_cluster_size=int(min_cluster_size),
+        alpha=np.sqrt(2),
+        min_samples=None if min_samples is None else int(min_samples),
+        cluster_selection_epsilon=float(cluster_selection_epsilon),
+        cluster_selection_method=str(cluster_selection_method),
+        copy=True,
+    ).fit_predict(data_np)
+    return torch.as_tensor(sk_labels, dtype=torch.long, device=data.device)
+
+
+def _select_num_clusters_hdbscan(
+    data: torch.Tensor,
+    max_num_clusters: int,
+    hdbscan_min_cluster_size: int,
+    hdbscan_min_samples: int | None,
+    hdbscan_cluster_selection_epsilon: float,
+    hdbscan_cluster_selection_method: str,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Cluster one row with HDBSCAN and cap clusters to ``max_num_clusters``."""
+    n = data.shape[0]
+    if n == 0:
+        raise ValueError("data must contain at least one sample")
+
+    if max_num_clusters == 1:
+        assignments = torch.zeros(n, dtype=torch.long, device=data.device)
+        centroids = data.mean(dim=0, keepdim=True)
+        return centroids, assignments, 1
+
+    labels = _run_hdbscan(
+        data=data,
+        min_cluster_size=hdbscan_min_cluster_size,
+        min_samples=hdbscan_min_samples,
+        cluster_selection_epsilon=hdbscan_cluster_selection_epsilon,
+        cluster_selection_method=hdbscan_cluster_selection_method,
+    )
+    return _finalize_density_labels(
+        data=data,
+        labels=labels,
+        max_num_clusters=max_num_clusters,
+    )
+
+
+def _finalize_density_labels(
+    data: torch.Tensor,
+    labels: torch.Tensor,
+    max_num_clusters: int,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Shared post-processing for density-based clustering.
+
+    Reassigns each noise point to the cluster of its nearest non-noise sample
+    (single-linkage attribution), then caps the number of clusters at
+    ``max_num_clusters`` via :func:`_merge_to_max_clusters`. Falls back to a
+    single cluster if every point was labelled noise.
+    """
+    n = data.shape[0]
     noise_mask = labels == -1
 
     if (~noise_mask).sum().item() == 0:
@@ -138,18 +192,16 @@ def _select_num_clusters(
         centroids = data.mean(dim=0, keepdim=True)
         return centroids, assignments, 1
 
-    core_labels = labels[~noise_mask]
-    num_clusters = int(core_labels.max().item()) + 1
     assignments = labels.clone()
 
-    centroids = _compute_centroids_from_assignments(
-        data=data[~noise_mask],
-        assignments=core_labels,
-        num_clusters=num_clusters,
-    )
-
     if noise_mask.any():
-        assignments[noise_mask] = _assign_to_nearest_centroid(data[noise_mask], centroids)
+        core_pts = data[~noise_mask]
+        core_labels = labels[~noise_mask]
+        # Single-link reassignment: nearest non-noise sample (rather than
+        # nearest centroid) decides which cluster a noise point joins.
+        distances = torch.cdist(data[noise_mask], core_pts, p=2)
+        nearest_core_idx = distances.argmin(dim=1)
+        assignments[noise_mask] = core_labels[nearest_core_idx]
 
     return _merge_to_max_clusters(
         data=data,

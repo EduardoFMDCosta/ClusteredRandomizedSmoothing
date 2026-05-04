@@ -343,8 +343,8 @@ def main() -> None:
             label="alpha",
         )
 
-    # ---- robustified (clusterized) rollouts ----
-    print(f"Rolling out clusterized robustified trajectories "
+    # ---- robustified (clustered) rollouts ----
+    print(f"Rolling out clustered robustified trajectories "
           f"— this calls the policy ~{2 * args.smoothing_N} times per env step...")
     rob_traces, rob_outcomes, rob_counts = _collect_trajectories(
         env=env,

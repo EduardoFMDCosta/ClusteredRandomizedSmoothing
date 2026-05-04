@@ -14,9 +14,8 @@ if str(SRC) not in sys.path:
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from plotting import plot_experiment_results
+from plotting import plot_single_smoother_distribution
 from stochastic_functions import (
-    AdditiveThreeMode1DGaussianMixture,
     MultiplicativeThreeMode1DGaussianMixture,
 )
 
@@ -34,7 +33,6 @@ from randomized_smoothing.smoothing import (
 
 def main():
     torch.manual_seed(0)
-    plot_region_shading = False
 
     # Define stochastic function and inputs x
     x = torch.tensor([[2.0]], dtype=torch.float64)
@@ -47,14 +45,15 @@ def main():
     # Define parameters
     coverage = 0.9
     smoothing_parameters = SmoothingParameters(
-        N=50,
+        N=30,
         alpha=0.45,
     )
     clustering_parameters = ClusteringParameters(
         max_num_clusters=2,
         coverage=coverage,
-        dbscan_eps=0.05,
-        dbscan_min_samples=5,
+        strategy="hdbscan",
+        hdbscan_min_cluster_size=1000,
+        hdbscan_min_samples=100,
     )
     confidence_parameters = ConfidenceParameters(
         beta=1e-2,
@@ -111,30 +110,41 @@ def main():
 
     # Plot empirical distributions of raw outputs and smoothed outputs.
     rekavandi_mc_samples = rekavandi_smoother.monte_carlo(num_simulations=5000)
-    clusterized_mc_samples = smoother.monte_carlo(num_simulations=5000)
+    clustered_mc_samples = smoother.monte_carlo(num_simulations=5000)
 
-    chart_paths = plot_experiment_results(
+    figures_dir = EXPERIMENTS / "data" / "figures"
+    alpha_path = plot_single_smoother_distribution(
         x=x,
         outputs=raw_outputs,
-        rekavandi_mc_samples=rekavandi_mc_samples,
-        clusterized_mc_samples=clusterized_mc_samples,
-        region=smoother.regions,
-        plot_region_shading=plot_region_shading,
-        output_dir=EXPERIMENTS / "data" / "figures",
+        smoother_mc_samples=rekavandi_mc_samples,
+        region=rekavandi_smoother.regions,
+        output_path=figures_dir / "alpha_smoothing_distribution.pdf",
+        smoother_label=r"$\alpha$-smoothing (Rekavandi et al, 2024)",
+        smoother_color="#E31A1C",
     )
+    clustered_path = plot_single_smoother_distribution(
+        x=x,
+        outputs=raw_outputs,
+        smoother_mc_samples=clustered_mc_samples,
+        region=smoother.regions,
+        output_path=figures_dir / "clustered_alpha_smoothing_distribution.pdf",
+        smoother_label=r"Clustered $\alpha$-smoothing",
+        smoother_color="#1F78B4",
+    )
+    chart_paths = [alpha_path, clustered_path]
 
     # Robustness certification
     radius = 0.01 * torch.ones((x.shape[0], 1), dtype=x.dtype, device=x.device)
     certificate = smoother.robust_certification(radius=radius)
     print(f"certificate: {certificate}")
 
-    # certificate = clusterized_alpha_trimming_smoother.robust_certification(
+    # certificate = clustered_alpha_trimming_smoother.robust_certification(
     #     region_coverage=region_coverage, 
     #     beta=beta, 
     #     num_samples=num_samples, 
     #     radius=0.1
     # )
-    # print(f"certificate_clusterized_alpha_trimming: {certificate}")
+    # print(f"certificate_clustered_alpha_trimming: {certificate}")
 
     # print("=== Experiment Summary ===")
     # print(f"region coverage: {region_coverage}")
@@ -142,7 +152,7 @@ def main():
     # print(f"x shape: {tuple(x.shape)}")
     # print(f"raw outputs shape: {tuple(raw_outputs.shape)}")
     # print(f"alpha-trimming samples shape: {tuple(alpha_trimming_mc_samples.shape)}")
-    # print(f"clusterized samples shape: {tuple(clusterized_alpha_trimming_mc_samples.shape)}")
+    # print(f"clustered samples shape: {tuple(clustered_alpha_trimming_mc_samples.shape)}")
     # print(f"cluster centroids: {cluster.centroids.squeeze(0).squeeze(-1).tolist()}")
     # print(f"cluster weights: {cluster.weights.squeeze(0).tolist()}")
     # print(f"region bounds shape: {tuple(regions.lower.shape)}")

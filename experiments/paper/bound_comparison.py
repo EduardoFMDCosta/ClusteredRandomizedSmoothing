@@ -12,8 +12,9 @@ SRC = EXPERIMENTS.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from plotting import plot_bound_clustered_grid
+
 from randomized_smoothing.optimization import robustness_bound
-from plotting import plot_bound_clusterized_grid
 
 
 def compute_curve(p_values: torch.Tensor, num_samples: int, alpha: float) -> torch.Tensor:
@@ -86,7 +87,7 @@ def main() -> None:
                 )
                 y_data[(alpha, p_v, n)] = y.numpy()
 
-    output_path_ours = plot_bound_clusterized_grid(
+    output_path_ours = plot_bound_clustered_grid(
         ratio_values=ratio_values.numpy(),
         alphas=alphas,
         p_v_values=p_v_values,

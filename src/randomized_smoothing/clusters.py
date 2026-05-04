@@ -2,7 +2,10 @@ import torch
 
 from randomized_smoothing.dataclasses import ClusteringParameters
 from randomized_smoothing.regions import AxisAlignedHyperRectangle
-from randomized_smoothing.utils import _select_num_clusters
+from randomized_smoothing.utils import (
+    _select_num_clusters,
+    _select_num_clusters_hdbscan,
+)
 
 
 def _compute_centroids_from_assignments(
@@ -60,12 +63,22 @@ class Cluster:
         centroids_list: list[torch.Tensor] = []
         assignments_list: list[torch.Tensor] = []
         for i in range(nx):
-            c_i, a_i, k_i = _select_num_clusters(
-                data=outputs[i],
-                max_num_clusters=self.parameters.max_num_clusters,
-                dbscan_eps=self.parameters.dbscan_eps,
-                dbscan_min_samples=self.parameters.dbscan_min_samples,
-            )
+            if self.parameters.strategy == "hdbscan":
+                c_i, a_i, k_i = _select_num_clusters_hdbscan(
+                    data=outputs[i],
+                    max_num_clusters=self.parameters.max_num_clusters,
+                    hdbscan_min_cluster_size=self.parameters.hdbscan_min_cluster_size,
+                    hdbscan_min_samples=self.parameters.hdbscan_min_samples,
+                    hdbscan_cluster_selection_epsilon=self.parameters.hdbscan_cluster_selection_epsilon,
+                    hdbscan_cluster_selection_method=self.parameters.hdbscan_cluster_selection_method,
+                )
+            else:
+                c_i, a_i, k_i = _select_num_clusters(
+                    data=outputs[i],
+                    max_num_clusters=self.parameters.max_num_clusters,
+                    dbscan_eps=self.parameters.dbscan_eps,
+                    dbscan_min_samples=self.parameters.dbscan_min_samples,
+                )
             k_list.append(k_i)
             centroids_list.append(c_i)
             assignments_list.append(a_i)

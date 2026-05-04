@@ -2,7 +2,7 @@
 bimodal state:
 
   (i)   ``bimodal_raw.png``      — samples from the raw stochastic policy.
-  (ii)  ``bimodal_smoothed.png`` — Monte-Carlo draws from the clusterized
+  (ii)  ``bimodal_smoothed.png`` — Monte-Carlo draws from the clustered
                                     alpha-trimmed smoothed predictor (K clusters)
                                     overlaid with the per-cluster output
                                     robustness regions.
@@ -234,7 +234,7 @@ def main() -> None:
     _plot_raw(raw_actions, raw_path, base_state)
     print(f"Saved raw predictor figure to {raw_path}")
 
-    # ---- (ii) Clusterized smoothed predictor (K = max_clusters) ----
+    # ---- (ii) Clustered smoothed predictor (K = max_clusters) ----
     smoother_K = _build_smoother(
         stochastic_fn=stochastic_fn, x=x, sigma=args.sigma,
         smoothing_N=args.smoothing_N, confidence_N=args.confidence_N, alpha=args.alpha, coverage=args.coverage,

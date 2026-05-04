@@ -40,7 +40,7 @@ RandomizedSmoothing/
 	robust smoother that returns alpha-trimmed averages `(m, q)`.
 - `Cluster`:
 	holds `centroids (num_centroids, q)` and centroid probability `weights`.
-- `ClusterizedAlphaTrimmingSmoothing`:
+- `ClusteredAlphaTrimmingSmoothing`:
 	trims inside nearest-centroid clusters, computes cluster means, then samples
 	from weighted cluster means.
 - `fit_kmeans_cluster(...)`:
@@ -55,11 +55,11 @@ RandomizedSmoothing/
 1. Defines a 1D three-mode Gaussian-mixture stochastic function.
 2. Observes many samples for each `x` and fits one 3-centroid `Cluster` per input.
 3. Runs both smoothing methods for a given alpha and prints results.
-4. Rebuilds the clusterized smoother from fresh stochastic samples to visualize
+4. Rebuilds the clustered smoother from fresh stochastic samples to visualize
 	its resulting distribution.
 5. Repeats full smoothing pipelines many times (Monte Carlo):
 	sample from stochastic function, compute trimming, sample from trimmed smoother.
-	For clusterized Monte Carlo, clusters are fitted again on each fresh sample batch.
+	For clustered Monte Carlo, clusters are fitted again on each fresh sample batch.
 
 ## Run
 

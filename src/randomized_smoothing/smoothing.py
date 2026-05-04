@@ -82,9 +82,10 @@ class AlphaTrimmingSmoothing(Smoothing):
         nx, num_samples, _ = outputs.shape
         num_clusters = cluster.num_clusters
 
-        diff = outputs.unsqueeze(2) - centroids.unsqueeze(1)
-        squared_distances = (diff * diff).sum(dim=-1)
-        assignments = squared_distances.argmin(dim=2)
+        # Assign each sample to its nearest robustness region. This matches
+        # ``cluster.partition_assignments`` (used by the certificate) so the
+        # smoothed prediction and the certificate share one partition rule.
+        assignments = cluster._compute_partition_assignments(outputs)
 
         trimmed_mean = torch.zeros_like(centroids)
         positions = torch.arange(num_samples, device=outputs.device).view(1, num_samples, 1)
@@ -138,9 +139,12 @@ class AlphaTrimmingSmoothing(Smoothing):
         probs_partition = cluster.probs_partition
         num_clusters = cluster.num_clusters
 
-        diff = outputs.unsqueeze(3) - centroids.unsqueeze(1).unsqueeze(1)
-        squared_distances = (diff * diff).sum(dim=-1)
-        assignments = squared_distances.argmin(dim=3)
+        # Same partition rule as ``smooth`` and the certificate: assign each
+        # sample to its nearest robustness region. Reshape to (nx, M, d) so we
+        # can reuse ``cluster._compute_partition_assignments``.
+        flat_outputs = outputs.reshape(nx, num_simulations * num_samples, output_dim)
+        flat_assignments = cluster._compute_partition_assignments(flat_outputs)
+        assignments = flat_assignments.view(nx, num_simulations, num_samples)
 
         trimmed_mean = torch.zeros(
             (nx, num_simulations, num_clusters, output_dim),

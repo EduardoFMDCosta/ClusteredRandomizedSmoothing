@@ -1,7 +1,7 @@
 """Illustrate the alpha-trimmed mean's quantization artifact on a bimodal
 output.
 
-When the clusterized smoothed predictor is collapsed to ``max_clusters=1`` on
+When the clustered smoothed predictor is collapsed to ``max_clusters=1`` on
 a bimodal output, every Monte Carlo draw becomes a near-deterministic
 function of how many of the ``N`` noisy samples landed in each mode.  The
 smoothed predictor therefore concentrates on a small, equally spaced set of

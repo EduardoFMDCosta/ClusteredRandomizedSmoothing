@@ -197,6 +197,74 @@ def test_partition_probabilities_follow_nearest_region_distance() -> None:
     assert torch.allclose(cluster.probs_partition, expected_probs)
 
 
+def test_hdbscan_finds_two_clusters_on_bimodal_data() -> None:
+    outputs = _make_outputs()
+    cluster = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=3,
+            coverage=0.8,
+            strategy="hdbscan",
+            hdbscan_min_cluster_size=3,
+        ),
+    )
+
+    assert cluster.k_per_row.shape == (2,)
+    assert int(cluster.k_per_row[0].item()) == 2
+    assert int(cluster.k_per_row[1].item()) == 1
+    assert cluster.num_clusters == 2
+    assert torch.all(cluster.assignments >= 0)
+    assert torch.all(cluster.assignments < cluster.num_clusters)
+
+
+def test_hdbscan_caps_clusters_to_max_num_clusters() -> None:
+    rng = torch.Generator().manual_seed(0)
+    blob_a = 0.05 * torch.randn((30, 2), generator=rng, dtype=torch.float64)
+    blob_b = 0.05 * torch.randn((30, 2), generator=rng, dtype=torch.float64) + torch.tensor([5.0, 5.0], dtype=torch.float64)
+    blob_c = 0.05 * torch.randn((30, 2), generator=rng, dtype=torch.float64) + torch.tensor([10.0, 10.0], dtype=torch.float64)
+    outputs = torch.cat((blob_a, blob_b, blob_c), dim=0).unsqueeze(0)
+
+    cluster = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=2,
+            coverage=0.8,
+            strategy="hdbscan",
+            hdbscan_min_cluster_size=5,
+        ),
+    )
+
+    assert cluster.num_clusters == 2
+    assert int(cluster.k_per_row[0].item()) == 2
+
+
+def test_hdbscan_respects_max_num_clusters_equals_one() -> None:
+    outputs = _make_outputs()
+    cluster = Cluster(
+        outputs=outputs,
+        parameters=ClusteringParameters(
+            max_num_clusters=1,
+            coverage=0.8,
+            strategy="hdbscan",
+            hdbscan_min_cluster_size=3,
+        ),
+    )
+
+    assert cluster.num_clusters == 1
+    assert torch.equal(cluster.k_per_row, torch.ones_like(cluster.k_per_row))
+    assert torch.all(cluster.assignments == 0)
+
+
+def test_hdbscan_invalid_selection_method_raises() -> None:
+    with pytest.raises(ValueError):
+        ClusteringParameters(
+            max_num_clusters=2,
+            coverage=0.8,
+            strategy="hdbscan",
+            hdbscan_cluster_selection_method="not-a-method",
+        )
+
+
 def test_behavior_split_requires_anchor() -> None:
     outputs = _make_outputs()
     with pytest.raises(ValueError):
