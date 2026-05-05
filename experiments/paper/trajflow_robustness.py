@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -21,16 +22,16 @@ if str(SRC) not in sys.path:
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from randomized_smoothing.dataclasses import (
+from randomized_smoothing.dataclasses import (  # noqa: E402
     ClusteringParameters,
     ConfidenceParameters,
     Parameters,
     RuntimeHeuristics,
     SmoothingParameters,
 )
-from randomized_smoothing.distributions import MultivariateGaussian
-from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-from stochastic_functions import TrajFlowMeszarosStochasticFunction
+from randomized_smoothing.distributions import MultivariateGaussian  # noqa: E402
+from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing  # noqa: E402
+from stochastic_functions import TrajFlowMeszarosStochasticFunction  # noqa: E402
 
 
 def _parse_indices(text: str) -> np.ndarray:
@@ -38,6 +39,37 @@ def _parse_indices(text: str) -> np.ndarray:
     if not values:
         raise ValueError("selected-indices must contain at least one integer")
     return np.array([int(v) for v in values], dtype=int)
+
+
+def _parse_radius_values(text: str) -> list[float]:
+    values = [item.strip() for item in text.split(",") if item.strip()]
+    if not values:
+        raise ValueError("radius-values must contain at least one value")
+    radii = [float(v) for v in values]
+    if any(r < 0.0 for r in radii):
+        raise ValueError("all radius values must be non-negative")
+    return sorted(set(radii))
+
+
+def _parse_alpha_values(text: str) -> list[float]:
+    values = [item.strip() for item in text.split(",") if item.strip()]
+    if not values:
+        raise ValueError("alpha-values must contain at least one value")
+    alphas = [float(v) for v in values]
+    if any(a < 0.0 or a >= 1.0 for a in alphas):
+        raise ValueError("all alpha values must satisfy 0 <= alpha < 1")
+    return sorted(set(alphas))
+
+
+def _alpha_tag(alpha: float) -> str:
+    text = f"{alpha:.6f}".rstrip("0").rstrip(".")
+    if not text:
+        text = "0"
+    return text.replace("-", "m").replace(".", "p")
+
+
+def _with_alpha_suffix(path: Path, alpha: float) -> Path:
+    return path.with_name(f"{path.stem}_alpha{_alpha_tag(alpha)}{path.suffix}")
 
 
 def _resolve_gt_file(data_dir: Path) -> Path:
@@ -157,185 +189,6 @@ def _ask_yes_no(prompt: str) -> bool:
         print("Please enter y or n.")
 
 
-def _ask_nonnegative_float(prompt: str) -> float:
-    while True:
-        answer = input(prompt).strip()
-        try:
-            value = float(answer)
-        except ValueError:
-            print("Please enter a valid number.")
-            continue
-        if value < 0.0:
-            print("Please enter a non-negative number.")
-            continue
-        return value
-
-
-def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents: int = 2) -> torch.Tensor:
-    nx = x_positions.shape[0]
-    num_input_timesteps = x_positions.shape[1] // (2 * num_input_agents)
-    x_traj = x_positions.reshape(nx, num_input_agents, num_input_timesteps, 2)
-    return x_traj[:, 0, 0, :]
-
-
-def _slice_helper(helper: list[torch.Tensor], idx: int) -> list[torch.Tensor]:
-    if not helper:
-        return []
-    return [h[idx: idx + 1] for h in helper]
-
-
-def _random_sphere_points(
-    num_points: int,
-    dimension: int,
-    radius: float,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    vec = torch.randn((num_points, dimension), device=device, dtype=dtype)
-    vec = vec / torch.linalg.norm(vec, dim=1, keepdim=True).clamp(min=1e-12)
-    return radius * vec
-
-
-def _behavior_probabilities(
-    samples: torch.Tensor,
-    anchor: torch.Tensor,
-    behavior_stay_radius: float,
-    behavior_min_down: float,
-    behavior_min_left: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    # samples: (nx, num_samples, 2), anchor: (nx, 2)
-    delta = samples - anchor.unsqueeze(1)
-    stay_mask = torch.linalg.norm(delta, dim=-1) <= behavior_stay_radius
-    turn_mask = (
-        (delta[..., 1] <= -behavior_min_down)
-        & (delta[..., 0] <= -behavior_min_left)
-        & (~stay_mask)
-    )
-    stay_prob = stay_mask.to(dtype=samples.dtype).mean(dim=1)
-    turn_prob = turn_mask.to(dtype=samples.dtype).mean(dim=1)
-    return stay_prob, turn_prob
-
-
-def _find_variance_maximizing_delta(
-    stochastic_fn: TrajFlowMeszarosStochasticFunction,
-    model_input: torch.Tensor,
-    helper: list[torch.Tensor],
-    cluster_anchor: torch.Tensor,
-    sigma: float,
-    radius: float,
-    num_candidates: int,
-    num_samples: int,
-    attack_objective: str,
-    behavior_stay_radius: float,
-    behavior_min_down: float,
-    behavior_min_left: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if radius <= 0.0:
-        return torch.zeros_like(model_input), torch.zeros(
-            (model_input.shape[0],),
-            dtype=model_input.dtype,
-            device=model_input.device,
-        )
-    if num_candidates <= 0:
-        raise ValueError("attack-num-candidates must be positive")
-    if num_samples <= 0:
-        raise ValueError("attack-num-samples must be positive")
-    if attack_objective not in ("variance", "behavior_flip"):
-        raise ValueError(f"Unsupported attack objective: {attack_objective}")
-
-    dimension = model_input.shape[-1]
-    base_noise = MultivariateGaussian(
-        mean=torch.zeros(dimension, dtype=model_input.dtype, device=model_input.device),
-        cov=(sigma ** 2) * torch.eye(dimension, dtype=model_input.dtype, device=model_input.device),
-    )
-
-    delta = torch.zeros_like(model_input)
-    best_scores = torch.empty((model_input.shape[0],), dtype=model_input.dtype, device=model_input.device)
-    for i in range(model_input.shape[0]):
-        x_i = model_input[i: i + 1]
-        h_i = _slice_helper(helper, i)
-        anchor_i = cluster_anchor[i: i + 1].to(device=model_input.device, dtype=model_input.dtype)
-
-        target_is_turn: bool | None = None
-        if attack_objective == "behavior_flip":
-            clean_samples = stochastic_fn.sample_from_noisy_inputs(
-                x=x_i,
-                smoothing_distribution=base_noise,
-                num_samples=num_samples,
-                h=h_i,
-            )
-            clean_stay_prob, clean_turn_prob = _behavior_probabilities(
-                samples=clean_samples,
-                anchor=anchor_i,
-                behavior_stay_radius=behavior_stay_radius,
-                behavior_min_down=behavior_min_down,
-                behavior_min_left=behavior_min_left,
-            )
-            # Flip away from dominant clean behavior.
-            target_is_turn = bool(clean_turn_prob[0].item() < clean_stay_prob[0].item())
-
-        candidates = _random_sphere_points(
-            num_points=num_candidates,
-            dimension=dimension,
-            radius=radius,
-            device=model_input.device,
-            dtype=model_input.dtype,
-        )
-
-        best_score = float("-inf")
-        best_delta = candidates[0]
-        for c in range(num_candidates):
-            delta_c = candidates[c: c + 1]
-            x_adv = x_i + delta_c
-            samples = stochastic_fn.sample_from_noisy_inputs(
-                x=x_adv,
-                smoothing_distribution=base_noise,
-                num_samples=num_samples,
-                h=h_i,
-            )
-            if attack_objective == "variance":
-                # Score = trace of empirical covariance of noisy outputs.
-                score = float(samples.var(dim=1, unbiased=False).sum().item())
-            else:
-                adv_stay_prob, adv_turn_prob = _behavior_probabilities(
-                    samples=samples,
-                    anchor=anchor_i,
-                    behavior_stay_radius=behavior_stay_radius,
-                    behavior_min_down=behavior_min_down,
-                    behavior_min_left=behavior_min_left,
-                )
-                if target_is_turn:
-                    score = float(adv_turn_prob[0].item())
-                else:
-                    score = float(adv_stay_prob[0].item())
-            if score > best_score:
-                best_score = score
-                best_delta = delta_c.squeeze(0)
-
-        delta[i] = best_delta
-        best_scores[i] = best_score
-
-    return delta, best_scores
-
-
-def _build_parameters(args: argparse.Namespace, max_num_clusters: int) -> Parameters:
-    return Parameters(
-        smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
-        clustering=ClusteringParameters(
-            max_num_clusters=max_num_clusters,
-            coverage=args.coverage,
-            strategy=args.cluster_strategy,
-            dbscan_eps=args.dbscan_eps,
-            dbscan_min_samples=args.dbscan_min_samples,
-            behavior_stay_radius=args.behavior_stay_radius,
-            behavior_min_down=args.behavior_min_down,
-            behavior_min_left=args.behavior_min_left,
-        ),
-        confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
-        runtime=RuntimeHeuristics(noise_sub_batch_size=args.noise_sub_batch_size),
-    )
-
-
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -350,16 +203,19 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _save_csv(path: Path, rows: list[dict[str, Any]], header: list[str], keys: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for row in rows:
+            writer.writerow([row[k] for k in keys])
+
+
 def _build_fixed_random_order(valid_indices: np.ndarray, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     order = rng.permutation(valid_indices)
     return order.astype(int)
-
-
-def _radius_suffix(radius: float) -> str:
-    # Keep filenames portable and compact, e.g. r0p1, r1p25, r0.
-    text = f"{radius:.10g}".replace("-", "m").replace(".", "p")
-    return f"r{text}"
 
 
 def _load_or_create_fixed_random_order(
@@ -392,304 +248,176 @@ def _load_or_create_fixed_random_order(
     return order
 
 
-def _save_csv(
-    path: Path,
-    rows: list[dict[str, Any]],
-    header: list[str],
-    keys: list[str],
-    title_row: list[str] | None = None,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        if title_row is not None:
-            writer.writerow(title_row)
-        writer.writerow(header)
-        for row in rows:
-            writer.writerow([_format_cell(row[k]) for k in keys])
+def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents: int = 2) -> torch.Tensor:
+    nx = x_positions.shape[0]
+    num_input_timesteps = x_positions.shape[1] // (2 * num_input_agents)
+    x_traj = x_positions.reshape(nx, num_input_agents, num_input_timesteps, 2)
+    return x_traj[:, 0, 0, :]
 
 
-def _format_float(value: float) -> str:
-    if np.isnan(value):
-        return "nan"
-    return f"{value:.2f}"
-
-
-def _format_cell(value: Any) -> str:
-    if isinstance(value, (float, np.floating)):
-        return _format_float(float(value))
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    return str(value)
-
-
-def _print_table(
-    rows: list[dict[str, Any]],
-    header: list[str],
-    keys: list[str],
-    title_row: list[str] | None = None,
-) -> None:
-    if not rows:
-        print("No rows to print.")
-        return
-
-    body = []
-    for row in rows:
-        values = [_format_cell(row[key]) for key in keys]
-        body.append(values)
-
-    widths = [
-        max(
-            len(header[i]),
-            len(title_row[i]) if title_row is not None and i < len(title_row) else 0,
-            *(len(r[i]) for r in body),
-        )
-        for i in range(len(header))
-    ]
-
-    def _fmt(values: list[str]) -> str:
-        return " | ".join(v.ljust(widths[i]) for i, v in enumerate(values))
-
-    if title_row is not None:
-        print(_fmt(title_row))
-    print(_fmt(header))
-    print("-+-".join("-" * w for w in widths))
-    for values in body:
-        print(_fmt(values))
-
-
-def _merged_table_schema() -> tuple[list[str], list[str], list[str], list[str]]:
-    title_row = ["", "", r"Clustered $\alpha$-smoothing", "", "", r"$\alpha$-smoothing"]
-    header = [
-        r"Index $i$",
-        "Statistic",
-        r"$\mathcal{R}_1$",
-        r"$\mathcal{R}_2$",
-        r"$\mathcal{R} = \mathcal{R}_1 \cup \mathcal{R}_2$",
-        r"$\mathcal{R}$",
-    ]
-    keys = [
-        "x_index",
-        "quantity",
-        "region_1",
-        "region_2",
-        "region_union",
-        "region_alpha",
-    ]
-    return title_row, header, keys, [
-        r"Proportion $h_w(x+\varepsilon) \in \mathcal{R}_j$",
-        "Area",
-        "Bounds Thm 3.1.",
-        r"Proportion $H(x) \in \mathcal{R}_j$",
-    ]
-
-
-def _merged_table_rows(per_x_rows: list[dict[str, Any]], quantity_order: list[str]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for per_x in per_x_rows:
-        x_index = int(per_x["x_index"])
-        rows.extend(
-            [
-                {
-                    "x_index": x_index,
-                    "quantity": quantity_order[0],
-                    "region_1": per_x["set_containment_region_1_k2"],
-                    "region_2": per_x["set_containment_region_2_k2"],
-                    "region_union": per_x["set_containment_union_k2"],
-                    "region_alpha": per_x["set_containment_k1"],
-                },
-                {
-                    "x_index": x_index,
-                    "quantity": quantity_order[1],
-                    "region_1": per_x["area_region_1_k2"],
-                    "region_2": per_x["area_region_2_k2"],
-                    "region_union": per_x["area_union_k2"],
-                    "region_alpha": per_x["area_k1"],
-                },
-                {
-                    "x_index": x_index,
-                    "quantity": quantity_order[2],
-                    "region_1": per_x["bound_region_1_k2"],
-                    "region_2": per_x["bound_region_2_k2"],
-                    "region_union": per_x["bound_union_k2"],
-                    "region_alpha": per_x["bound_k1"],
-                },
-                {
-                    "x_index": x_index,
-                    "quantity": quantity_order[3],
-                    "region_1": per_x["mc_containment_region_1_k2"],
-                    "region_2": per_x["mc_containment_region_2_k2"],
-                    "region_union": per_x["mc_containment_union_k2"],
-                    "region_alpha": per_x["mc_containment_k1"],
-                },
-            ]
-        )
-    return rows
-
-
-def _load_per_x_rows_from_json(json_path: Path) -> list[dict[str, Any]]:
-    payload = _load_json(json_path)
-    rows = payload.get("rows", None)
-    if not isinstance(rows, list):
-        raise ValueError(f"Expected 'rows' list in {json_path}")
-    # The JSON stores merged display rows (4 per x_index). Reconstruct per-x dicts.
-    quantity_labels = [
-        r"Proportion $h_w(x+\varepsilon) \in \mathcal{R}_j$",
-        "Area",
-        "Bounds Thm 3.1.",
-        r"Proportion $H(x) \in \mathcal{R}_j$",
-    ]
-    key_map = {
-        quantity_labels[0]: (
-            "set_containment_region_1_k2", "set_containment_region_2_k2",
-            "set_containment_union_k2", "set_containment_k1",
-        ),
-        quantity_labels[1]: (
-            "area_region_1_k2", "area_region_2_k2",
-            "area_union_k2", "area_k1",
-        ),
-        quantity_labels[2]: (
-            "bound_region_1_k2", "bound_region_2_k2",
-            "bound_union_k2", "bound_k1",
-        ),
-        quantity_labels[3]: (
-            "mc_containment_region_1_k2", "mc_containment_region_2_k2",
-            "mc_containment_union_k2", "mc_containment_k1",
-        ),
-    }
-    # Group rows by x_index, preserving order.
-    per_x: dict[int, dict[str, Any]] = {}
-    order: list[int] = []
-    for r in rows:
-        xi = int(r["x_index"])
-        if xi not in per_x:
-            per_x[xi] = {"x_index": xi}
-            order.append(xi)
-        qty = r.get("quantity", "")
-        if qty in key_map:
-            k1, k2, ku, ka = key_map[qty]
-            def _to_float(v: Any) -> float:
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    return float("nan")
-            per_x[xi][k1] = _to_float(r.get("region_1", float("nan")))
-            per_x[xi][k2] = _to_float(r.get("region_2", float("nan")))
-            per_x[xi][ku] = _to_float(r.get("region_union", float("nan")))
-            per_x[xi][ka] = _to_float(r.get("region_alpha", float("nan")))
-    return [per_x[xi] for xi in order]
-
-
-def _compute_statistics_table(
-    per_x_rows: list[dict[str, Any]],
-    mc_samples: int = 1000,
-) -> list[dict[str, Any]]:
-    n = len(per_x_rows)
-    if n == 0:
+def _slice_helper(helper: list[torch.Tensor], idx: int) -> list[torch.Tensor]:
+    if not helper:
         return []
-
-    # ── Row 1: proportion of x where union containment is strictly higher ──
-    clustered_wins = [
-        r["set_containment_union_k2"] > r["set_containment_k1"]
-        for r in per_x_rows
-    ]
-    alpha_wins = [
-        r["set_containment_k1"] > r["set_containment_union_k2"]
-        for r in per_x_rows
-    ]
-    prop_clustered_wins = float(np.mean(clustered_wins))
-    prop_alpha_wins = float(np.mean(alpha_wins))
-
-    # ── Row 2: average margin when each method wins ──
-    clustered_margins = [
-        r["set_containment_union_k2"] - r["set_containment_k1"]
-        for r, w in zip(per_x_rows, clustered_wins) if w
-    ]
-    alpha_margins = [
-        r["set_containment_k1"] - r["set_containment_union_k2"]
-        for r, w in zip(per_x_rows, alpha_wins) if w
-    ]
-    avg_margin_clustered = float(np.mean(clustered_margins)) if clustered_margins else float("nan")
-    avg_margin_alpha = float(np.mean(alpha_margins)) if alpha_margins else float("nan")
-
-    # ── Row 3: average total area ──
-    avg_area_clustered = float(np.mean([r["area_union_k2"] for r in per_x_rows]))
-    avg_area_alpha = float(np.mean([r["area_k1"] for r in per_x_rows]))
-
-    # ── Row 4: average minimum area (over individual regions) ──
-    def _min_area_k2(r: dict[str, Any]) -> float:
-        a1 = r["area_region_1_k2"]
-        a2 = r["area_region_2_k2"]
-        candidates = [v for v in (a1, a2) if not np.isnan(v)]
-        return float(min(candidates)) if candidates else float("nan")
-
-    avg_min_area_clustered = float(np.nanmean([_min_area_k2(r) for r in per_x_rows]))
-    # Alpha-smoothing has only one region, so min == total area.
-    avg_min_area_alpha = float(np.mean([r["area_k1"] for r in per_x_rows]))
-
-    # ── Row 5: proportion of (x, region) pairs where bound <= mc_containment ──
-    # Skip pairs where the bound is below 1/mc_samples: these are unverifiable
-    # because the expected number of MC hits is < 1, so the MC estimate is
-    # almost surely 0 regardless of whether the bound truly holds.
-    min_observable = 1.0 / mc_samples
-    # Clustered: check region 1 and region 2 independently (skip NaN bounds).
-    k2_checks: list[bool] = []
-    for r in per_x_rows:
-        for bk, mck in [
-            ("bound_region_1_k2", "mc_containment_region_1_k2"),
-            ("bound_region_2_k2", "mc_containment_region_2_k2"),
-        ]:
-            b, mc = r[bk], r[mck]
-            if np.isnan(b) or np.isnan(mc):
-                continue
-            if b < min_observable:
-                continue  # too small to verify with MC
-            k2_checks.append(bool(b <= mc))
-    prop_bound_valid_clustered = float(np.mean(k2_checks)) if k2_checks else float("nan")
-    # Alpha: single region (same filter).
-    k1_checks = [
-        bool(r["bound_k1"] <= r["mc_containment_k1"])
-        for r in per_x_rows
-        if r["bound_k1"] >= min_observable
-    ]
-    prop_bound_valid_alpha = float(np.mean(k1_checks)) if k1_checks else float("nan")
-
-    stat_rows = [
-        {
-            "statistic": r"Proportion $h_w(x+\varepsilon) \in \mathcal{R}$ clustered wins",
-            "clustered": prop_clustered_wins,
-            "alpha": prop_alpha_wins,
-        },
-        {
-            "statistic": "Avg margin (containment) when winning",
-            "clustered": avg_margin_clustered,
-            "alpha": avg_margin_alpha,
-        },
-        {
-            "statistic": "Avg total area",
-            "clustered": avg_area_clustered,
-            "alpha": avg_area_alpha,
-        },
-        {
-            "statistic": "Avg minimum area (per region)",
-            "clustered": avg_min_area_clustered,
-            "alpha": avg_min_area_alpha,
-        },
-        {
-            "statistic": r"Proportion Bound Thm 3.1. $\leq$ Proportion $H(x) \in \mathcal{R}$ (per region)",
-            "clustered": prop_bound_valid_clustered,
-            "alpha": prop_bound_valid_alpha,
-        },
-    ]
-    return stat_rows
+    return [h[idx : idx + 1] for h in helper]
 
 
-def _compute_batch_table_rows(
+def _random_ball_points(
+    num_points: int,
+    dimension: int,
+    radius: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    if radius <= 0.0 or num_points <= 1:
+        return torch.zeros((1, dimension), device=device, dtype=dtype)
+
+    vec = torch.randn((num_points - 1, dimension), device=device, dtype=dtype)
+    vec = vec / torch.linalg.norm(vec, dim=1, keepdim=True).clamp(min=1e-12)
+    scales = torch.rand((num_points - 1, 1), device=device, dtype=dtype)
+    scales = radius * scales.pow(1.0 / float(dimension))
+    sampled = scales * vec
+    origin = torch.zeros((1, dimension), device=device, dtype=dtype)
+    return torch.cat((origin, sampled), dim=0)
+
+
+def _build_parameters(args: argparse.Namespace, max_num_clusters: int) -> Parameters:
+    if max_num_clusters == 1:
+        clustering = ClusteringParameters(
+            max_num_clusters=1,
+            coverage=args.coverage,
+            strategy="dbscan",
+            dbscan_eps=args.dbscan_eps,
+            dbscan_min_samples=args.dbscan_min_samples,
+        )
+    else:
+        clustering = ClusteringParameters(
+            max_num_clusters=2,
+            coverage=args.coverage,
+            strategy=args.cluster_strategy,
+            dbscan_eps=args.dbscan_eps,
+            dbscan_min_samples=args.dbscan_min_samples,
+            behavior_stay_radius=args.behavior_stay_radius,
+            behavior_min_down=args.behavior_min_down,
+            behavior_min_left=args.behavior_min_left,
+        )
+
+    return Parameters(
+        smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
+        clustering=clustering,
+        confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
+        runtime=RuntimeHeuristics(noise_sub_batch_size=args.noise_sub_batch_size),
+    )
+
+
+def _estimate_noisy_containment(
+    stochastic_fn: TrajFlowMeszarosStochasticFunction,
+    smoother: GaussianAlphaTrimmingSmoothing,
+    x_single: torch.Tensor,
+    helper_single: list[torch.Tensor],
+    sigma: float,
+    num_samples: int,
+    noise_sub_batch_size: int,
+) -> float:
+    dimension = x_single.shape[-1]
+    base_noise = MultivariateGaussian(
+        mean=torch.zeros(dimension, dtype=x_single.dtype, device=x_single.device),
+        cov=(sigma**2) * torch.eye(dimension, dtype=x_single.dtype, device=x_single.device),
+    )
+    noisy_samples = stochastic_fn.sample_from_noisy_inputs(
+        x=x_single,
+        smoothing_distribution=base_noise,
+        num_samples=num_samples,
+        h=helper_single,
+        noise_sub_batch_size=noise_sub_batch_size,
+    )
+    inside = smoother.regions.contains(noisy_samples).any(dim=-1)
+    return float(inside.float().mean().item())
+
+
+def _estimate_mc_containment(
+    smoother: GaussianAlphaTrimmingSmoothing,
+    z_single: torch.Tensor,
+    num_samples: int,
+    row_index: int,
+) -> float:
+    z_full = smoother.x.detach().clone()
+    z_full[row_index : row_index + 1] = z_single
+    mc_samples = smoother.monte_carlo(num_simulations=num_samples, z=z_full)
+    inside = smoother.regions.contains(mc_samples).any(dim=-1)
+    return float(inside[row_index].float().mean().item())
+
+
+def _find_attack_minimizing_containment(
+    stochastic_fn: TrajFlowMeszarosStochasticFunction,
+    smoother: GaussianAlphaTrimmingSmoothing,
+    x_single: torch.Tensor,
+    helper_single: list[torch.Tensor],
+    sigma: float,
+    radius: float,
+    num_candidates: int,
+    containment_samples: int,
+    mc_containment_samples: int,
+    noise_sub_batch_size: int,
+    objective: str,
+    warm_start_delta: torch.Tensor | None = None,
+    row_index: int | None = None,
+) -> tuple[torch.Tensor, float]:
+    if objective not in ("noisy", "mc"):
+        raise ValueError(f"Unsupported objective: {objective}")
+
+    dimension = x_single.shape[-1]
+    candidates = _random_ball_points(
+        num_points=max(num_candidates, 1),
+        dimension=dimension,
+        radius=radius,
+        device=x_single.device,
+        dtype=x_single.dtype,
+    )
+    if warm_start_delta is not None:
+        warm = warm_start_delta.to(device=x_single.device, dtype=x_single.dtype).view(1, dimension)
+        warm_norm = float(torch.linalg.norm(warm).item())
+        if warm_norm <= radius + 1e-12:
+            candidates = torch.cat((candidates, warm), dim=0)
+
+    best_delta = candidates[0].clone()
+    best_score = float("inf")
+    for c in range(candidates.shape[0]):
+        delta = candidates[c : c + 1]
+        z_adv = x_single + delta
+        if objective == "noisy":
+            containment = _estimate_noisy_containment(
+                stochastic_fn=stochastic_fn,
+                smoother=smoother,
+                x_single=z_adv,
+                helper_single=helper_single,
+                sigma=sigma,
+                num_samples=containment_samples,
+                noise_sub_batch_size=noise_sub_batch_size,
+            )
+        else:
+            if row_index is None:
+                raise ValueError("row_index is required for mc objective")
+            containment = _estimate_mc_containment(
+                smoother=smoother,
+                z_single=z_adv,
+                num_samples=mc_containment_samples,
+                row_index=row_index,
+            )
+
+        if containment < best_score:
+            best_score = containment
+            best_delta = delta.squeeze(0).clone()
+
+    return best_delta, float(best_score)
+
+
+def _compute_batch_radius_rows(
     args: argparse.Namespace,
     stochastic_fn: TrajFlowMeszarosStochasticFunction,
     batch_indices: np.ndarray,
     inputs: np.ndarray,
     outputs_gt: np.ndarray,
+    radii: list[float],
 ) -> list[dict[str, Any]]:
     x_position = _prepare_inputs_from_arrays(
         selected_indices=batch_indices,
@@ -721,153 +449,245 @@ def _compute_batch_table_rows(
         cluster_anchor=cluster_anchor,
     )
 
-    radius = torch.full(
-        (model_input.shape[0], 1),
-        fill_value=args.certification_radius,
-        dtype=model_input.dtype,
-        device=model_input.device,
-    )
-    cert_k2 = smoother_k2.robust_certification(radius=radius)
-    cert_k1 = smoother_k1.robust_certification(radius=radius)
+    smoothers = {
+        "k2": smoother_k2,
+        "k1": smoother_k1,
+    }
 
-    # Uniform flow: keep clusters/certification from clean x, then evaluate
-    # containment metrics on attacked x + delta (delta=0 when radius=0).
-    delta = torch.zeros_like(model_input)
-    attack_scores = torch.zeros(
-        (model_input.shape[0],),
-        dtype=model_input.dtype,
-        device=model_input.device,
-    )
-    if args.certification_radius > 0.0:
-        delta, attack_scores = _find_variance_maximizing_delta(
-            stochastic_fn=stochastic_fn,
-            model_input=model_input,
-            helper=helper,
-            cluster_anchor=cluster_anchor,
-            sigma=args.sigma,
-            radius=args.certification_radius,
-            num_candidates=args.attack_num_candidates,
-            num_samples=args.attack_num_samples,
-            attack_objective=args.attack_objective,
-            behavior_stay_radius=args.behavior_stay_radius,
-            behavior_min_down=args.behavior_min_down,
-            behavior_min_left=args.behavior_min_left,
-        )
-        if args.attack_objective == "behavior_flip":
-            print(
-                "attack behavior-flip score "
-                f"mean={attack_scores.mean().item():.3f}, "
-                f"min={attack_scores.min().item():.3f}, "
-                f"max={attack_scores.max().item():.3f}"
-            )
-    model_input_eval = model_input + delta
-
-    base_noise = MultivariateGaussian(
-        mean=torch.zeros(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
-        cov=(args.sigma ** 2)
-        * torch.eye(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
-    )
-
-    noisy_samples = stochastic_fn.sample_from_noisy_inputs(
-        x=model_input_eval,
-        smoothing_distribution=base_noise,
-        num_samples=args.containment_samples,
-        h=helper,
-    )
-    noisy_region_inside_k2 = smoother_k2.regions.contains(noisy_samples)
-    noisy_inside_k2 = noisy_region_inside_k2.any(dim=-1)
-    noisy_inside_k1 = smoother_k1.regions.contains(noisy_samples).any(dim=-1)
-    containment_region_k2 = noisy_region_inside_k2.float().mean(dim=1)
-    containment_k1 = noisy_inside_k1.float().mean(dim=1)
-
-    mc_samples_k2 = smoother_k2.monte_carlo(num_simulations=args.mc_containment_samples, z=model_input_eval)
-    mc_samples_k1 = smoother_k1.monte_carlo(num_simulations=args.mc_containment_samples, z=model_input_eval)
-    mc_region_inside_k2 = smoother_k2.regions.contains(mc_samples_k2)
-    mc_inside_k2 = mc_region_inside_k2.any(dim=-1)
-    mc_inside_k1 = smoother_k1.regions.contains(mc_samples_k1).any(dim=-1)
-    mc_containment_region_k2 = mc_region_inside_k2.float().mean(dim=1)
-    mc_containment_k2 = mc_inside_k2.float().mean(dim=1)
-    mc_containment_k1 = mc_inside_k1.float().mean(dim=1)
-
-    cert_k2_probs = cert_k2.probs.detach().cpu()
-    cert_k2_total = cert_k2.total_probs.detach().cpu()
-    cert_k1_total = cert_k1.total_probs.detach().cpu()
-    k2_used = smoother_k2.cluster.k_per_row.detach().cpu().to(torch.int64)
-    k1_used = smoother_k1.cluster.k_per_row.detach().cpu().to(torch.int64)
-
-    k2_volume = smoother_k2.regions.volume.detach().cpu().to(torch.float64)
-    k1_volume = smoother_k1.regions.volume.detach().cpu().to(torch.float64)
-    k2_area_region_1 = torch.full((k2_volume.shape[0],), float("nan"), dtype=torch.float64)
-    k2_area_region_2 = torch.full((k2_volume.shape[0],), float("nan"), dtype=torch.float64)
-    k2_area_sum = torch.zeros(k2_volume.shape[0], dtype=torch.float64)
-    k1_total_area = torch.zeros(k1_volume.shape[0], dtype=torch.float64)
-    for i in range(k2_volume.shape[0]):
-        used = int(k2_used[i].item())
-        k2_area_sum[i] = k2_volume[i, :used].sum()
-        if used >= 1 and k2_volume.shape[1] >= 1:
-            k2_area_region_1[i] = k2_volume[i, 0]
-        if used >= 2 and k2_volume.shape[1] >= 2:
-            k2_area_region_2[i] = k2_volume[i, 1]
-        k1_total_area[i] = k1_volume[i, : int(k1_used[i].item())].sum()
+    # Important: smoothers are fit once on clean inputs and then reused.
+    # Attacks only perturb evaluation points z=x+delta for containment/MC.
 
     rows: list[dict[str, Any]] = []
-    containment_region_k2_cpu = containment_region_k2.detach().cpu().numpy()
-    containment_k1_cpu = containment_k1.detach().cpu().numpy()
-    mc_containment_region_k2_cpu = mc_containment_region_k2.detach().cpu().numpy()
-    mc_containment_k2_cpu = mc_containment_k2.detach().cpu().numpy()
-    mc_containment_k1_cpu = mc_containment_k1.detach().cpu().numpy()
-    k2_area_region_1_cpu = k2_area_region_1.numpy()
-    k2_area_region_2_cpu = k2_area_region_2.numpy()
-    k2_area_sum_cpu = k2_area_sum.numpy()
-    k1_total_area_cpu = k1_total_area.numpy()
+    # Warm-start cache keyed by (smoother, objective, local input index).
+    warm_starts: dict[tuple[str, str, int], torch.Tensor] = {}
+    for radius in radii:
+        radius_tensor = torch.full(
+            (model_input.shape[0], 1),
+            fill_value=radius,
+            dtype=model_input.dtype,
+            device=model_input.device,
+        )
 
-    for i, dataset_idx in enumerate(batch_indices.tolist()):
-        used = int(k2_used[i].item())
-        contain_r1 = float("nan")
-        contain_r2 = float("nan")
-        contain_union = float(noisy_inside_k2[i].float().mean().item())
-        mc_contain_r1 = float("nan")
-        mc_contain_r2 = float("nan")
-        if used >= 1 and containment_region_k2_cpu.shape[1] >= 1:
-            contain_r1 = float(containment_region_k2_cpu[i, 0])
-            mc_contain_r1 = float(mc_containment_region_k2_cpu[i, 0])
-        if used >= 2 and containment_region_k2_cpu.shape[1] >= 2:
-            contain_r2 = float(containment_region_k2_cpu[i, 1])
-            mc_contain_r2 = float(mc_containment_region_k2_cpu[i, 1])
-
-        row: dict[str, Any] = {
-            "x_index": int(dataset_idx),
-            "set_containment_region_1_k2": contain_r1,
-            "set_containment_region_2_k2": contain_r2,
-            "set_containment_union_k2": contain_union,
-            "area_region_1_k2": float(k2_area_region_1_cpu[i]),
-            "area_region_2_k2": float(k2_area_region_2_cpu[i]),
-            "area_union_k2": float(k2_area_sum_cpu[i]),
-            "bound_region_1_k2": float("nan"),
-            "bound_region_2_k2": float("nan"),
-            "bound_union_k2": float(cert_k2_total[i].item()),
-            "mc_containment_region_1_k2": mc_contain_r1,
-            "mc_containment_region_2_k2": mc_contain_r2,
-            "mc_containment_union_k2": float(mc_containment_k2_cpu[i]),
-            "set_containment_k1": float(containment_k1_cpu[i]),
-            "area_k1": float(k1_total_area_cpu[i]),
-            "bound_k1": float(cert_k1_total[i].item()),
-            "mc_containment_k1": float(mc_containment_k1_cpu[i]),
+        cert_k2 = smoother_k2.robust_certification(radius=radius_tensor).total_probs.detach().cpu().numpy()
+        cert_k1 = smoother_k1.robust_certification(radius=radius_tensor).total_probs.detach().cpu().numpy()
+        cert_map = {
+            "k2": cert_k2,
+            "k1": cert_k1,
         }
-        if used >= 1 and cert_k2_probs.shape[1] >= 1:
-            row["bound_region_1_k2"] = float(cert_k2_probs[i, 0].item())
-        if used >= 2 and cert_k2_probs.shape[1] >= 2:
-            row["bound_region_2_k2"] = float(cert_k2_probs[i, 1].item())
-        rows.append(row)
+
+        for i, dataset_idx in enumerate(batch_indices.tolist()):
+            x_i = model_input[i : i + 1]
+            helper_i = _slice_helper(helper, i)
+
+            for smoother_key, smoother in smoothers.items():
+                cert_total = float(cert_map[smoother_key][i])
+                noisy_key = (smoother_key, "noisy", i)
+                mc_key = (smoother_key, "mc", i)
+
+                noisy_delta, noisy_prop = _find_attack_minimizing_containment(
+                    stochastic_fn=stochastic_fn,
+                    smoother=smoother,
+                    x_single=x_i,
+                    helper_single=helper_i,
+                    sigma=args.sigma,
+                    radius=radius,
+                    num_candidates=args.attack_num_candidates,
+                    containment_samples=args.containment_samples,
+                    mc_containment_samples=args.mc_containment_samples,
+                    noise_sub_batch_size=args.noise_sub_batch_size,
+                    objective="noisy",
+                    warm_start_delta=warm_starts.get(noisy_key),
+                    row_index=i,
+                )
+                mc_delta, mc_prop = _find_attack_minimizing_containment(
+                    stochastic_fn=stochastic_fn,
+                    smoother=smoother,
+                    x_single=x_i,
+                    helper_single=helper_i,
+                    sigma=args.sigma,
+                    radius=radius,
+                    num_candidates=args.attack_num_candidates,
+                    containment_samples=args.containment_samples,
+                    mc_containment_samples=args.mc_containment_samples,
+                    noise_sub_batch_size=args.noise_sub_batch_size,
+                    objective="mc",
+                    warm_start_delta=warm_starts.get(mc_key),
+                    row_index=i,
+                )
+                warm_starts[noisy_key] = noisy_delta.detach().clone()
+                warm_starts[mc_key] = mc_delta.detach().clone()
+
+                rows.append(
+                    {
+                        "x_index": int(dataset_idx),
+                        "radius": float(radius),
+                        "smoother": smoother_key,
+                        "cert_total": cert_total,
+                        "noisy_adv_prop": float(noisy_prop),
+                        "mc_adv_prop": float(mc_prop),
+                        "gap_noisy": float(noisy_prop - cert_total),
+                        "gap_mc": float(mc_prop - cert_total),
+                        "noisy_attack_norm": float(torch.linalg.norm(noisy_delta).item()),
+                        "mc_attack_norm": float(torch.linalg.norm(mc_delta).item()),
+                    }
+                )
 
     return rows
+
+
+def _summarize_by_radius(rows: list[dict[str, Any]], radii: list[float]) -> list[dict[str, Any]]:
+    summary_rows: list[dict[str, Any]] = []
+    smoother_order = ["k2", "k1"]
+
+    for smoother in smoother_order:
+        for radius in radii:
+            subset = [r for r in rows if r["smoother"] == smoother and float(r["radius"]) == float(radius)]
+            if not subset:
+                continue
+
+            noisy_gaps = np.array([float(r["gap_noisy"]) for r in subset], dtype=float)
+            mc_gaps = np.array([float(r["gap_mc"]) for r in subset], dtype=float)
+
+            summary_rows.append(
+                {
+                    "smoother": smoother,
+                    "radius": float(radius),
+                    "num_inputs": int(len(subset)),
+                    "gap_noisy_mean": float(np.mean(noisy_gaps)),
+                    "gap_noisy_std": float(np.std(noisy_gaps, ddof=0)),
+                    "gap_mc_mean": float(np.mean(mc_gaps)),
+                    "gap_mc_std": float(np.std(mc_gaps, ddof=0)),
+                }
+            )
+
+    return summary_rows
+
+
+def _directional_band(
+    x: np.ndarray,
+    mean: np.ndarray,
+    std: np.ndarray,
+    ax: plt.Axes,
+    color: str,
+    alpha: float,
+) -> None:
+    if np.all(mean >= 0.0):
+        lower = mean
+        upper = mean + std
+    elif np.all(mean <= 0.0):
+        lower = mean - std
+        upper = mean
+    else:
+        lower = mean - std
+        upper = mean + std
+    ax.fill_between(x, lower, upper, color=color, alpha=alpha)
+
+
+def _plot_side_by_side_gaps(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
+    if not summary_rows:
+        raise ValueError("summary_rows must be non-empty")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with plt.rc_context(
+        {
+            "text.usetex": True,
+            "font.family": "serif",
+            "font.serif": ["Computer Modern Roman"],
+            "mathtext.fontset": "cm",
+            "axes.labelsize": 10,
+            "axes.titlesize": 10,
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "legend.fontsize": 9,
+        }
+    ):
+        fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.6), sharey=True)
+
+        smoother_meta = [
+            ("k2", r"Clustered $\alpha$-smoothing"),
+            ("k1", r"$\alpha$-smoothing"),
+        ]
+        line_meta = [
+            ("gap_noisy", "#4C78A8", "o", r"For $h_w$"),
+            ("gap_mc", "#F58518", "s", r"For $\tilde{\mathcal{H}}$"),
+        ]
+
+        for ax, (smoother, title) in zip(axes, smoother_meta):
+            subset = [r for r in summary_rows if r["smoother"] == smoother]
+            subset = sorted(subset, key=lambda r: float(r["radius"]))
+            x = np.array([float(r["radius"]) for r in subset], dtype=float)
+
+            for metric, color, marker, label in line_meta:
+                mean = np.array([float(r[f"{metric}_mean"]) for r in subset], dtype=float)
+                std = np.array([float(r[f"{metric}_std"]) for r in subset], dtype=float)
+
+                _directional_band(x=x, mean=mean, std=std, ax=ax, color=color, alpha=0.20)
+                ax.plot(x, mean, marker=marker, linewidth=1.6, color=color, label=label)
+
+            ax.axhline(0.0, color="#333333", linestyle="--", linewidth=1.0, alpha=0.8)
+            ax.set_title(title)
+            ax.set_xlabel(r"Robustness radius $r$")
+            ax.grid(True, linestyle=":", alpha=0.35)
+
+        axes[0].set_ylabel("Probability gap")
+        axes[0].legend(loc="best", frameon=True)
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=220)
+        plt.close(fig)
+
+
+def _print_summary_table(summary_rows: list[dict[str, Any]]) -> None:
+    if not summary_rows:
+        print("No summary rows to display.")
+        return
+
+    header = [
+        "Smoother",
+        "Radius",
+        "n",
+        "Gap noisy mean",
+        "Gap noisy std",
+        "Gap MC mean",
+        "Gap MC std",
+    ]
+    keys = [
+        "smoother",
+        "radius",
+        "num_inputs",
+        "gap_noisy_mean",
+        "gap_noisy_std",
+        "gap_mc_mean",
+        "gap_mc_std",
+    ]
+
+    def _format(v: Any) -> str:
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (int, np.integer)):
+            return str(int(v))
+        if isinstance(v, (float, np.floating)):
+            return f"{float(v):.4f}"
+        return str(v)
+
+    body = [[_format(r[k]) for k in keys] for r in summary_rows]
+    widths = [max(len(header[i]), *(len(row[i]) for row in body)) for i in range(len(header))]
+
+    def _fmt_row(row: list[str]) -> str:
+        return " | ".join(row[i].ljust(widths[i]) for i in range(len(row)))
+
+    print(_fmt_row(header))
+    print("-+-".join("-" * w for w in widths))
+    for row in body:
+        print(_fmt_row(row))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute per-input TrajFlow containment and guarantees tables "
-            "for k=1 and k=2 smoothers."
+            "TrajFlow robustness-gap analysis: for each x_i and each radius, compute robust "
+            "certificate total probability and two adversarial containment gaps for k=2 and k=1 smoothers."
         )
     )
     parser.add_argument(
@@ -886,53 +706,34 @@ def main() -> None:
         help="Optional comma-separated dataset indices. Overrides --num-inputs.",
     )
     parser.add_argument(
+        "--radius-values",
+        type=str,
+        default="0.0,0.1,0.5",
+        help="Comma-separated robustness radii.",
+    )
+    parser.add_argument(
         "--input-batch-size",
         type=int,
         default=5,
         help="How many selected inputs to process at once.",
     )
     parser.add_argument(
+        "--attack-num-candidates",
+        type=int,
+        default=24,
+        help="Number of random attack candidates in the ball ||delta||<=radius for each objective.",
+    )
+    parser.add_argument(
         "--containment-samples",
         type=int,
-        default=1000,
-        help="Number of h_w(x+epsilon) noisy samples per input used to estimate set-containment proportion.",
+        default=700,
+        help="Noisy samples used to estimate containment for h_w(x+delta+epsilon).",
     )
     parser.add_argument(
         "--mc-containment-samples",
         type=int,
-        default=1000,
-        help="Number of Monte Carlo samples from each smoother used to estimate self-containment.",
-    )
-    parser.add_argument(
-        "--attack-num-candidates",
-        type=int,
-        default=64,
-        help="Number of random attack candidates per input when certification-radius > 0.",
-    )
-    parser.add_argument(
-        "--attack-num-samples",
-        type=int,
-        default=128,
-        help="Noisy samples per attack candidate used to score output variance.",
-    )
-    parser.add_argument(
-        "--attack-objective",
-        type=str,
-        choices=("variance", "behavior_flip"),
-        default="behavior_flip",
-        help=(
-            "Attack objective. 'variance' maximizes output variance; "
-            "'behavior_flip' maximizes probability of flipping stay/turn behavior."
-        ),
-    )
-    parser.add_argument(
-        "--certification-radius",
-        type=float,
-        default=None,
-        help=(
-            "Input perturbation radius used in robust certification. "
-            "If omitted, the script asks interactively."
-        ),
+        default=700,
+        help="Monte Carlo samples used to estimate smoother containment at (x+delta).",
     )
     parser.add_argument(
         "--sigma",
@@ -943,14 +744,20 @@ def main() -> None:
     parser.add_argument(
         "--smoothing-N",
         type=int,
-        default=10,
+        default=8,
         help="N for alpha-trimming smoothing.",
     )
     parser.add_argument(
         "--alpha",
         type=float,
-        default=0.35,
-        help="Trimming parameter alpha.",
+        default=None,
+        help="Optional single trimming parameter alpha. Overrides --alpha-values when provided.",
+    )
+    parser.add_argument(
+        "--alpha-values",
+        type=str,
+        default="0.0,0.2,0.4",
+        help="Comma-separated alpha values to evaluate when --alpha is not provided.",
     )
     parser.add_argument(
         "--coverage",
@@ -1005,14 +812,14 @@ def main() -> None:
     parser.add_argument(
         "--noise-sub-batch-size",
         type=int,
-        default=300,
+        default=200,
         help="Sub-batch size along the noise/sample dimension inside stochastic sampling.",
     )
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
-        default=1000,
-        help="num_samples for confidence parameter (used in smoothing object setup).",
+        default=2000,
+        help="num_samples for confidence parameter used in smoothing object setup.",
     )
     parser.add_argument(
         "--seed",
@@ -1024,7 +831,19 @@ def main() -> None:
         "--analysis-dir",
         type=str,
         default=str(EXPERIMENTS / "data" / "analysis" / "performance"),
-        help="Directory where table JSON/CSV are saved.",
+        help="Directory where robustness analysis JSON/CSV are saved.",
+    )
+    parser.add_argument(
+        "--figures-dir",
+        type=str,
+        default=str(EXPERIMENTS / "data" / "figures"),
+        help="Directory where the side-by-side gaps figure is saved.",
+    )
+    parser.add_argument(
+        "--plot-name",
+        type=str,
+        default="trajflow_robustness_gaps.pdf",
+        help="Filename for side-by-side gap plots (k2 and k1).",
     )
     parser.add_argument(
         "--fixed-index-order-file",
@@ -1041,77 +860,57 @@ def main() -> None:
         default=None,
         help=(
             "If set, recomputes data even when a saved JSON already exists. "
-            "If --no-regenerate is set, loads from the existing JSON without recomputing. "
-            "If omitted, the script asks interactively when the JSON already exists."
+            "If --no-regenerate is set, loads from existing JSON. "
+            "If omitted, the script asks interactively when JSON already exists."
         ),
     )
-    args = parser.parse_args()
 
-    if args.certification_radius is None:
-        args.certification_radius = _ask_nonnegative_float(
-            "Certification radius for robustness/attack (>= 0): "
-        )
+    args = parser.parse_args()
 
     if args.input_batch_size <= 0:
         raise ValueError("input-batch-size must be positive")
+    if args.attack_num_candidates <= 0:
+        raise ValueError("attack-num-candidates must be positive")
     if args.containment_samples <= 0:
         raise ValueError("containment-samples must be positive")
     if args.mc_containment_samples <= 0:
         raise ValueError("mc-containment-samples must be positive")
-    if args.attack_num_candidates <= 0:
-        raise ValueError("attack-num-candidates must be positive")
-    if args.attack_num_samples <= 0:
-        raise ValueError("attack-num-samples must be positive")
     if args.noise_sub_batch_size <= 0:
         raise ValueError("noise-sub-batch-size must be positive")
     if args.sigma <= 0.0:
         raise ValueError("sigma must be positive")
-    if args.certification_radius < 0.0:
-        raise ValueError("certification-radius must be non-negative")
+
+    radii = _parse_radius_values(args.radius_values)
+    alpha_values = [float(args.alpha)] if args.alpha is not None else _parse_alpha_values(args.alpha_values)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
     analysis_dir = Path(args.analysis_dir)
-    if args.certification_radius is None:
-        args.certification_radius = _ask_nonnegative_float(
-            "Certification radius for robustness/attack (>= 0): "
-        )
+    figures_dir = Path(args.figures_dir)
+    rows_json_base_path = analysis_dir / "trajflow_robustness_gap_rows.json"
+    rows_csv_base_path = analysis_dir / "trajflow_robustness_gap_rows.csv"
+    summary_json_base_path = analysis_dir / "trajflow_robustness_gap_summary.json"
+    summary_csv_base_path = analysis_dir / "trajflow_robustness_gap_summary.csv"
+    fig_base_path = figures_dir / args.plot_name
 
-    if args.num_inputs is None and not (args.selected_indices or "").strip():
-        n_available = int(np.load(EXPERIMENTS / "TrajFlowExperiment" / "Data" / "Outputs_gt.npy").shape[0])
-        print(f"Available inputs in dataset: {n_available}")
-        args.num_inputs = _ask_num_indices(
-            "How many xs should be analyzed? (0 for all) ",
-            n_available,
-        )
-    if args.num_inputs is None:
-        args.num_inputs = 0
-    radius_tag = _radius_suffix(args.certification_radius)
-    merged_json_path = analysis_dir / f"robustness_table_{radius_tag}.json"
+    rows_json_paths = [_with_alpha_suffix(rows_json_base_path, alpha) for alpha in alpha_values]
 
-    # --- Decide whether to regenerate or load from existing JSON ---
     do_regenerate: bool
     if args.regenerate is not None:
         do_regenerate = bool(args.regenerate)
-    elif merged_json_path.exists():
+    elif any(path.exists() for path in rows_json_paths):
         do_regenerate = _ask_yes_no(
-            f"Found existing data at {merged_json_path}.\n"
-            "Regenerate? [y/n]: "
+            "Found existing alpha-specific robustness data.\nRegenerate? [y/n]: "
         )
     else:
         do_regenerate = True
-
-    merged_csv_path = analysis_dir / f"robustness_table_{radius_tag}.csv"
-    stats_json_path = analysis_dir / f"statistics_data_{radius_tag}.json"
-    stats_csv_path = analysis_dir / f"statistics_data_{radius_tag}.csv"
-
-    merged_title_row, merged_header, merged_keys, quantity_order = _merged_table_schema()
 
     if do_regenerate:
         stochastic_fn = TrajFlowMeszarosStochasticFunction()
         all_inputs, outputs_gt = _load_inputs_and_outputs()
         valid_indices = np.flatnonzero(_finite_target_mask(outputs_gt))
+
         fixed_order_path = (
             Path(args.fixed_index_order_file)
             if args.fixed_index_order_file
@@ -1123,6 +922,12 @@ def main() -> None:
             seed=args.seed,
         )
 
+        if args.num_inputs is None and not (args.selected_indices or "").strip():
+            print(f"Available valid indices in dataset: {len(valid_indices)}")
+            args.num_inputs = _ask_num_indices(
+                "How many xs should be analyzed? (0 for all) ",
+                len(valid_indices),
+            )
         if args.num_inputs is None:
             args.num_inputs = 0
 
@@ -1132,107 +937,135 @@ def main() -> None:
             selected_indices_text=args.selected_indices,
         )
 
-        per_x_rows: list[dict[str, Any]] = []
-        num_batches = (len(selected_indices) + args.input_batch_size - 1) // args.input_batch_size
-        for batch_id, start in enumerate(range(0, len(selected_indices), args.input_batch_size), start=1):
-            batch_t0 = time.perf_counter()
-            batch_indices = selected_indices[start : start + args.input_batch_size]
-            print(
-                f"processing batch {batch_id}/{num_batches} "
-                f"with {len(batch_indices)} dataset indices"
-            )
-            rows = _compute_batch_table_rows(
-                args=args,
-                stochastic_fn=stochastic_fn,
-                batch_indices=batch_indices,
-                inputs=all_inputs,
-                outputs_gt=outputs_gt,
-            )
-            per_x_rows.extend(rows)
-            print(f"batch {batch_id}/{num_batches} completed in {time.perf_counter() - batch_t0:.1f}s")
+    for alpha in alpha_values:
+        args.alpha = alpha
+        rows_json_path = _with_alpha_suffix(rows_json_base_path, alpha)
+        rows_csv_path = _with_alpha_suffix(rows_csv_base_path, alpha)
+        summary_json_path = _with_alpha_suffix(summary_json_base_path, alpha)
+        summary_csv_path = _with_alpha_suffix(summary_csv_base_path, alpha)
+        fig_path = _with_alpha_suffix(fig_base_path, alpha)
 
-        merged_rows = _merged_table_rows(per_x_rows, quantity_order=quantity_order)
+        if do_regenerate:
+            all_rows: list[dict[str, Any]] = []
+            num_batches = (len(selected_indices) + args.input_batch_size - 1) // args.input_batch_size
+            for batch_id, start in enumerate(range(0, len(selected_indices), args.input_batch_size), start=1):
+                t0 = time.perf_counter()
+                batch_indices = selected_indices[start : start + args.input_batch_size]
+                print(
+                    f"alpha={alpha:.3f}: processing batch {batch_id}/{num_batches} "
+                    f"with {len(batch_indices)} dataset indices"
+                )
+                batch_rows = _compute_batch_radius_rows(
+                    args=args,
+                    stochastic_fn=stochastic_fn,
+                    batch_indices=batch_indices,
+                    inputs=all_inputs,
+                    outputs_gt=outputs_gt,
+                    radii=radii,
+                )
+                all_rows.extend(batch_rows)
+                print(
+                    f"alpha={alpha:.3f}: batch {batch_id}/{num_batches} "
+                    f"completed in {time.perf_counter() - t0:.1f}s"
+                )
 
-        base_config = {
-            "selected_indices": selected_indices.tolist(),
-            "containment_samples": args.containment_samples,
-            "mc_containment_samples": args.mc_containment_samples,
-            "attack_num_candidates": args.attack_num_candidates,
-            "attack_num_samples": args.attack_num_samples,
-            "attack_objective": args.attack_objective,
-            "certification_radius": args.certification_radius,
-            "sigma": args.sigma,
-            "smoothing_N": args.smoothing_N,
-            "alpha": args.alpha,
-            "coverage": args.coverage,
-            "cluster_strategy": args.cluster_strategy,
-            "input_mode": args.input_mode,
-            "behavior_stay_radius": args.behavior_stay_radius,
-            "behavior_min_down": args.behavior_min_down,
-            "behavior_min_left": args.behavior_min_left,
-            "dbscan_eps": args.dbscan_eps,
-            "dbscan_min_samples": args.dbscan_min_samples,
-            "noise_sub_batch_size": args.noise_sub_batch_size,
-            "confidence_num_samples": args.confidence_num_samples,
-            "input_batch_size": args.input_batch_size,
-            "seed": args.seed,
-            "fixed_index_order_file": str(fixed_order_path),
-        }
-        merged_payload = {
-            "config": base_config,
-            "title_row": merged_title_row,
-            "columns": merged_keys,
-            "rows": merged_rows,
-        }
-        _save_json(merged_json_path, merged_payload)
+            row_config = {
+                "selected_indices": selected_indices.tolist(),
+                "radii": [float(r) for r in radii],
+                "attack_num_candidates": args.attack_num_candidates,
+                "containment_samples": args.containment_samples,
+                "mc_containment_samples": args.mc_containment_samples,
+                "sigma": args.sigma,
+                "smoothing_N": args.smoothing_N,
+                "alpha": args.alpha,
+                "alpha_values": [float(a) for a in alpha_values],
+                "coverage": args.coverage,
+                "cluster_strategy": args.cluster_strategy,
+                "input_mode": args.input_mode,
+                "behavior_stay_radius": args.behavior_stay_radius,
+                "behavior_min_down": args.behavior_min_down,
+                "behavior_min_left": args.behavior_min_left,
+                "dbscan_eps": args.dbscan_eps,
+                "dbscan_min_samples": args.dbscan_min_samples,
+                "noise_sub_batch_size": args.noise_sub_batch_size,
+                "confidence_num_samples": args.confidence_num_samples,
+                "input_batch_size": args.input_batch_size,
+                "seed": args.seed,
+                "fixed_index_order_file": str(fixed_order_path),
+            }
+
+            _save_json(rows_json_path, {"config": row_config, "rows": all_rows})
+            _save_csv(
+                rows_csv_path,
+                rows=all_rows,
+                header=[
+                    "x_index",
+                    "radius",
+                    "smoother",
+                    "cert_total",
+                    "noisy_adv_prop",
+                    "mc_adv_prop",
+                    "gap_noisy",
+                    "gap_mc",
+                    "noisy_attack_norm",
+                    "mc_attack_norm",
+                ],
+                keys=[
+                    "x_index",
+                    "radius",
+                    "smoother",
+                    "cert_total",
+                    "noisy_adv_prop",
+                    "mc_adv_prop",
+                    "gap_noisy",
+                    "gap_mc",
+                    "noisy_attack_norm",
+                    "mc_attack_norm",
+                ],
+            )
+            print(f"saved: {rows_json_path}")
+            print(f"saved: {rows_csv_path}")
+        else:
+            payload = _load_json(rows_json_path)
+            selected_indices = np.array(payload.get("config", {}).get("selected_indices", []), dtype=int)
+            loaded_rows = payload.get("rows", [])
+            if not isinstance(loaded_rows, list):
+                raise ValueError(f"Invalid rows list in {rows_json_path}")
+            all_rows = loaded_rows
+            print(f"loaded: {rows_json_path}")
+
+        summary_rows = _summarize_by_radius(all_rows, radii=radii)
+        _save_json(summary_json_path, {"rows": summary_rows})
         _save_csv(
-            merged_csv_path,
-            merged_rows,
-            header=merged_header,
-            keys=merged_keys,
-            title_row=merged_title_row,
+            summary_csv_path,
+            rows=summary_rows,
+            header=[
+                "smoother",
+                "radius",
+                "num_inputs",
+                "gap_noisy_mean",
+                "gap_noisy_std",
+                "gap_mc_mean",
+                "gap_mc_std",
+            ],
+            keys=[
+                "smoother",
+                "radius",
+                "num_inputs",
+                "gap_noisy_mean",
+                "gap_noisy_std",
+                "gap_mc_mean",
+                "gap_mc_std",
+            ],
         )
-        print("=== TrajFlow Robustness Table ===")
-        print(f"selected_indices: {selected_indices.tolist()}")
-        print(f"saved: {merged_json_path}")
-        print(f"saved: {merged_csv_path}")
-        _print_table(
-            merged_rows,
-            header=merged_header,
-            keys=merged_keys,
-            title_row=merged_title_row,
-        )
-    else:
-        print(f"Loading data from {merged_json_path}")
-        per_x_rows = _load_per_x_rows_from_json(merged_json_path)
+        _plot_side_by_side_gaps(summary_rows=summary_rows, output_path=fig_path)
 
-    # --- Statistics table (always computed from per_x_rows) ---
-    stat_rows = _compute_statistics_table(per_x_rows, mc_samples=args.mc_containment_samples)
-    stats_title_row = [
-        "",
-        r"Clustered $\alpha$-smoothing",
-        r"$\alpha$-smoothing",
-    ]
-    stats_header = ["Statistic", "Clustered", "Alpha"]
-    stats_keys = ["statistic", "clustered", "alpha"]
-
-    _save_json(stats_json_path, {"rows": stat_rows})
-    _save_csv(
-        stats_csv_path,
-        stat_rows,
-        header=stats_header,
-        keys=stats_keys,
-        title_row=stats_title_row,
-    )
-    print("=== TrajFlow Statistics Table ===")
-    print(f"saved: {stats_json_path}")
-    print(f"saved: {stats_csv_path}")
-    _print_table(
-        stat_rows,
-        header=stats_header,
-        keys=stats_keys,
-        title_row=stats_title_row,
-    )
+        print(f"saved: {summary_json_path}")
+        print(f"saved: {summary_csv_path}")
+        print(f"saved: {fig_path}")
+        if selected_indices.size > 0:
+            print(f"alpha={alpha:.3f} selected_indices: {selected_indices.tolist()}")
+        _print_summary_table(summary_rows)
 
 
 if __name__ == "__main__":
