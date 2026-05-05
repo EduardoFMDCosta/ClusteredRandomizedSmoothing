@@ -733,7 +733,7 @@ def main() -> None:
     parser.add_argument(
         "--radius-values",
         type=str,
-        default="0.0,0.1,0.5",
+        default="0.0,0.1,0.5,0.8",
         help="Comma-separated robustness radii.",
     )
     parser.add_argument(
@@ -745,7 +745,7 @@ def main() -> None:
     parser.add_argument(
         "--attack-num-candidates",
         type=int,
-        default=24,
+        default=20,
         help="Number of random attack candidates in the ball ||delta||<=radius for each objective.",
     )
     parser.add_argument(
@@ -787,7 +787,7 @@ def main() -> None:
     parser.add_argument(
         "--coverage",
         type=float,
-        default=0.80,
+        default=0.85,
         help="Coverage parameter for cluster regions.",
     )
     parser.add_argument(
