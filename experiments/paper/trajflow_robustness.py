@@ -58,7 +58,13 @@ def _parse_alpha_values(text: str) -> list[float]:
     alphas = [float(v) for v in values]
     if any(a < 0.0 or a >= 1.0 for a in alphas):
         raise ValueError("all alpha values must satisfy 0 <= alpha < 1")
-    return sorted(set(alphas))
+    ordered_unique: list[float] = []
+    seen: set[float] = set()
+    for alpha in alphas:
+        if alpha not in seen:
+            seen.add(alpha)
+            ordered_unique.append(alpha)
+    return ordered_unique
 
 
 def _alpha_tag(alpha: float) -> str:
@@ -781,7 +787,7 @@ def main() -> None:
     parser.add_argument(
         "--alpha-values",
         type=str,
-        default="0.0,0.2,0.4",
+        default="0.4,0.2,0.0",
         help="Comma-separated alpha values to evaluate when --alpha is not provided.",
     )
     parser.add_argument(
