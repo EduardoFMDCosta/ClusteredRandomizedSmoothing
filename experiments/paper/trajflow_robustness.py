@@ -751,13 +751,13 @@ def main() -> None:
     parser.add_argument(
         "--containment-samples",
         type=int,
-        default=700,
+        default=500,
         help="Noisy samples used to estimate containment for h_w(x+delta+epsilon).",
     )
     parser.add_argument(
         "--mc-containment-samples",
         type=int,
-        default=700,
+        default=500,
         help="Monte Carlo samples used to estimate smoother containment at (x+delta).",
     )
     parser.add_argument(
