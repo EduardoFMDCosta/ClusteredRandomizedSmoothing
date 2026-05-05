@@ -547,6 +547,7 @@ def _summarize_by_radius(rows: list[dict[str, Any]], radii: list[float]) -> list
 
             noisy_gaps = np.array([float(r["gap_noisy"]) for r in subset], dtype=float)
             mc_gaps = np.array([float(r["gap_mc"]) for r in subset], dtype=float)
+            noisy_props = np.array([float(r["noisy_adv_prop"]) for r in subset], dtype=float)
 
             summary_rows.append(
                 {
@@ -557,6 +558,8 @@ def _summarize_by_radius(rows: list[dict[str, Any]], radii: list[float]) -> list
                     "gap_noisy_std": float(np.std(noisy_gaps, ddof=0)),
                     "gap_mc_mean": float(np.mean(mc_gaps)),
                     "gap_mc_std": float(np.std(mc_gaps, ddof=0)),
+                    "noisy_adv_prop_mean": float(np.mean(noisy_props)),
+                    "noisy_adv_prop_std": float(np.std(noisy_props, ddof=0)),
                 }
             )
 
@@ -583,7 +586,7 @@ def _directional_band(
     ax.fill_between(x, lower, upper, color=color, alpha=alpha)
 
 
-def _plot_side_by_side_gaps(summary_rows: list[dict[str, Any]], output_path: Path) -> None:
+def _plot_side_by_side_gaps(summary_rows: list[dict[str, Any]], output_path: Path, alpha: float) -> None:
     if not summary_rows:
         raise ValueError("summary_rows must be non-empty")
 
@@ -602,36 +605,58 @@ def _plot_side_by_side_gaps(summary_rows: list[dict[str, Any]], output_path: Pat
             "legend.fontsize": 9,
         }
     ):
-        fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.6), sharey=True)
+        fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.6), sharey=False)
+        left_ax, right_ax = axes
 
-        smoother_meta = [
-            ("k2", r"Clustered $\alpha$-smoothing"),
-            ("k1", r"$\alpha$-smoothing"),
-        ]
-        line_meta = [
-            ("gap_noisy", "#4C78A8", "o", r"For $h_w$"),
-            ("gap_mc", "#F58518", "s", r"For $\tilde{\mathcal{H}}$"),
+        alpha_display = f"{alpha:g}"
+        smoother_lines = [
+            ("k2", "#F58518", "s", rf"Ours ($\alpha={alpha_display}$)"),
+            ("k1", "#4C78A8", "o", rf"$\alpha$-smoothing ($\alpha={alpha_display}$)"),
         ]
 
-        for ax, (smoother, title) in zip(axes, smoother_meta):
+        for smoother, color, marker, label in smoother_lines:
             subset = [r for r in summary_rows if r["smoother"] == smoother]
             subset = sorted(subset, key=lambda r: float(r["radius"]))
             x = np.array([float(r["radius"]) for r in subset], dtype=float)
 
-            for metric, color, marker, label in line_meta:
-                mean = np.array([float(r[f"{metric}_mean"]) for r in subset], dtype=float)
-                std = np.array([float(r[f"{metric}_std"]) for r in subset], dtype=float)
+            gap_mc_mean = np.array([float(r["gap_mc_mean"]) for r in subset], dtype=float)
+            gap_mc_std = np.array([float(r["gap_mc_std"]) for r in subset], dtype=float)
+            noisy_prop_mean = np.array([float(r["noisy_adv_prop_mean"]) for r in subset], dtype=float)
+            noisy_prop_std = np.array([float(r["noisy_adv_prop_std"]) for r in subset], dtype=float)
 
-                _directional_band(x=x, mean=mean, std=std, ax=ax, color=color, alpha=0.20)
-                ax.plot(x, mean, marker=marker, linewidth=1.6, color=color, label=label)
+            # Left panel: theorem-oriented gap with directional uncertainty band.
+            _directional_band(
+                x=x,
+                mean=gap_mc_mean,
+                std=gap_mc_std,
+                ax=left_ax,
+                color=color,
+                alpha=0.18,
+            )
+            left_ax.plot(x, gap_mc_mean, marker=marker, linewidth=1.6, color=color, label=label)
 
-            ax.axhline(0.0, color="#333333", linestyle="--", linewidth=1.0, alpha=0.8)
-            ax.set_title(title)
-            ax.set_xlabel(r"Robustness radius $r$")
-            ax.grid(True, linestyle=":", alpha=0.35)
+            # Right panel: noisy containment proportion with symmetric mean +/- std band.
+            right_lower = np.clip(noisy_prop_mean - noisy_prop_std, 0.0, 1.0)
+            right_upper = np.clip(noisy_prop_mean + noisy_prop_std, 0.0, 1.0)
+            right_ax.fill_between(
+                x,
+                right_lower,
+                right_upper,
+                color=color,
+                alpha=0.18,
+            )
+            right_ax.plot(x, noisy_prop_mean, marker=marker, linewidth=1.6, color=color, label=label)
 
-        axes[0].set_ylabel("Probability gap")
-        axes[0].legend(loc="best", frameon=True)
+        left_ax.axhline(0.0, color="#333333", linestyle="--", linewidth=1.0, alpha=0.8)
+        left_ax.set_xlabel(r"Robustness radius $r$")
+        left_ax.set_ylabel("Probability gap")
+        left_ax.grid(True, linestyle=":", alpha=0.35)
+        left_ax.legend(loc="best", frameon=True)
+
+        right_ax.set_xlabel(r"Robustness radius $r$")
+        right_ax.set_ylabel(r"Proportion $h_w(x+\delta+\varepsilon) \in \mathcal{R}$")
+        right_ax.grid(True, linestyle=":", alpha=0.35)
+        right_ax.legend(loc="best", frameon=True)
 
         fig.tight_layout()
         fig.savefig(output_path, dpi=220)
@@ -647,19 +672,19 @@ def _print_summary_table(summary_rows: list[dict[str, Any]]) -> None:
         "Smoother",
         "Radius",
         "n",
-        "Gap noisy mean",
-        "Gap noisy std",
         "Gap MC mean",
         "Gap MC std",
+        "Noisy prop mean",
+        "Noisy prop std",
     ]
     keys = [
         "smoother",
         "radius",
         "num_inputs",
-        "gap_noisy_mean",
-        "gap_noisy_std",
         "gap_mc_mean",
         "gap_mc_std",
+        "noisy_adv_prop_mean",
+        "noisy_adv_prop_std",
     ]
 
     def _format(v: Any) -> str:
@@ -1043,22 +1068,22 @@ def main() -> None:
                 "smoother",
                 "radius",
                 "num_inputs",
-                "gap_noisy_mean",
-                "gap_noisy_std",
                 "gap_mc_mean",
                 "gap_mc_std",
+                "noisy_adv_prop_mean",
+                "noisy_adv_prop_std",
             ],
             keys=[
                 "smoother",
                 "radius",
                 "num_inputs",
-                "gap_noisy_mean",
-                "gap_noisy_std",
                 "gap_mc_mean",
                 "gap_mc_std",
+                "noisy_adv_prop_mean",
+                "noisy_adv_prop_std",
             ],
         )
-        _plot_side_by_side_gaps(summary_rows=summary_rows, output_path=fig_path)
+        _plot_side_by_side_gaps(summary_rows=summary_rows, output_path=fig_path, alpha=alpha)
 
         print(f"saved: {summary_json_path}")
         print(f"saved: {summary_csv_path}")
