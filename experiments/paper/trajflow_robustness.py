@@ -147,6 +147,20 @@ def _ask_num_indices(prompt: str, available: int) -> int:
         return value
 
 
+def _ask_nonnegative_float(prompt: str) -> float:
+    while True:
+        answer = input(prompt).strip()
+        try:
+            value = float(answer)
+        except ValueError:
+            print("Please enter a valid number.")
+            continue
+        if value < 0.0:
+            print("Please enter a non-negative number.")
+            continue
+        return value
+
+
 def _extract_target_initial_position(x_positions: torch.Tensor, num_input_agents: int = 2) -> torch.Tensor:
     nx = x_positions.shape[0]
     num_input_timesteps = x_positions.shape[1] // (2 * num_input_agents)
@@ -604,8 +618,11 @@ def main() -> None:
     parser.add_argument(
         "--certification-radius",
         type=float,
-        default=0.0,
-        help="Input perturbation radius used in robust certification.",
+        default=None,
+        help=(
+            "Input perturbation radius used in robust certification. "
+            "If omitted, the script asks interactively."
+        ),
     )
     parser.add_argument(
         "--sigma",
@@ -709,6 +726,11 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    if args.certification_radius is None:
+        args.certification_radius = _ask_nonnegative_float(
+            "Certification radius for robustness/attack (>= 0): "
+        )
 
     if args.input_batch_size <= 0:
         raise ValueError("input-batch-size must be positive")

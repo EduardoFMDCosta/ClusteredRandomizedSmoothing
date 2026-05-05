@@ -53,8 +53,9 @@ def _compute_sinkhorn_wasserstein_2_distance(
     x_samples: np.ndarray,
     y_samples: np.ndarray,
     reg: float,
+    ot_method: str,
 ) -> float:
-    """Compute Sinkhorn-approximated empirical 2-Wasserstein distance."""
+    """Compute empirical 2-Wasserstein distance using a POT solver."""
     if x_samples.ndim != 2 or y_samples.ndim != 2:
         raise ValueError("Both sample sets must be 2-D arrays of shape (n, d).")
     if x_samples.shape[1] != y_samples.shape[1]:
@@ -69,8 +70,28 @@ def _compute_sinkhorn_wasserstein_2_distance(
     n_y = y_samples.shape[0]
     a = np.full(n_x, 1.0 / n_x, dtype=np.float64)
     b = np.full(n_y, 1.0 / n_y, dtype=np.float64)
-    cost_matrix = ot.dist(x_samples.astype(np.float64), y_samples.astype(np.float64), metric="sqeuclidean")
-    w2_squared = ot.sinkhorn2(a, b, cost_matrix, reg=reg, method="sinkhorn")
+    cost_matrix = ot.dist(
+        x_samples.astype(np.float64, copy=False),
+        y_samples.astype(np.float64, copy=False),
+        metric="sqeuclidean",
+    )
+
+    if ot_method == "emd":
+        w2_squared = float(ot.emd2(a, b, cost_matrix))
+    else:
+        # Use POT's log-domain Sinkhorn variant for improved numerical stability.
+        w2_squared = float(
+            ot.sinkhorn2(
+                a,
+                b,
+                cost_matrix,
+                reg=reg,
+                method=ot_method,
+                numItermax=5000,
+                stopThr=1e-9,
+            )
+        )
+
     return float(math.sqrt(max(w2_squared, 0.0)))
 
 
@@ -166,11 +187,13 @@ def _compute_batch_wasserstein_rows(
             noisy_np[i],
             k1_np[i],
             reg=args.sinkhorn_reg,
+            ot_method=args.ot_method,
         )
         w2_noisy_k2 = _compute_sinkhorn_wasserstein_2_distance(
             noisy_np[i],
             k2_np[i],
             reg=args.sinkhorn_reg,
+            ot_method=args.ot_method,
         )
         rows.append(
             {
@@ -220,7 +243,7 @@ def main() -> None:
     parser.add_argument(
         "--distribution-samples",
         type=int,
-        default=1000,
+        default=150,
         help="Number of samples drawn from each distribution per input.",
     )
     parser.add_argument(
@@ -228,6 +251,16 @@ def main() -> None:
         type=float,
         default=0.1,
         help="Entropic regularization used by POT Sinkhorn approximation.",
+    )
+    parser.add_argument(
+        "--ot-method",
+        type=str,
+        choices=("sinkhorn_log", "sinkhorn_stabilized", "sinkhorn", "emd"),
+        default="sinkhorn_log",
+        help=(
+            "POT OT solver. 'sinkhorn_log' is usually the most stable regularized option; "
+            "'emd' computes exact OT (slower, no reg used)."
+        ),
     )
     parser.add_argument(
         "--sigma",
@@ -294,7 +327,7 @@ def main() -> None:
     parser.add_argument(
         "--dbscan-min-samples",
         type=int,
-        default=100,
+        default=35,
         help="DBSCAN min_samples for clustering inside smoothing.",
     )
     parser.add_argument(
@@ -306,7 +339,7 @@ def main() -> None:
     parser.add_argument(
         "--confidence-num-samples",
         type=int,
-        default=1000,
+        default=350,
         help="num_samples for confidence parameter used in smoothing setup.",
     )
     parser.add_argument(
@@ -358,7 +391,7 @@ def main() -> None:
         raise ValueError("noise-sub-batch-size must be positive")
     if args.sigma <= 0.0:
         raise ValueError("sigma must be positive")
-    if args.sinkhorn_reg <= 0.0:
+    if args.ot_method != "emd" and args.sinkhorn_reg <= 0.0:
         raise ValueError("sinkhorn-reg must be positive")
     if args.hist_bins <= 0:
         raise ValueError("hist-bins must be positive")
@@ -431,7 +464,7 @@ def main() -> None:
         "config": {
             "selected_indices": selected_indices.tolist(),
             "distribution_samples": int(args.distribution_samples),
-            "ot_method": "sinkhorn",
+            "ot_method": args.ot_method,
             "sinkhorn_reg": float(args.sinkhorn_reg),
             "sigma": float(args.sigma),
             "smoothing_N": int(args.smoothing_N),
