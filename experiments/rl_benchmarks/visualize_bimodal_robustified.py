@@ -25,6 +25,7 @@ import numpy as np
 import torch
 from benchmark_policies import load_policy
 from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import normalize_state
 from visualize_uav3d_pyvista import BIMODAL_START_STATE
@@ -92,10 +93,27 @@ def _plot_raw(actions: np.ndarray, out_path: Path, base_state: np.ndarray) -> No
     plt.close(fig)
 
 
+def _certificate_curve(
+    smoother: GaussianAlphaTrimmingSmoothing,
+    radii: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    x = smoother.x
+    k_used = int(smoother.cluster.k_per_row[0].item())
+    totals = np.empty(len(radii), dtype=np.float64)
+    per_cluster = np.empty((len(radii), k_used), dtype=np.float64)
+    for i, r in enumerate(radii):
+        radius_t = torch.full((x.shape[0], 1), float(r), dtype=x.dtype, device=x.device)
+        cert = smoother.robust_certification(radius=radius_t)
+        totals[i] = float(cert.total_probs[0].detach().cpu().item())
+        per_cluster[i] = cert.probs[0, :k_used].detach().cpu().numpy()
+    return totals, per_cluster
+
+
 def _plot_smoothed(
     smoother: GaussianAlphaTrimmingSmoothing,
     mc_samples: np.ndarray,
     out_path: Path,
+    radii: np.ndarray,
 ) -> None:
     centroids = smoother.cluster.centroids[0].detach().cpu().numpy()
     k_used = int(smoother.cluster.k_per_row[0].item())
@@ -106,6 +124,9 @@ def _plot_smoothed(
     cluster_colors = plt.get_cmap("tab10")(np.arange(max(3, k_used)))
 
     fig, ax = _new_3d_fig()
+    ax.xaxis.set_major_formatter(
+        FuncFormatter(lambda v, _: "" if abs(v + 4) < 1e-6 else f"{v:g}")
+    )
     for j in range(k_used):
         mask = assign == j
         if not np.any(mask):
@@ -123,6 +144,19 @@ def _plot_smoothed(
         Line2D([0], [0], color="black", linewidth=2.0, label="coverage region"),
     ]
     ax.legend(handles=legend_handles, loc="upper left", fontsize=14)
+
+    totals, per_cluster = _certificate_curve(smoother, radii)
+    inset = fig.add_axes([0.09, 0.07, 0.40, 0.3])
+    for j in range(k_used):
+        inset.plot(radii, per_cluster[:, j], color=cluster_colors[j],
+                   linewidth=1.2, alpha=0.85)
+    inset.plot(radii, totals, color="black", linewidth=1.6, label="total")
+    inset.set_xlim(float(radii[0]), float(radii[-1]))
+    inset.set_ylim(0.0, 1.0)
+    inset.set_xlabel("radius", fontsize=12)
+    inset.set_ylabel("certified prob.", fontsize=12)
+    inset.tick_params(labelsize=10)
+
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -243,7 +277,9 @@ def main() -> None:
     )
     mc_K = smoother_K.monte_carlo(num_simulations=args.mc_samples).squeeze(0).detach().cpu().numpy()
     smoothed_path = out_dir / "bimodal_smoothed.png"
-    _plot_smoothed(smoother_K, mc_K, smoothed_path)
+    cert_radii = np.linspace(0.0, args.radius, 200)
+    _plot_smoothed(smoother_K, mc_K, smoothed_path,
+                   radii=cert_radii)
     print(f"Saved smoothed predictor figure to {smoothed_path}")
     _print_certificate(smoother_K, sigma=args.sigma, radius=args.radius,
                        label="smoothed predictor")
@@ -257,7 +293,8 @@ def main() -> None:
     )
     mc_1 = smoother_1.monte_carlo(num_simulations=args.mc_samples).squeeze(0).detach().cpu().numpy()
     alpha_path = out_dir / "bimodal_alpha.png"
-    _plot_smoothed(smoother_1, mc_1, alpha_path)
+    _plot_smoothed(smoother_1, mc_1, alpha_path,
+                   radii=cert_radii)
     print(f"Saved alpha-smoothing figure to {alpha_path}")
     _print_certificate(smoother_1, sigma=args.sigma, radius=args.radius,
                        label="alpha-smoothing (K=1)")
