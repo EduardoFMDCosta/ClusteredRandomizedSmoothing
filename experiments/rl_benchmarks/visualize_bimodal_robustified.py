@@ -181,7 +181,7 @@ def _build_smoother(
             dbscan_eps=dbscan_eps,
             dbscan_min_samples=dbscan_min_samples,
         ),
-        confidence=ConfidenceParameters(num_samples=confidence_N, beta=0.1),
+        confidence=ConfidenceParameters(num_samples=confidence_N, beta=1e-2),
     )
     return GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
