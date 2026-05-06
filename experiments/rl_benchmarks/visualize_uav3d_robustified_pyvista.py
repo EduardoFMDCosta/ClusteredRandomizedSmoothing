@@ -25,12 +25,6 @@ import torch
 from dynamics import UAV3D
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import VariationalPolicy, normalize_state
-from visualize_uav3d_pyvista import (
-    BIMODAL_START_STATE,
-    _add_legend_text,
-    _create_box,
-    _load_uav3d_policy,
-)
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -40,6 +34,96 @@ from randomized_smoothing.dataclasses import (
 )
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 
+# State where the trained K=2 policy is sharply bimodal AND the raw policy
+# is "clutch": some trajectories collide, so the visualization shows a
+# non-trivial failure mode that randomized smoothing can mitigate. From this
+# far-west, low-y, low-z position the two mixture components encode two
+# distinct route bundles toward the goal in the far-east, low-z corner.
+# 200-trajectory rollout: ~25-unit cluster separation at quarter-horizon
+# with a ~66/34 split, and ~72% goal / 24% collision / 4% timeout. Zero
+# initial velocity.
+BIMODAL_START_STATE = np.array([-13.5, 0.0, -3.0, 0.0, -5.0, 0.0], dtype=np.float32)
+
+
+
+def _create_box(bounds):
+    """Create a PyVista box from (x_min, x_max, y_min, y_max, z_min, z_max)."""
+    x_min, x_max, y_min, y_max, z_min, z_max = bounds
+    return pv.Box(bounds=(x_min, x_max, y_min, y_max, z_min, z_max))
+
+
+def _add_legend_text(
+    plotter,
+    entries: list[list[str]],
+    *,
+    x_ndc: float = 0.76,
+    margin_ndc: float = 0.04,
+    font_size: int = 32,
+    window_height: int = 1200,
+    line_dy_ndc: float | None = None,
+) -> None:
+    """Render an upper-right legend using ``add_text`` per entry.
+
+    ``vtkLegendBoxActor`` reserves most of each entry's width for a marker
+    glyph and squeezes text into a narrow right strip — even with
+    ``face=None`` — which clips counts like ``"collision: 47"`` off the
+    right edge of the viewport. Drawing each label as a viewport-space
+    text actor sidesteps that and gives left-aligned labels with a gap we
+    control directly via ``line_dy_ndc``.
+
+    ``margin_ndc`` is the gap (in normalized device coords) between the
+    top of the first label and the top of the viewport; pick ``x_ndc`` so
+    the longest label leaves a similar gap from the right edge.
+    """
+    # ``add_text(position=(x, y), viewport=True)`` treats (x, y) as the
+    # lower-left of the text bounding box. vtkTextActor's bounding-box
+    # height empirically runs ~1.83 × font_size in pixels (font height plus
+    # ascender + descender padding), so the text top sits at
+    # ``y + 1.83 * font_size / window_height``.
+    text_height_ndc = 1.83 * font_size / float(window_height)
+    y_top_ndc = 1.0 - margin_ndc - text_height_ndc
+    if line_dy_ndc is None:
+        # Default line height = 1.9 × font height keeps the gap proportional
+        # to the font size when the caller scales font_size.
+        line_dy_ndc = 1.9 * font_size / float(window_height)
+    for i, (text, color) in enumerate(entries):
+        plotter.add_text(
+            text,
+            position=(x_ndc, y_top_ndc - i * line_dy_ndc),
+            font_size=font_size,
+            color=color,
+            viewport=True,
+        )
+
+
+def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]:
+    """Load a UAV3D VI-BNN policy checkpoint."""
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+        raise ValueError("Expected checkpoint dict with model_state_dict (legacy checkpoints are not supported).")
+
+    required_fields = ["state_dim", "action_dim", "hidden_dim", "action_scale"]
+    missing_fields = [field for field in required_fields if field not in checkpoint]
+    if missing_fields:
+        raise ValueError(f"Checkpoint missing required fields: {missing_fields}")
+
+    model_state_dict = checkpoint["model_state_dict"]
+    state_dim = int(checkpoint["state_dim"])
+    action_dim = int(checkpoint["action_dim"])
+    hidden_dim = int(checkpoint["hidden_dim"])
+    action_scale = float(checkpoint["action_scale"])
+    num_components = int(checkpoint.get("num_components", 1))
+
+    policy = VariationalPolicy(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        hidden_dim=hidden_dim,
+        action_scale=action_scale,
+        num_components=num_components,
+    )
+    policy.load_state_dict(model_state_dict)
+    policy.eval()
+    return policy, action_scale
 
 def _robustified_action(
     stochastic_fn: UAV3DPolicyStochasticFunction,

@@ -28,7 +28,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import normalize_state
-from visualize_uav3d_pyvista import BIMODAL_START_STATE
+from visualize_uav3d_robustified_pyvista import BIMODAL_START_STATE
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
