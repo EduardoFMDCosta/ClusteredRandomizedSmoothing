@@ -23,12 +23,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from benchmark_policies import load_policy
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import normalize_state
-from visualize_uav3d_robustified_pyvista import BIMODAL_START_STATE
+from visualize_uav3d_robustified_pyvista import BIMODAL_START_STATE, _load_uav3d_policy
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -246,7 +245,7 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    policy, _ = load_policy(Path(args.checkpoint))
+    policy, _ = _load_uav3d_policy(Path(args.checkpoint))
     if policy.num_components < 2:
         print(f"[warn] Checkpoint has K={policy.num_components}; bimodality visualization assumes K>=2.")
 
