@@ -323,6 +323,7 @@ def _estimate_noisy_containment(
     sigma: float,
     num_samples: int,
     noise_sub_batch_size: int,
+    row_index: int,
 ) -> float:
     dimension = x_single.shape[-1]
     base_noise = MultivariateGaussian(
@@ -337,7 +338,17 @@ def _estimate_noisy_containment(
         noise_sub_batch_size=noise_sub_batch_size,
     )
     inside = smoother.regions.contains(noisy_samples).any(dim=-1)
-    return float(inside.float().mean().item())
+
+    # ``noisy_samples`` contains a single input row, but ``smoother.regions``
+    # stores regions for all rows in the batch. Broadcasting in ``contains``
+    # produces one containment vector per batch row; we must evaluate only the
+    # target ``row_index`` to avoid mixing different inputs.
+    if row_index < 0 or row_index >= inside.shape[0]:
+        raise ValueError(
+            f"row_index out of bounds for containment rows: {row_index} not in [0, {inside.shape[0] - 1}]"
+        )
+
+    return float(inside[row_index].float().mean().item())
 
 
 def _estimate_mc_containment(
@@ -391,6 +402,8 @@ def _find_attack_minimizing_containment(
         delta = candidates[c : c + 1]
         z_adv = x_single + delta
         if objective == "noisy":
+            if row_index is None:
+                raise ValueError("row_index is required for noisy objective")
             containment = _estimate_noisy_containment(
                 stochastic_fn=stochastic_fn,
                 smoother=smoother,
@@ -399,6 +412,7 @@ def _find_attack_minimizing_containment(
                 sigma=sigma,
                 num_samples=containment_samples,
                 noise_sub_batch_size=noise_sub_batch_size,
+                row_index=row_index,
             )
         else:
             if row_index is None:
@@ -425,6 +439,7 @@ def _compute_batch_radius_rows(
     outputs_gt: np.ndarray,
     radii: list[float],
 ) -> list[dict[str, Any]]:
+    compute_t0 = time.perf_counter()
     x_position = _prepare_inputs_from_arrays(
         selected_indices=batch_indices,
         inputs=inputs,
@@ -459,6 +474,10 @@ def _compute_batch_radius_rows(
         "k2": smoother_k2,
         "k1": smoother_k1,
     }
+    print(
+        f"alpha={args.alpha:.3f}: smoothers initialized for batch with "
+        f"{len(batch_indices)} inputs in {time.perf_counter() - compute_t0:.1f}s"
+    )
 
     # Important: smoothers are fit once on clean inputs and then reused.
     # Attacks only perturb evaluation points z=x+delta for containment/MC.
@@ -466,7 +485,12 @@ def _compute_batch_radius_rows(
     rows: list[dict[str, Any]] = []
     # Warm-start cache keyed by (smoother, objective, local input index).
     warm_starts: dict[tuple[str, str, int], torch.Tensor] = {}
+    total_steps = len(radii) * len(batch_indices) * len(smoothers)
+    step_counter = 0
+    steps_t0 = time.perf_counter()
     for radius in radii:
+        radius_t0 = time.perf_counter()
+        print(f"alpha={args.alpha:.3f}: radius={radius:.3f} started")
         radius_tensor = torch.full(
             (model_input.shape[0], 1),
             fill_value=radius,
@@ -480,12 +504,17 @@ def _compute_batch_radius_rows(
             "k2": cert_k2,
             "k1": cert_k1,
         }
+        print(
+            f"alpha={args.alpha:.3f}: radius={radius:.3f} certification done "
+            f"in {time.perf_counter() - radius_t0:.1f}s"
+        )
 
         for i, dataset_idx in enumerate(batch_indices.tolist()):
             x_i = model_input[i : i + 1]
             helper_i = _slice_helper(helper, i)
 
             for smoother_key, smoother in smoothers.items():
+                step_t0 = time.perf_counter()
                 cert_total = float(cert_map[smoother_key][i])
                 noisy_key = (smoother_key, "noisy", i)
                 mc_key = (smoother_key, "mc", i)
@@ -522,6 +551,18 @@ def _compute_batch_radius_rows(
                 )
                 warm_starts[noisy_key] = noisy_delta.detach().clone()
                 warm_starts[mc_key] = mc_delta.detach().clone()
+
+                step_counter += 1
+                step_elapsed = time.perf_counter() - step_t0
+                overall_elapsed = time.perf_counter() - steps_t0
+                avg_step = overall_elapsed / max(step_counter, 1)
+                eta_seconds = max(total_steps - step_counter, 0) * avg_step
+                print(
+                    f"alpha={args.alpha:.3f}: step {step_counter}/{total_steps} "
+                    f"(radius={radius:.3f}, x_index={dataset_idx}, smoother={smoother_key}) "
+                    f"done in {step_elapsed:.1f}s; elapsed={overall_elapsed:.1f}s; "
+                    f"eta~{eta_seconds:.1f}s"
+                )
 
                 rows.append(
                     {
@@ -739,7 +780,7 @@ def main() -> None:
     parser.add_argument(
         "--radius-values",
         type=str,
-        default="0.0,0.1,0.5,0.8",
+        default="0.0,0.5,1.0",
         help="Comma-separated robustness radii.",
     )
     parser.add_argument(
@@ -751,19 +792,19 @@ def main() -> None:
     parser.add_argument(
         "--attack-num-candidates",
         type=int,
-        default=20,
+        default=16,
         help="Number of random attack candidates in the ball ||delta||<=radius for each objective.",
     )
     parser.add_argument(
         "--containment-samples",
         type=int,
-        default=500,
+        default=150,
         help="Noisy samples used to estimate containment for h_w(x+delta+epsilon).",
     )
     parser.add_argument(
         "--mc-containment-samples",
         type=int,
-        default=500,
+        default=150,
         help="Monte Carlo samples used to estimate smoother containment at (x+delta).",
     )
     parser.add_argument(
@@ -775,7 +816,7 @@ def main() -> None:
     parser.add_argument(
         "--smoothing-N",
         type=int,
-        default=8,
+        default=5,
         help="N for alpha-trimming smoothing.",
     )
     parser.add_argument(
@@ -813,7 +854,7 @@ def main() -> None:
     parser.add_argument(
         "--behavior-stay-radius",
         type=float,
-        default=1.0,
+        default=1.5,
         help="Stay mode threshold: ||y - y_init|| <= radius.",
     )
     parser.add_argument(
@@ -837,7 +878,7 @@ def main() -> None:
     parser.add_argument(
         "--dbscan-min-samples",
         type=int,
-        default=100,
+        default=200,
         help="DBSCAN min_samples for clustering inside smoothing.",
     )
     parser.add_argument(
