@@ -84,6 +84,150 @@ def _to_numpy(x: torch.Tensor) -> np.ndarray:
 	return x.detach().cpu().numpy()
 
 
+def _draw_smoother_distribution_panel(
+	ax,
+	*,
+	i: int,
+	outputs: torch.Tensor,
+	outputs_np: np.ndarray,
+	smoother_mc_np: np.ndarray,
+	region,
+	region_lower_np: np.ndarray,
+	region_upper_np: np.ndarray,
+	raw_bins: np.ndarray | int,
+	mc_bins: np.ndarray | int,
+	smoother_label: str,
+	smoother_color: str,
+	xlim: tuple[float, float] | None = None,
+	ylim: tuple[float, float] | None = None,
+	show_ylabel: bool = True,
+) -> None:
+	"""Render one smoother-vs-original distribution panel onto ``ax``.
+
+	Shared between the single-panel and combined plots so the visual
+	encoding (cluster step histograms, region shading, Voronoi splits,
+	legend) stays identical across figures.
+	"""
+	raw_color = "#111111"
+	region_color = "#7A7A7A"
+	split_color = "#D62728"
+
+	ax.tick_params(axis="both", labelsize=9)
+	k_regions = region_lower_np.shape[1]
+	if isinstance(raw_bins, np.ndarray):
+		shared_bins = np.asarray(raw_bins, dtype=float)
+	else:
+		shared_bins = np.histogram_bin_edges(outputs_np[i], bins=raw_bins)
+	bin_width = float(shared_bins[1] - shared_bins[0])
+	n_total = int(outputs_np[i].size)
+
+	# Order regions left-to-right by their center for consistent coloring.
+	region_centers_i = 0.5 * (region_lower_np[i] + region_upper_np[i])
+	region_order = np.argsort(region_centers_i)
+
+	if k_regions >= 2:
+		# Local palette tuned to contrast with both smoother colours
+		# (red ``#E31A1C`` and blue ``#1F78B4``) and to read clearly as
+		# step outlines over a filled smoothed-predictor histogram.
+		original_palette = ("#222222", "#D55E00", "#009E73", "#CC79A7", "#9467BD")
+		region_distances = _to_numpy(region.distance(outputs[i])[i])
+		assignments = np.argmin(region_distances, axis=-1)
+		for rank, region_idx in enumerate(region_order):
+			cluster_mask = assignments == region_idx
+			if not np.any(cluster_mask):
+				continue
+			cluster_color = original_palette[rank % len(original_palette)]
+			n_cluster = int(cluster_mask.sum())
+			# Per-cluster weights ``1 / (n_total * bin_width)`` give the
+			# same scale as ``density=True`` over the full data, so the
+			# stack across clusters reproduces the full histogram.
+			ax.hist(
+				outputs_np[i][cluster_mask],
+				bins=shared_bins,
+				density=False,
+				weights=np.full(n_cluster, 1.0 / (n_total * bin_width)),
+				histtype="step",
+				linewidth=2.0,
+				edgecolor=cluster_color,
+				label=f"Original (cluster {rank + 1})",
+			)
+	else:
+		ax.hist(
+			outputs_np[i],
+			bins=shared_bins,
+			density=True,
+			histtype="step",
+			linewidth=2.2,
+			color=raw_color,
+			label="Original model",
+		)
+
+	ax.hist(
+		smoother_mc_np[i],
+		bins=mc_bins,
+		density=True,
+		alpha=0.30,
+		color=smoother_color,
+		edgecolor=smoother_color,
+		linewidth=1.4,
+		label=smoother_label,
+	)
+
+	for j in range(k_regions):
+		left = region_lower_np[i, j]
+		right = region_upper_np[i, j]
+		ax.axvspan(left, right, color=region_color, alpha=0.15, lw=0)
+		ax.axvline(left, color=region_color, linestyle="--", linewidth=1.0, alpha=0.7)
+		ax.axvline(right, color=region_color, linestyle="--", linewidth=1.0, alpha=0.7)
+
+	legend_extras: list = [
+		mpatches.Patch(
+			facecolor=to_rgba(region_color, alpha=0.15),
+			edgecolor=region_color,
+			linestyle="--",
+			label="Robustness region",
+		)
+	]
+	legend_extra_labels: list[str] = ["Robustness region"]
+
+	if k_regions >= 2:
+		# Explicit (on, off) dash pattern: matplotlib's built-in ``"--"``
+		# scales with linewidth and reads as nearly solid at width 1.0.
+		split_dashes = (0, (5, 3))
+		for c_idx in range(len(region_order) - 1):
+			left_idx = int(region_order[c_idx])
+			right_idx = int(region_order[c_idx + 1])
+			split_x = 0.5 * (
+				region_upper_np[i, left_idx] + region_lower_np[i, right_idx]
+			)
+			ax.axvline(
+				split_x,
+				color=split_color,
+				linestyle=split_dashes,
+				linewidth=1.0,
+				alpha=0.95,
+				zorder=5,
+			)
+		legend_extras.append(
+			plt.Line2D([0], [0], color=split_color, linewidth=1.0, linestyle=split_dashes, label="Voronoi cell split"),
+		)
+		legend_extra_labels.append("Voronoi cell split")
+
+	handles, labels = ax.get_legend_handles_labels()
+	handles.extend(legend_extras)
+	labels.extend(legend_extra_labels)
+	ax.legend(handles=handles, labels=labels, loc="upper right")
+
+	ax.set_xlabel("Output", fontsize=10)
+	if show_ylabel:
+		ax.set_ylabel("Density", fontsize=10)
+	ax.grid(alpha=0.25, linestyle=":")
+	if xlim is not None:
+		ax.set_xlim(*xlim)
+	if ylim is not None:
+		ax.set_ylim(*ylim)
+
+
 def plot_single_smoother_distribution(
 	x: torch.Tensor,
 	outputs: torch.Tensor,
@@ -122,128 +266,110 @@ def plot_single_smoother_distribution(
 	region_upper_np = _to_numpy(region.upper[:, :, 0])
 
 	m = outputs_np.shape[0]
-	raw_color = "#111111"
-	region_color = "#7A7A7A"
-	split_color = "#D62728"
 
-	_w = 0.80 * TEXTWIDTH
-	fig, axes = plt.subplots(m, 1, figsize=(_w, 0.8 * _w * m), sharex=False)
+	_w = 1.00 * TEXTWIDTH
+	fig, axes = plt.subplots(m, 1, figsize=(_w, 0.35 * _w * m), sharex=False)
 	if m == 1:
 		axes = [axes]
 
 	for i, ax in enumerate(axes):
-		k_regions = region_lower_np.shape[1]
-		if isinstance(raw_bins, np.ndarray):
-			shared_bins = np.asarray(raw_bins, dtype=float)
-		else:
-			shared_bins = np.histogram_bin_edges(outputs_np[i], bins=raw_bins)
-		bin_width = float(shared_bins[1] - shared_bins[0])
-		n_total = int(outputs_np[i].size)
-
-		# Order regions left-to-right by their center for consistent coloring.
-		region_centers_i = 0.5 * (region_lower_np[i] + region_upper_np[i])
-		region_order = np.argsort(region_centers_i)
-
-		if k_regions >= 2:
-			# Local palette tuned to contrast with both smoother colours
-			# (red ``#E31A1C`` and blue ``#1F78B4``) and to read clearly as
-			# step outlines over a filled smoothed-predictor histogram.
-			original_palette = ("#222222", "#D55E00", "#009E73", "#CC79A7", "#9467BD")
-			region_distances = _to_numpy(region.distance(outputs[i])[i])
-			assignments = np.argmin(region_distances, axis=-1)
-			for rank, region_idx in enumerate(region_order):
-				cluster_mask = assignments == region_idx
-				if not np.any(cluster_mask):
-					continue
-				cluster_color = original_palette[rank % len(original_palette)]
-				n_cluster = int(cluster_mask.sum())
-				# Per-cluster weights ``1 / (n_total * bin_width)`` give the
-				# same scale as ``density=True`` over the full data, so the
-				# stack across clusters reproduces the full histogram.
-				ax.hist(
-					outputs_np[i][cluster_mask],
-					bins=shared_bins,
-					density=False,
-					weights=np.full(n_cluster, 1.0 / (n_total * bin_width)),
-					histtype="step",
-					linewidth=2.0,
-					edgecolor=cluster_color,
-					label=f"Original model (cluster {rank + 1})",
-				)
-		else:
-			ax.hist(
-				outputs_np[i],
-				bins=shared_bins,
-				density=True,
-				histtype="step",
-				linewidth=2.2,
-				color=raw_color,
-				label="Original model",
-			)
-
-		ax.hist(
-			smoother_mc_np[i],
-			bins=mc_bins,
-			density=True,
-			alpha=0.30,
-			color=smoother_color,
-			edgecolor=smoother_color,
-			linewidth=1.4,
-			label=smoother_label,
+		_draw_smoother_distribution_panel(
+			ax,
+			i=i,
+			outputs=outputs,
+			outputs_np=outputs_np,
+			smoother_mc_np=smoother_mc_np,
+			region=region,
+			region_lower_np=region_lower_np,
+			region_upper_np=region_upper_np,
+			raw_bins=raw_bins,
+			mc_bins=mc_bins,
+			smoother_label=smoother_label,
+			smoother_color=smoother_color,
+			xlim=xlim,
+			ylim=ylim,
 		)
 
-		for j in range(k_regions):
-			left = region_lower_np[i, j]
-			right = region_upper_np[i, j]
-			ax.axvspan(left, right, color=region_color, alpha=0.15, lw=0)
-			ax.axvline(left, color=region_color, linestyle="--", linewidth=1.0, alpha=0.7)
-			ax.axvline(right, color=region_color, linestyle="--", linewidth=1.0, alpha=0.7)
+	fig.tight_layout()
+	fig.savefig(output_path, dpi=180)
+	plt.close(fig)
+	return output_path
 
-		legend_extras: list = [
-			mpatches.Patch(
-				facecolor=to_rgba(region_color, alpha=0.15),
-				edgecolor=region_color,
-				linestyle="--",
-				label="Robustness region",
-			)
-		]
-		legend_extra_labels: list[str] = ["Robustness region"]
 
-		if k_regions >= 2:
-			# Explicit (on, off) dash pattern: matplotlib's built-in ``"--"``
-			# scales with linewidth and reads as nearly solid at width 1.0.
-			split_dashes = (0, (5, 3))
-			for c_idx in range(len(region_order) - 1):
-				left_idx = int(region_order[c_idx])
-				right_idx = int(region_order[c_idx + 1])
-				split_x = 0.5 * (
-					region_upper_np[i, left_idx] + region_lower_np[i, right_idx]
-				)
-				ax.axvline(
-					split_x,
-					color=split_color,
-					linestyle=split_dashes,
-					linewidth=1.0,
-					alpha=0.95,
-					zorder=5,
-				)
-			legend_extras.append(
-				plt.Line2D([0], [0], color=split_color, linewidth=1.0, linestyle=split_dashes, label="Voronoi cell split"),
-			)
-			legend_extra_labels.append("Voronoi cell split")
+def plot_combined_smoother_distributions(
+	x: torch.Tensor,
+	outputs: torch.Tensor,
+	panels: list[tuple[torch.Tensor, Any, str, str]],
+	output_path: Path,
+	raw_bins: np.ndarray | int = 60,
+	mc_bins: np.ndarray | int = 45,
+	xlim: tuple[float, float] | None = None,
+	ylim: tuple[float, float] | None = None,
+) -> Path:
+	"""Render multiple smoothers side-by-side, sharing the original-model histogram.
 
-		handles, labels = ax.get_legend_handles_labels()
-		handles.extend(legend_extras)
-		labels.extend(legend_extra_labels)
-		ax.legend(handles=handles, labels=labels, loc="upper left")
+	``panels`` is a list of ``(smoother_mc_samples, region, label, color)``
+	tuples; one column per panel, each tagged ``(a)``, ``(b)``, ... in the
+	top-left so they can be cross-referenced from the paper text.
+	"""
+	output_path.parent.mkdir(parents=True, exist_ok=True)
 
-		ax.set_xlabel("Output")
-		ax.set_ylabel("Density")
-		ax.grid(alpha=0.25, linestyle=":")
-		if xlim is not None:
-			ax.set_xlim(*xlim)
-		if ylim is not None:
-			ax.set_ylim(*ylim)
+	if not panels:
+		raise ValueError("plot_combined_smoother_distributions requires at least one panel")
+
+	outputs_np = _to_numpy(outputs[:, :, 0])
+	m = outputs_np.shape[0]
+	if m != 1:
+		raise NotImplementedError(
+			"plot_combined_smoother_distributions currently supports a single input row"
+		)
+	n_panels = len(panels)
+
+	_panel_w = 0.75 * TEXTWIDTH
+	fig, axes = plt.subplots(
+		1,
+		n_panels,
+		figsize=(_panel_w * n_panels, 0.55 * 0.80 * TEXTWIDTH),
+		sharex=False,
+		sharey=True,
+	)
+	if n_panels == 1:
+		axes = [axes]
+
+	for col, ((smoother_mc_samples, region, smoother_label, smoother_color), ax) in enumerate(
+		zip(panels, axes)
+	):
+		smoother_mc_np = _to_numpy(smoother_mc_samples[:, :, 0])
+		region_lower_np = _to_numpy(region.lower[:, :, 0])
+		region_upper_np = _to_numpy(region.upper[:, :, 0])
+		_draw_smoother_distribution_panel(
+			ax,
+			i=0,
+			outputs=outputs,
+			outputs_np=outputs_np,
+			smoother_mc_np=smoother_mc_np,
+			region=region,
+			region_lower_np=region_lower_np,
+			region_upper_np=region_upper_np,
+			raw_bins=raw_bins,
+			mc_bins=mc_bins,
+			smoother_label=smoother_label,
+			smoother_color=smoother_color,
+			xlim=xlim,
+			ylim=ylim,
+			show_ylabel=(col == 0),
+		)
+		panel_tag = f"({chr(ord('a') + col)})"
+		ax.text(
+			0.025,
+			0.955,
+			panel_tag,
+			transform=ax.transAxes,
+			fontsize=10,
+			fontweight="bold",
+			va="top",
+			ha="left",
+		)
 
 	fig.tight_layout()
 	fig.savefig(output_path, dpi=180)
@@ -263,7 +389,6 @@ def plot_experiment_results(
 	"""Create and save charts for the smoothing experiment."""
 	output_dir.mkdir(parents=True, exist_ok=True)
 
-	x_np = _to_numpy(x[:, 0])
 	outputs_np = _to_numpy(outputs[:, :, 0])
 	rekavandi_mc_np = _to_numpy(rekavandi_mc_samples[:, :, 0])
 	clustered_mc_np = _to_numpy(clustered_mc_samples[:, :, 0])
@@ -561,26 +686,6 @@ def plot_final_timestep_examples(
 
 	nx = original.shape[0]
 
-	all_x_coords = np.concatenate([
-		original_end[..., 0].reshape(-1),
-		noisy_end[..., 0].reshape(-1),
-		single_end[..., 0].reshape(-1),
-		clust_end[..., 0].reshape(-1),
-		region_lower_final[..., 0].reshape(-1),
-		region_upper_final[..., 0].reshape(-1),
-		sc_lower_final[..., 0].reshape(-1),
-		sc_upper_final[..., 0].reshape(-1),
-	])
-	all_y_coords = np.concatenate([
-		original_end[..., 1].reshape(-1),
-		noisy_end[..., 1].reshape(-1),
-		single_end[..., 1].reshape(-1),
-		clust_end[..., 1].reshape(-1),
-		region_lower_final[..., 1].reshape(-1),
-		region_upper_final[..., 1].reshape(-1),
-		sc_lower_final[..., 1].reshape(-1),
-		sc_upper_final[..., 1].reshape(-1),
-	])
 	# Hard-clip the view to [-10, 10] in both axes.
 	x_lim = (-10.0, 10.0)
 	y_lim = (-10.0, 10.0)
@@ -1272,7 +1377,7 @@ def plot_bound_clustered_grid(
 	_w = TEXTWIDTH
 	fig, axes = plt.subplots(
 		len(alphas), len(p_v_values),
-		figsize=(_w, 0.60 * _w),
+		figsize=(_w, 0.45 * _w),
 		sharex=True, sharey=True,
 	)
 
@@ -1288,28 +1393,47 @@ def plot_bound_clustered_grid(
 					label=rf"$N={n}$",
 				)
 
-			ax.set_title(rf"$\alpha={alpha},\ p_{{\mathcal{{V}}}}={p_v}$", fontsize=8)
 			ax.grid(alpha=0.3, linestyle=":")
+			ax.set_xticks([0.0, 0.5, 1.0])
 			ax.set_yticks([0.0, 0.5, 1.0])
 
-	fig.supylabel("Certified probability", fontsize=8)
+			if i == 0:
+				ax.set_title(rf"$p_{{\mathcal{{V}}}}={p_v}$", fontsize=8)
+			if j == len(p_v_values) - 1:
+				twin = ax.twinx()
+				twin.set_yticks([])
+				twin.set_ylabel(
+					rf"$\alpha={alpha}$",
+					fontsize=8, rotation=270, labelpad=15,
+				)
+
+	supy = fig.supylabel("Certified probability", fontsize=8)
+	supx = fig.supxlabel(r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$", fontsize=8)
 
 	fig.tight_layout()
-	fig.subplots_adjust(bottom=0.22)
 
-	fig.text(
-		0.5, 0.12,
-		r"Ratio $p_{\mathcal{R}} / p_{\mathcal{V}}$",
-		ha="center", va="center",
-		fontsize=8,
-	)
+	bottom_ax_pos = axes[-1, 0].get_position()
+	y_offset = 0.15
+	supx.set_y(max(bottom_ax_pos.y0 - y_offset, 0.005))
+
+	# Match visual distance horizontally given the figure aspect ratio.
+	fig_w, fig_h = fig.get_size_inches()
+	x_offset = y_offset * fig_h / fig_w
+	supy.set_x(max(bottom_ax_pos.x0 - x_offset - 0.02, 0.005))
+
+	top_ax_pos = axes[0, 0].get_position()
+	supy.set_y((bottom_ax_pos.y0 + top_ax_pos.y1) / 2)
+
+	middle_ax_pos = axes[len(alphas) // 2, -1].get_position()
+	y_center = (middle_ax_pos.y0 + middle_ax_pos.y1) / 2
 
 	handles, labels = axes[0, 0].get_legend_handles_labels()
 	fig.legend(
 		handles, labels,
-		loc="lower center",
-		ncol=len(num_samples_list),
-		bbox_to_anchor=(0.5, 0.0),
+		loc="center left",
+		ncol=1,
+		bbox_to_anchor=(1.0, y_center),
+		bbox_transform=fig.transFigure,
 		framealpha=0.95,
 	)
 

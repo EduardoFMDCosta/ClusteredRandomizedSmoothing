@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 
 # Make src/ importable when running this script from the repository root.
@@ -14,7 +15,7 @@ if str(SRC) not in sys.path:
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from plotting import plot_single_smoother_distribution
+from plotting import plot_combined_smoother_distributions
 from stochastic_functions import (
     MultiplicativeThreeMode1DGaussianMixture,
 )
@@ -114,8 +115,6 @@ def main():
 
     # Share bins, x- and y-axis limits across the two plots so the
     # original-model histogram is identical on both panels.
-    import numpy as np
-
     raw_np = raw_outputs[:, :, 0].detach().cpu().numpy().reshape(-1)
     rekavandi_np = rekavandi_mc_samples[:, :, 0].detach().cpu().numpy().reshape(-1)
     clustered_np = clustered_mc_samples[:, :, 0].detach().cpu().numpy().reshape(-1)
@@ -145,33 +144,30 @@ def main():
     )
 
     figures_dir = EXPERIMENTS / "data" / "figures"
-    alpha_path = plot_single_smoother_distribution(
+    combined_path = plot_combined_smoother_distributions(
         x=x,
         outputs=raw_outputs,
-        smoother_mc_samples=rekavandi_mc_samples,
-        region=rekavandi_smoother.regions,
-        output_path=figures_dir / "alpha_smoothing_distribution.pdf",
-        smoother_label=r"$\alpha$-smoothing (Rekavandi et al, 2024)",
-        smoother_color="#E31A1C",
+        panels=[
+            (
+                rekavandi_mc_samples,
+                rekavandi_smoother.regions,
+                r"$\alpha$-smoothing",
+                "#E31A1C",
+            ),
+            (
+                clustered_mc_samples,
+                smoother.regions,
+                r"Clustered $\alpha$-smoothing",
+                "#1F78B4",
+            ),
+        ],
+        output_path=figures_dir / "smoothing_distributions_comparison.pdf",
         raw_bins=raw_bin_edges,
         mc_bins=mc_bin_edges,
         xlim=shared_xlim,
         ylim=shared_ylim,
     )
-    clustered_path = plot_single_smoother_distribution(
-        x=x,
-        outputs=raw_outputs,
-        smoother_mc_samples=clustered_mc_samples,
-        region=smoother.regions,
-        output_path=figures_dir / "clustered_alpha_smoothing_distribution.pdf",
-        smoother_label=r"Clustered $\alpha$-smoothing",
-        smoother_color="#1F78B4",
-        raw_bins=raw_bin_edges,
-        mc_bins=mc_bin_edges,
-        xlim=shared_xlim,
-        ylim=shared_ylim,
-    )
-    chart_paths = [alpha_path, clustered_path]
+    chart_paths = [combined_path]
 
     # Robustness certification
     radius = 0.01 * torch.ones((x.shape[0], 1), dtype=x.dtype, device=x.device)

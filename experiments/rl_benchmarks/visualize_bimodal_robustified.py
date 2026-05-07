@@ -23,12 +23,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from benchmark_policies import load_policy
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import normalize_state
-from visualize_uav3d_pyvista import BIMODAL_START_STATE
+from visualize_uav3d_robustified_pyvista import BIMODAL_START_STATE, _load_uav3d_policy
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -74,9 +73,11 @@ def _new_3d_fig():
     ax.set_xlim(-AXIS_LIM, AXIS_LIM)
     ax.set_ylim(-AXIS_LIM, AXIS_LIM)
     ax.set_zlim(-AXIS_LIM, AXIS_LIM)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
+    ax.set_xlabel("x", fontsize=18, labelpad=8)
+    ax.set_ylabel("y", fontsize=18, labelpad=8)
+    ax.set_zlabel("z", fontsize=18, labelpad=8)
+    ax.tick_params(axis="both", which="major", labelsize=14)
+    ax.tick_params(axis="z", which="major", labelsize=14)
     return fig, ax
 
 
@@ -88,7 +89,7 @@ def _plot_raw(actions: np.ndarray, out_path: Path, base_state: np.ndarray) -> No
         Line2D([0], [0], marker="o", color="none", markerfacecolor="black",
                markeredgecolor="black", markersize=5, label="samples"),
     ]
-    ax.legend(handles=legend_handles, loc="upper left", fontsize=14)
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=18)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -143,19 +144,19 @@ def _plot_smoothed(
                markeredgecolor="black", markersize=5, label="samples"),
         Line2D([0], [0], color="black", linewidth=2.0, label="coverage region"),
     ]
-    ax.legend(handles=legend_handles, loc="upper left", fontsize=14)
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=18)
 
     totals, per_cluster = _certificate_curve(smoother, radii)
-    inset = fig.add_axes([0.09, 0.07, 0.40, 0.3])
+    inset = fig.add_axes([0.095, 0.07, 0.40, 0.3])
     for j in range(k_used):
         inset.plot(radii, per_cluster[:, j], color=cluster_colors[j],
                    linewidth=1.2, alpha=0.85)
     inset.plot(radii, totals, color="black", linewidth=1.6, label="total")
     inset.set_xlim(float(radii[0]), float(radii[-1]))
     inset.set_ylim(0.0, 1.0)
-    inset.set_xlabel("radius", fontsize=12)
-    inset.set_ylabel("certified prob.", fontsize=12)
-    inset.tick_params(labelsize=10)
+    inset.set_xlabel("radius", fontsize=17)
+    inset.set_ylabel("certified prob.", fontsize=17)
+    inset.tick_params(labelsize=15)
 
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -246,7 +247,7 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    policy, _ = load_policy(Path(args.checkpoint))
+    policy, _ = _load_uav3d_policy(Path(args.checkpoint))
     if policy.num_components < 2:
         print(f"[warn] Checkpoint has K={policy.num_components}; bimodality visualization assumes K>=2.")
 
