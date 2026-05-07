@@ -27,9 +27,9 @@ plt.rcParams.update(
 		"font.size": 10,
 		"axes.labelsize": 10,
 		"axes.titlesize": 10,
-		"xtick.labelsize": 7,
-		"ytick.labelsize": 7,
-		"legend.fontsize": 9,
+		"xtick.labelsize": 9,
+		"ytick.labelsize": 9,
+		"legend.fontsize": 10,
 	}
 )
 
@@ -693,8 +693,8 @@ def plot_final_timestep_examples(
 	y_extent = 10.0
 
 	col_titles = (r"$h_{w}(x)$", r"$h_{w}(x+\varepsilon)$", r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing")
-	# Map flat column index to (row, col) in the 2x2 grid
-	_grid_pos = {0: (0, 0), 1: (0, 1), 2: (1, 0), 3: (1, 1)}
+	# Map flat column index to (row, col) in the 1x4 grid
+	_grid_pos = {0: (0, 0), 1: (0, 1), 2: (0, 2), 3: (0, 3)}
 	agent_colors = ("#008A2E",)
 	agent_labels = ("Agent",)
 
@@ -704,14 +704,14 @@ def plot_final_timestep_examples(
 		return np.argmin(d2, axis=1)
 
 	# Figure size suitable for a scientific article (full-width 2-column figure)
-	_fig_w = 6.5
-	_fig_h = 5.8
+	_fig_w = 16.0
+	_fig_h = 4.5
 
 	chart_paths: list[Path] = []
 
 	for i in range(nx):
-		fig, axes = plt.subplots(2, 2, figsize=(_fig_w, _fig_w), sharex=True, sharey=True, constrained_layout=False)
-		fig.subplots_adjust(left=0.08, right=0.99, top=0.94, bottom=0.07, hspace=0.18, wspace=0.0)
+		fig, axes = plt.subplots(1, 4, figsize=(_fig_w, _fig_h), sharex=True, sharey=True, constrained_layout=False)
+		fig.subplots_adjust(left=0.08, right=0.99, top=0.94, bottom=0.12, hspace=0.0, wspace=0.05)
 		fig.patch.set_facecolor("#FFFFFF")
 
 		single_centroids_i = _to_numpy(single_cluster_centroids[i])
@@ -725,8 +725,7 @@ def plot_final_timestep_examples(
 		)
 
 		for col_idx, (endpoints, centroids_ref) in enumerate(column_data):
-			r, c = _grid_pos[col_idx]
-			ax = axes[r, c]
+			ax = axes[col_idx]
 			ax.set_facecolor("#FFFFFF")
 			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
 			ax.set_aspect("equal", adjustable="box")
@@ -804,28 +803,25 @@ def plot_final_timestep_examples(
 				road_aligned=True,
 			)
 
-			ax.set_title(col_titles[col_idx], fontsize=9)
+			ax.set_title(col_titles[col_idx], fontsize=11)
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
 
 		# Suppress tick labels on shared edges to keep the grid seamless.
-		for r in range(2):
-			axes[r, 1].tick_params(axis="y", which="both", left=False, labelleft=False)
-		for c in range(2):
-			axes[0, c].tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+		for c in range(1, 4):
+			axes[c].tick_params(axis="y", which="both", left=False, labelleft=False)
 
-		# x-labels on bottom row only, y-label on left column only
-		for c in range(2):
-			axes[1, c].set_xlabel(r"$x_1$", fontsize=9)
-		for r in range(2):
-			axes[r, 0].set_ylabel(r"$x_2$", fontsize=9)
+		# x-labels on all columns, y-label on left column only
+		for c in range(4):
+			axes[c].set_xlabel(r"$x_1$", fontsize=11)
+		axes[0].set_ylabel(r"$x_2$", fontsize=11)
 
 		# Legend only on the top-left panel of the first figure
 		if i == 0:
 			handles = [
 				mpatches.Patch(facecolor=to_rgba(agent_colors[0], alpha=0.3), edgecolor=agent_colors[0], label=agent_labels[0]),
 			]
-			axes[0, 0].legend(handles=handles, loc="best", frameon=True, fontsize=8)
+			axes[0].legend(handles=handles, loc="best", frameon=True, fontsize=10)
 
 		fig_path = output_dir / f"final_timestep_examples_{i}.pdf"
 		fig.savefig(fig_path, dpi=180)
