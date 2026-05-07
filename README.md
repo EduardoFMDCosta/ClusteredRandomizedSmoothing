@@ -63,6 +63,29 @@ regenerating figures (they are not required to use the library).
 To run any command inside the resolved environment, prefix it with `uv run`,
 or activate the venv with `source .venv/bin/activate`.
 
+The figure scripts under [experiments/rl_benchmarks/](experiments/rl_benchmarks/)
+import sibling helpers from [experiments/](experiments/) (e.g.
+`stochastic_functions`), so add `experiments/` to `PYTHONPATH` when running
+them natively:
+
+```bash
+export PYTHONPATH="$PWD/experiments"
+```
+
+The Docker image already sets this. Matplotlib's `text.usetex` is on, so a
+working LaTeX install with `cm-super`, `dvipng`, and the `underscore` package
+is required for native runs (the Docker image bundles all of them).
+
+The PyVista 3-D scripts also need a headless OpenGL backend. The Docker image
+installs `libosmesa6` + `libegl1` and exports `PYVISTA_OFF_SCREEN=true`, so
+nothing else is required there. For native runs on a server with no display,
+either install OSMesa (`apt install libosmesa6 libegl1 libgl1-mesa-dri`) and
+set `PYVISTA_OFF_SCREEN=true`, or wrap the invocation with `xvfb-run`:
+
+```bash
+xvfb-run -a uv run python experiments/rl_benchmarks/visualize_uav3d_robustified_pyvista.py
+```
+
 ### 2. Docker (recommended for reproducing paper artefacts)
 
 A `Dockerfile` is provided that pins Python, uv, and every system library
