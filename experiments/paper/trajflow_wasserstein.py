@@ -39,10 +39,12 @@ from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 from plotting import plot_trajflow_wasserstein_histograms
 from stochastic_functions import TrajFlowMeszarosStochasticFunction
 from trajflow_robustness import (
+    _ask_yes_no,
     _ask_num_indices,
     _choose_indices,
     _extract_target_initial_position,
     _finite_target_mask,
+    _load_json,
     _load_inputs_and_outputs,
     _load_or_create_fixed_random_order,
     _prepare_inputs_from_arrays,
@@ -381,6 +383,16 @@ def main() -> None:
             "If omitted, uses <experiments-data>/fixed_random_index_order.json."
         ),
     )
+    parser.add_argument(
+        "--regenerate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "If set, recomputes data even when a saved JSON already exists. "
+            "If --no-regenerate is set, loads from existing JSON and only plots. "
+            "If omitted, the script asks interactively when JSON already exists."
+        ),
+    )
     args = parser.parse_args()
 
     if args.input_batch_size <= 0:
@@ -399,55 +411,84 @@ def main() -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    stochastic_fn = TrajFlowMeszarosStochasticFunction()
-
-    all_inputs, outputs_gt = _load_inputs_and_outputs()
-    valid_indices = np.flatnonzero(_finite_target_mask(outputs_gt))
     analysis_dir = Path(args.analysis_dir)
-    fixed_order_path = (
-        Path(args.fixed_index_order_file)
-        if args.fixed_index_order_file
-        else EXPERIMENTS / "data" / "fixed_random_index_order.json"
-    )
-    fixed_random_order = _load_or_create_fixed_random_order(
-        path=fixed_order_path,
-        valid_indices=valid_indices,
-        seed=args.seed,
-    )
-
-    if args.num_inputs is None and not (args.selected_indices or "").strip():
-        print(f"Available valid indices in dataset: {len(valid_indices)}")
-        args.num_inputs = _ask_num_indices(
-            "How many xs should be analyzed? (0 for all) ",
-            len(valid_indices),
+    json_path = analysis_dir / "trajflow_wasserstein.json"
+    do_regenerate: bool
+    if args.regenerate is not None:
+        do_regenerate = bool(args.regenerate)
+    elif json_path.exists():
+        do_regenerate = _ask_yes_no(
+            "Found existing Wasserstein data JSON.\nRegenerate? [y/n]: "
         )
-    if args.num_inputs is None:
-        args.num_inputs = 0
+    else:
+        do_regenerate = True
 
-    selected_indices = _choose_indices(
-        fixed_random_order=fixed_random_order,
-        num_inputs=args.num_inputs,
-        selected_indices_text=args.selected_indices,
-    )
+    if do_regenerate:
+        stochastic_fn = TrajFlowMeszarosStochasticFunction()
+        all_inputs, outputs_gt = _load_inputs_and_outputs()
+        valid_indices = np.flatnonzero(_finite_target_mask(outputs_gt))
 
-    all_rows: list[dict[str, Any]] = []
-    num_batches = (len(selected_indices) + args.input_batch_size - 1) // args.input_batch_size
-    for batch_id, start in enumerate(range(0, len(selected_indices), args.input_batch_size), start=1):
-        t0 = time.perf_counter()
-        batch_indices = selected_indices[start : start + args.input_batch_size]
-        print(
-            f"processing batch {batch_id}/{num_batches} "
-            f"with {len(batch_indices)} dataset indices"
+        fixed_order_path = (
+            Path(args.fixed_index_order_file)
+            if args.fixed_index_order_file
+            else EXPERIMENTS / "data" / "fixed_random_index_order.json"
         )
-        rows = _compute_batch_wasserstein_rows(
-            args=args,
-            stochastic_fn=stochastic_fn,
-            batch_indices=batch_indices,
-            inputs=all_inputs,
-            outputs_gt=outputs_gt,
+        fixed_random_order = _load_or_create_fixed_random_order(
+            path=fixed_order_path,
+            valid_indices=valid_indices,
+            seed=args.seed,
         )
-        all_rows.extend(rows)
-        print(f"batch {batch_id}/{num_batches} completed in {time.perf_counter() - t0:.1f}s")
+
+        if args.num_inputs is None and not (args.selected_indices or "").strip():
+            print(f"Available valid indices in dataset: {len(valid_indices)}")
+            args.num_inputs = _ask_num_indices(
+                "How many xs should be analyzed? (0 for all) ",
+                len(valid_indices),
+            )
+        if args.num_inputs is None:
+            args.num_inputs = 0
+
+        selected_indices = _choose_indices(
+            fixed_random_order=fixed_random_order,
+            num_inputs=args.num_inputs,
+            selected_indices_text=args.selected_indices,
+        )
+
+        all_rows: list[dict[str, Any]] = []
+        num_batches = (len(selected_indices) + args.input_batch_size - 1) // args.input_batch_size
+        for batch_id, start in enumerate(range(0, len(selected_indices), args.input_batch_size), start=1):
+            t0 = time.perf_counter()
+            batch_indices = selected_indices[start : start + args.input_batch_size]
+            print(
+                f"processing batch {batch_id}/{num_batches} "
+                f"with {len(batch_indices)} dataset indices"
+            )
+            rows = _compute_batch_wasserstein_rows(
+                args=args,
+                stochastic_fn=stochastic_fn,
+                batch_indices=batch_indices,
+                inputs=all_inputs,
+                outputs_gt=outputs_gt,
+            )
+            all_rows.extend(rows)
+            print(f"batch {batch_id}/{num_batches} completed in {time.perf_counter() - t0:.1f}s")
+    else:
+        payload = _load_json(json_path)
+        loaded_rows = payload.get("per_input", [])
+        if not isinstance(loaded_rows, list):
+            raise ValueError(f"Invalid per_input list in {json_path}")
+        all_rows = loaded_rows
+        selected_from_config = payload.get("config", {}).get("selected_indices", [])
+        selected_indices = np.array(selected_from_config, dtype=int)
+        fixed_order_path = (
+            Path(args.fixed_index_order_file)
+            if args.fixed_index_order_file
+            else EXPERIMENTS / "data" / "fixed_random_index_order.json"
+        )
+        print(f"loaded: {json_path}")
+
+    if len(all_rows) == 0:
+        raise ValueError("No per-input Wasserstein rows found to plot.")
 
     w_noisy_vs_k1 = np.array([float(row["w2_noisy_vs_k1"]) for row in all_rows], dtype=float)
     w_noisy_vs_k2 = np.array([float(row["w2_noisy_vs_k2"]) for row in all_rows], dtype=float)
@@ -460,46 +501,49 @@ def main() -> None:
         bins=args.hist_bins,
     )
 
-    summary = {
-        "config": {
-            "selected_indices": selected_indices.tolist(),
-            "distribution_samples": int(args.distribution_samples),
-            "ot_method": args.ot_method,
-            "sinkhorn_reg": float(args.sinkhorn_reg),
-            "sigma": float(args.sigma),
-            "smoothing_N": int(args.smoothing_N),
-            "alpha": float(args.alpha),
-            "coverage": float(args.coverage),
-            "cluster_strategy": args.cluster_strategy,
-            "input_mode": args.input_mode,
-            "behavior_stay_radius": float(args.behavior_stay_radius),
-            "behavior_min_down": float(args.behavior_min_down),
-            "behavior_min_left": float(args.behavior_min_left),
-            "dbscan_eps": float(args.dbscan_eps),
-            "dbscan_min_samples": int(args.dbscan_min_samples),
-            "noise_sub_batch_size": int(args.noise_sub_batch_size),
-            "confidence_num_samples": int(args.confidence_num_samples),
-            "input_batch_size": int(args.input_batch_size),
-            "seed": int(args.seed),
-            "fixed_index_order_file": str(fixed_order_path),
-            "hist_bins": int(args.hist_bins),
-            "histogram_path": str(histogram_path),
-        },
-        "aggregate": {
-            "mean_w2_noisy_vs_k1": float(np.mean(w_noisy_vs_k1)),
-            "std_w2_noisy_vs_k1": float(np.std(w_noisy_vs_k1)),
-            "mean_w2_noisy_vs_k2": float(np.mean(w_noisy_vs_k2)),
-            "std_w2_noisy_vs_k2": float(np.std(w_noisy_vs_k2)),
-        },
-        "per_input": all_rows,
-    }
+    if do_regenerate:
+        summary = {
+            "config": {
+                "selected_indices": selected_indices.tolist(),
+                "distribution_samples": int(args.distribution_samples),
+                "ot_method": args.ot_method,
+                "sinkhorn_reg": float(args.sinkhorn_reg),
+                "sigma": float(args.sigma),
+                "smoothing_N": int(args.smoothing_N),
+                "alpha": float(args.alpha),
+                "coverage": float(args.coverage),
+                "cluster_strategy": args.cluster_strategy,
+                "input_mode": args.input_mode,
+                "behavior_stay_radius": float(args.behavior_stay_radius),
+                "behavior_min_down": float(args.behavior_min_down),
+                "behavior_min_left": float(args.behavior_min_left),
+                "dbscan_eps": float(args.dbscan_eps),
+                "dbscan_min_samples": int(args.dbscan_min_samples),
+                "noise_sub_batch_size": int(args.noise_sub_batch_size),
+                "confidence_num_samples": int(args.confidence_num_samples),
+                "input_batch_size": int(args.input_batch_size),
+                "seed": int(args.seed),
+                "fixed_index_order_file": str(fixed_order_path),
+                "hist_bins": int(args.hist_bins),
+                "histogram_path": str(histogram_path),
+            },
+            "aggregate": {
+                "mean_w2_noisy_vs_k1": float(np.mean(w_noisy_vs_k1)),
+                "std_w2_noisy_vs_k1": float(np.std(w_noisy_vs_k1)),
+                "mean_w2_noisy_vs_k2": float(np.mean(w_noisy_vs_k2)),
+                "std_w2_noisy_vs_k2": float(np.std(w_noisy_vs_k2)),
+            },
+            "per_input": all_rows,
+        }
 
-    json_path = analysis_dir / "trajflow_wasserstein.json"
-    _save_json(json_path, summary)
+        _save_json(json_path, summary)
 
     print("=== TrajFlow Wasserstein Experiment ===")
     print(f"selected_indices: {selected_indices.tolist()}")
-    print(f"saved: {json_path}")
+    if do_regenerate:
+        print(f"saved: {json_path}")
+    else:
+        print(f"loaded: {json_path}")
     print(f"saved: {histogram_path}")
 
 

@@ -588,6 +588,10 @@ def plot_final_timestep_examples(
 	y_extent = 10.0
 
 	col_titles = (r"$h_{w}(x)$", r"$h_{w}(x+\varepsilon)$", r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing")
+	title_fontsize = 16
+	axis_label_fontsize = 15
+	tick_label_fontsize = 14
+	major_ticks = np.arange(-10.0, 10.1, 5.0)
 	# Map flat column index to (row, col) in the 1x4 grid
 	_grid_pos = {0: (0, 0), 1: (0, 1), 2: (0, 2), 3: (0, 3)}
 	agent_colors = ("#008A2E",)
@@ -698,9 +702,12 @@ def plot_final_timestep_examples(
 				road_aligned=True,
 			)
 
-			ax.set_title(col_titles[col_idx], fontsize=11)
+			ax.set_title(col_titles[col_idx], fontsize=title_fontsize)
 			ax.set_xlim(*x_lim)
 			ax.set_ylim(*y_lim)
+			ax.set_xticks(major_ticks)
+			ax.set_yticks(major_ticks)
+			ax.tick_params(axis="both", which="major", labelsize=tick_label_fontsize)
 
 		# Suppress tick labels on shared edges to keep the grid seamless.
 		for c in range(1, 4):
@@ -708,8 +715,8 @@ def plot_final_timestep_examples(
 
 		# x-labels on all columns, y-label on left column only
 		for c in range(4):
-			axes[c].set_xlabel(r"$x_1$", fontsize=11)
-		axes[0].set_ylabel(r"$x_2$", fontsize=11)
+			axes[c].set_xlabel(r"$x_1$", fontsize=axis_label_fontsize)
+		axes[0].set_ylabel(r"$x_2$", fontsize=axis_label_fontsize)
 
 		# Legend only on the top-left panel of the first figure
 		if i == 0:
@@ -1480,14 +1487,25 @@ def plot_trajflow_wasserstein_histograms(
 			"legend.fontsize": 9,
 		}
 	):
-		fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.6), sharey=True)
-		fig.subplots_adjust(left=0.10, right=0.98, top=0.86, bottom=0.20, wspace=0.16)
+		fig, axes = plt.subplots(1, 2, figsize=(9.2, 2.4), sharey=True)
+		fig.subplots_adjust(left=0.09, right=0.985, top=0.82, bottom=0.28, wspace=0.14)
 
 		panels = (
-			(axes[0], w_noisy_vs_k1.astype(float), r"$W_2(h_w(x+\varepsilon), k_1)$", "#4C78A8"),
-			(axes[1], w_noisy_vs_k2.astype(float), r"$W_2(h_w(x+\varepsilon), k_2)$", "#2A9D8F"),
+			(
+				axes[0],
+				w_noisy_vs_k1.astype(float),
+				r"$\alpha$-smoothing",
+				"#4C78A8",
+			),
+			(
+				axes[1],
+				w_noisy_vs_k2.astype(float),
+				r"Clustered $\alpha$-smoothing",
+				"#2A9D8F",
+			),
 		)
-		for ax, values, title, color in panels:
+		for ax, values, subtitle, color in panels:
+			ax.set_title(subtitle, pad=8)
 			ax.hist(
 				values,
 				bins=bin_edges,

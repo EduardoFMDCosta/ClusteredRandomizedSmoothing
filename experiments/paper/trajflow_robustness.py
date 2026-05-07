@@ -652,7 +652,8 @@ def _plot_side_by_side_gaps(summary_rows: list[dict[str, Any]], output_path: Pat
             "legend.fontsize": 9,
         }
     ):
-        fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.6), sharey=False)
+        fig, axes = plt.subplots(1, 2, figsize=(9.2, 2.4), sharey=False)
+        fig.subplots_adjust(left=0.09, right=0.985, top=0.82, bottom=0.28, wspace=0.20)
         left_ax, right_ax = axes
 
         alpha_display = f"{alpha:g}"
@@ -701,11 +702,10 @@ def _plot_side_by_side_gaps(summary_rows: list[dict[str, Any]], output_path: Pat
         left_ax.legend(loc="best", frameon=True)
 
         right_ax.set_xlabel(r"Robustness radius $r$")
-        right_ax.set_ylabel(r"Proportion $h_w(x+\delta+\varepsilon) \in \mathcal{R}$")
+        right_ax.set_ylabel(r"Prop. $h_w(x+\delta+\varepsilon) \in \mathcal{R}$")
         right_ax.grid(True, linestyle=":", alpha=0.35)
         right_ax.legend(loc="best", frameon=True)
 
-        fig.tight_layout()
         fig.savefig(output_path, dpi=220)
         plt.close(fig)
 
@@ -780,7 +780,7 @@ def main() -> None:
     parser.add_argument(
         "--radius-values",
         type=str,
-        default="0.0,0.5,1.0",
+        default="0.0,0.5,1.0,2.0",
         help="Comma-separated robustness radii.",
     )
     parser.add_argument(
@@ -792,19 +792,19 @@ def main() -> None:
     parser.add_argument(
         "--attack-num-candidates",
         type=int,
-        default=16,
+        default=24,
         help="Number of random attack candidates in the ball ||delta||<=radius for each objective.",
     )
     parser.add_argument(
         "--containment-samples",
         type=int,
-        default=150,
+        default=300,
         help="Noisy samples used to estimate containment for h_w(x+delta+epsilon).",
     )
     parser.add_argument(
         "--mc-containment-samples",
         type=int,
-        default=150,
+        default=300,
         help="Monte Carlo samples used to estimate smoother containment at (x+delta).",
     )
     parser.add_argument(
@@ -1008,6 +1008,30 @@ def main() -> None:
             num_inputs=args.num_inputs,
             selected_indices_text=args.selected_indices,
         )
+    else:
+        available_alpha_values: list[float] = []
+        missing_alpha_values: list[float] = []
+        for alpha, rows_json_path in zip(alpha_values, rows_json_paths):
+            if rows_json_path.exists():
+                available_alpha_values.append(float(alpha))
+            else:
+                missing_alpha_values.append(float(alpha))
+
+        if not available_alpha_values:
+            missing_text = ", ".join(f"{a:g}" for a in missing_alpha_values)
+            raise FileNotFoundError(
+                "--no-regenerate was requested, but no alpha-specific robustness JSON files were found. "
+                f"Missing alphas: [{missing_text}]"
+            )
+
+        if missing_alpha_values:
+            missing_text = ", ".join(f"{a:g}" for a in missing_alpha_values)
+            print(
+                "Skipping alphas without existing JSON in --no-regenerate mode: "
+                f"[{missing_text}]"
+            )
+
+        alpha_values = available_alpha_values
 
     for alpha in alpha_values:
         args.alpha = alpha
