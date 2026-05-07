@@ -1370,7 +1370,7 @@ def plot_bound_clustered_grid(
 	_w = TEXTWIDTH
 	fig, axes = plt.subplots(
 		len(alphas), len(p_v_values),
-		figsize=(_w, 0.60 * _w),
+		figsize=(_w, 0.45 * _w),
 		sharex=True, sharey=True,
 	)
 
@@ -1387,6 +1387,7 @@ def plot_bound_clustered_grid(
 				)
 
 			ax.grid(alpha=0.3, linestyle=":")
+			ax.set_xticks([0.0, 0.5, 1.0])
 			ax.set_yticks([0.0, 0.5, 1.0])
 
 			if i == 0:
@@ -1405,13 +1406,16 @@ def plot_bound_clustered_grid(
 	fig.tight_layout()
 
 	bottom_ax_pos = axes[-1, 0].get_position()
-	y_offset = 0.11
+	y_offset = 0.15
 	supx.set_y(max(bottom_ax_pos.y0 - y_offset, 0.005))
 
 	# Match visual distance horizontally given the figure aspect ratio.
 	fig_w, fig_h = fig.get_size_inches()
 	x_offset = y_offset * fig_h / fig_w
-	supy.set_x(max(bottom_ax_pos.x0 - x_offset - 0.01, 0.005))
+	supy.set_x(max(bottom_ax_pos.x0 - x_offset - 0.02, 0.005))
+
+	top_ax_pos = axes[0, 0].get_position()
+	supy.set_y((bottom_ax_pos.y0 + top_ax_pos.y1) / 2)
 
 	middle_ax_pos = axes[len(alphas) // 2, -1].get_position()
 	y_center = (middle_ax_pos.y0 + middle_ax_pos.y1) / 2
