@@ -239,7 +239,7 @@ def main() -> None:
     parser.add_argument("--raw-samples", type=int, default=4000)
     parser.add_argument("--mc-samples", type=int, default=4000,
                         help="Draws from the robustified MixtureDirac for plotting.")
-    parser.add_argument("--radius", type=float, default=0.02,
+    parser.add_argument("--radius", type=float, default=0.16,
                         help="Input disturbance L2 radius (normalized state units) for the certificate.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()

@@ -1,0 +1,11 @@
+.venv
+.git
+.idea
+.vscode
+.pytest_cache
+**/__pycache__
+src/randomized_smoothing.egg-info
+experiments/data/figures
+experiments/data/analysis
+experiments/uav_3d/bimodal_figures
+experiments/uav_3d/bimodal_plots
