@@ -56,7 +56,7 @@ class ExamplesConfig(_SmootherParams):
     """Parameters for trajflow_examples.py — per-scenario smoother visualisation."""
     selected_indices: str = "157,203,153,2,41"
     """Comma-separated dataset row indices to visualise."""
-    output_mode: str = "endpoint"
+    output_mode: str = "trajectory"
     """'endpoint' uses 2-D final position; 'trajectory' uses full 40-D path."""
     num_plot_samples: int = 500
     """MC samples drawn from each smoother for the example scatter plots."""
@@ -65,12 +65,14 @@ class ExamplesConfig(_SmootherParams):
     coverage: float = 0.80
     behavior_stay_radius: float = 1.0
     dbscan_min_samples: int = 100
+    cluster_strategy: str = "trajectory_dbscan"
+    dbscan_eps: float = 8.0
 
 
 @dataclass
 class WassersteinConfig(_SmootherParams):
     """Parameters for trajflow_wasserstein.py — W2 distance to clean h_w(x)."""
-    output_mode: str = "endpoint"
+    output_mode: str = "trajectory"
     """'endpoint' or 'trajectory' (trajectory also produces a per-timestep plot)."""
     distribution_samples: int = 150
     """Samples drawn from each distribution to estimate W2."""
@@ -82,6 +84,8 @@ class WassersteinConfig(_SmootherParams):
     """Number of histogram bins in the W2 comparison figure."""
     # Overrides:
     coverage: float = 0.80
+    cluster_strategy: str = "trajectory_dbscan"
+    dbscan_eps: float = 8.0
 
 
 @dataclass
@@ -112,24 +116,30 @@ class RobustnessConfig(_SmootherParams):
 
 
 # ---------------------------------------------------------------------------
-# Named presets — import the appropriate one at the top of each script.
+# Output mode switch — the only line you need to edit to change mode.
+# "trajectory" : full 40-D predicted path (20 timesteps × 2 coords)
+# "endpoint"   : 2-D final position only
 # ---------------------------------------------------------------------------
+OUTPUT_MODE: str = "trajectory"
 
-EXAMPLES = ExamplesConfig()
-
-EXAMPLES_TRAJECTORY = ExamplesConfig(
-    output_mode="trajectory",
-    cluster_strategy="trajectory_dbscan",
-    dbscan_eps=8.0,
+# Concrete presets for each mode — do not edit these directly.
+EXAMPLES_TRAJECTORY = ExamplesConfig()
+EXAMPLES_ENDPOINT = ExamplesConfig(
+    output_mode="endpoint",
+    cluster_strategy="behavior_split",
+    dbscan_eps=0.5,
 )
 
-WASSERSTEIN = WassersteinConfig()
-
-WASSERSTEIN_TRAJECTORY = WassersteinConfig(
-    output_mode="trajectory",
-    cluster_strategy="trajectory_dbscan",
-    dbscan_eps=8.0,
+WASSERSTEIN_TRAJECTORY = WassersteinConfig()
+WASSERSTEIN_ENDPOINT = WassersteinConfig(
+    output_mode="endpoint",
+    cluster_strategy="behavior_split",
+    dbscan_eps=0.5,
 )
+
+# Active presets imported by each script — automatically follow OUTPUT_MODE.
+EXAMPLES = EXAMPLES_TRAJECTORY if OUTPUT_MODE == "trajectory" else EXAMPLES_ENDPOINT
+WASSERSTEIN = WASSERSTEIN_TRAJECTORY if OUTPUT_MODE == "trajectory" else WASSERSTEIN_ENDPOINT
 
 SAFETY = SafetyConfig()
 
