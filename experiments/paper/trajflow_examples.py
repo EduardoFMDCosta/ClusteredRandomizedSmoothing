@@ -17,8 +17,11 @@ if str(SRC) not in sys.path:
 if str(EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS))
 
-from plotting import plot_final_timestep_examples
-from stochastic_functions import TrajFlowMeszarosStochasticFunction
+from plotting import plot_final_timestep_examples, plot_trajectory_examples_clustered
+from stochastic_functions import (
+    TrajFlowMeszarosStochasticFunction,
+    TrajFlowMeszarosFullTrajectoryStochasticFunction,
+)
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -49,11 +52,27 @@ def main():
     parser.add_argument("--selected-indices", type=str, default="157,203,153,2,41",
                         help="Comma-separated dataset indices to analyze.")
     parser.add_argument(
+        "--output-mode",
+        type=str,
+        choices=("endpoint", "trajectory"),
+        default="endpoint",
+        help=(
+            "Whether to use the 2-D endpoint output (endpoint) or the full "
+            "predicted trajectory flattened to 40-D (trajectory).  "
+            "Trajectory mode clusters in the full output space without "
+            "any endpoint-specific projection."
+        ),
+    )
+    parser.add_argument(
         "--cluster-strategy",
         type=str,
-        choices=("dbscan", "behavior_split"),
-        default="behavior_split",
-        help="Clustering strategy for the multi-cluster smoother.",
+        choices=("dbscan", "behavior_split", "trajectory_dbscan"),
+        default=None,
+        help=(
+            "Clustering strategy for the multi-cluster smoother.  "
+            "Defaults to 'behavior_split' for endpoint mode and "
+            "'trajectory_dbscan' for trajectory mode."
+        ),
     )
     parser.add_argument("--behavior-stay-radius", type=float, default=1.0,
                         help="Stay mode threshold: ||y - y_init|| <= radius.")
@@ -61,22 +80,34 @@ def main():
                         help="Turn mode threshold on axis x2: y2 - y2_init <= -min_down.")
     parser.add_argument("--behavior-min-left", type=float, default=0.0,
                         help="Turn mode threshold on axis x1: y1 - y1_init <= -min_left.")
-    parser.add_argument("--dbscan-eps", type=float, default=0.5,
-                        help="DBSCAN eps used by the smoothing clusterer.")
+    parser.add_argument("--dbscan-eps", type=float, default=None,
+                        help=(
+                            "DBSCAN eps.  Defaults to 0.5 for endpoint mode and "
+                            "8.0 for trajectory mode (40-D space)."
+                        ))
     parser.add_argument("--dbscan-min-samples", type=int, default=100,
                         help="DBSCAN min_samples used by the smoothing clusterer.")
     parser.add_argument("--num-plot-samples", type=int, default=500,
                         help="Monte Carlo samples used for plotting distributions.")
-    parser.add_argument("--confidence-num-samples", type=int, default=1000,
-                        help="num_samples used in confidence (Clopper-Pearson) estimation.")
+    parser.add_argument("--confidence-num-samples", type=int, default=100,
+                        help="num_samples used to fit cluster boundaries. Clopper-Pearson\n                        bounds are not needed here, so 100 is sufficient.")
     args = parser.parse_args()
+
+    # Apply mode-dependent defaults.
+    if args.cluster_strategy is None:
+        args.cluster_strategy = "behavior_split" if args.output_mode == "endpoint" else "trajectory_dbscan"
+    if args.dbscan_eps is None:
+        args.dbscan_eps = 0.5 if args.output_mode == "endpoint" else 8.0
 
     torch.manual_seed(0)
 
     try:
-        stochastic_fn = TrajFlowMeszarosStochasticFunction()
+        if args.output_mode == "trajectory":
+            stochastic_fn = TrajFlowMeszarosFullTrajectoryStochasticFunction()
+        else:
+            stochastic_fn = TrajFlowMeszarosStochasticFunction()
     except ImportError as exc:
-        print("Could not initialize TrajFlowMeszarosStochasticFunction.")
+        print("Could not initialize TrajFlow stochastic function.")
         print(str(exc))
         return
 
@@ -121,13 +152,19 @@ def main():
         confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
     )
 
+    # For trajectory_dbscan we do not need a behavior anchor (endpoint-free).
+    cluster_anchor_for_smoother = (
+        None if args.cluster_strategy == "trajectory_dbscan"
+        else _extract_target_initial_position(x)
+    )
+
     smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
         sigma=sigma,
         parameters=params,
         h=helper,
-        cluster_anchor=_extract_target_initial_position(x),
+        cluster_anchor=cluster_anchor_for_smoother,
     )
 
     smoothed_distribution = smoother.smooth()
@@ -153,7 +190,7 @@ def main():
         sigma=sigma,
         parameters=params_single,
         h=helper,
-        cluster_anchor=_extract_target_initial_position(x),
+        cluster_anchor=None,
     )
     smoother_single.smooth()
 
@@ -182,25 +219,41 @@ def main():
     single_cluster_mc_samples = smoother_single.monte_carlo(num_simulations=num_plot_samples)
     clustered_mc_samples = smoother.monte_carlo(num_simulations=num_plot_samples)
 
-    chart_paths = plot_final_timestep_examples(
-        x=x,
-        original_mc_samples=original_mc_samples,
-        noisy_mc_samples=mc_samples,
-        single_cluster_mc_samples=single_cluster_mc_samples,
-        clustered_mc_samples=clustered_mc_samples,
-        single_cluster_centroids=smoother_single.cluster.centroids,
-        clustered_centroids=smoother.cluster.centroids,
-        region=smoother.regions,
-        single_cluster_region=smoother_single.regions,
-        output_dir=EXPERIMENTS / "data" / "figures",
-        num_input_agents=2,
-    )
+    if args.output_mode == "trajectory":
+        chart_paths = plot_trajectory_examples_clustered(
+            x=x,
+            original_mc_samples=original_mc_samples,
+            noisy_mc_samples=mc_samples,
+            single_cluster_mc_samples=single_cluster_mc_samples,
+            clustered_mc_samples=clustered_mc_samples,
+            single_cluster_centroids=smoother_single.cluster.centroids,
+            clustered_centroids=smoother.cluster.centroids,
+            region=smoother.regions,
+            single_cluster_region=smoother_single.regions,
+            output_dir=EXPERIMENTS / "data" / "figures",
+            num_input_agents=2,
+        )
+    else:
+        chart_paths = plot_final_timestep_examples(
+            x=x,
+            original_mc_samples=original_mc_samples,
+            noisy_mc_samples=mc_samples,
+            single_cluster_mc_samples=single_cluster_mc_samples,
+            clustered_mc_samples=clustered_mc_samples,
+            single_cluster_centroids=smoother_single.cluster.centroids,
+            clustered_centroids=smoother.cluster.centroids,
+            region=smoother.regions,
+            single_cluster_region=smoother_single.regions,
+            output_dir=EXPERIMENTS / "data" / "figures",
+            num_input_agents=2,
+        )
     
 
     print("=== TrajFlow Smoothing Experiment ===")
     print(f"x shape: {tuple(x.shape)}")
     print(f"smoothed locs shape: {tuple(smoothed_distribution.locs.shape)}")
     print(f"smoothed probs shape: {tuple(smoothed_distribution.probs.shape)}")
+    print(f"output mode: {args.output_mode}")
     print(f"cluster strategy: {args.cluster_strategy}")
     print(f"dbscan k_per_row: {smoother.cluster.k_per_row.tolist()}")
     print(f"monte carlo samples shape: {tuple(mc_samples.shape)}")

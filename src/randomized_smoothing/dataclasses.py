@@ -59,8 +59,8 @@ class ClusteringParameters:
             raise ValueError("max_num_clusters must be positive")
         if not (0.0 < self.coverage <= 1.0):
             raise ValueError("coverage must satisfy 0 < coverage <= 1")
-        if self.strategy not in ("dbscan", "hdbscan", "behavior_split"):
-            raise ValueError("strategy must be one of: 'dbscan', 'hdbscan', 'behavior_split'")
+        if self.strategy not in ("dbscan", "hdbscan", "behavior_split", "trajectory_dbscan"):
+            raise ValueError("strategy must be one of: 'dbscan', 'hdbscan', 'behavior_split', 'trajectory_dbscan'")
         if self.dbscan_eps <= 0.0:
             raise ValueError("dbscan_eps must be positive")
         if self.dbscan_min_samples <= 0:

@@ -73,6 +73,10 @@ class Cluster:
                     hdbscan_cluster_selection_method=self.parameters.hdbscan_cluster_selection_method,
                 )
             else:
+                # Both "dbscan" and "trajectory_dbscan" use the same DBSCAN
+                # backend.  "trajectory_dbscan" is a semantic alias that
+                # signals the stochastic function returns full trajectories,
+                # not just the endpoint; the clustering algorithm is identical.
                 c_i, a_i, k_i = _select_num_clusters(
                     data=outputs[i],
                     max_num_clusters=self.parameters.max_num_clusters,
