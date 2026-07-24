@@ -341,6 +341,9 @@ def _compute_batch_certification_rows(
         cluster_anchor=cluster_anchor,
     )
 
+    # Only keep inputs where the k=2 smoother actually found 2 clusters.
+    has_two_clusters: np.ndarray = (smoother_k2.cluster.k_per_row == 2).cpu().numpy()
+
     rows: list[dict[str, Any]] = []
     for radius in radii:
         radius_tensor = torch.full(
@@ -353,6 +356,8 @@ def _compute_batch_certification_rows(
         cert_k2 = smoother_k2.robust_certification(radius=radius_tensor).total_probs.detach().cpu().numpy()
 
         for i, dataset_idx in enumerate(batch_indices.tolist()):
+            if not has_two_clusters[i]:
+                continue
             rows.append(
                 {
                     "x_index": int(dataset_idx),
@@ -502,7 +507,7 @@ def main() -> None:
             all_rows = payload.get("rows", [])
             print(f"alpha={alpha:.3f}: loaded {json_path}")
 
-        # Aggregate by radius for the plot.
+        # Aggregate by radius for the plot: compute per-input difference (k=1 − k=2).
         bounds_for_alpha: list[dict[str, Any]] = []
         for radius in radii:
             subset = [r for r in all_rows if float(r["radius"]) == float(radius)]
@@ -510,13 +515,12 @@ def main() -> None:
                 continue
             cert_k1_vals = np.array([float(r["cert_k1"]) for r in subset])
             cert_k2_vals = np.array([float(r["cert_k2"]) for r in subset])
+            diff_vals = cert_k1_vals - cert_k2_vals
             bounds_for_alpha.append(
                 {
                     "radius": float(radius),
-                    "cert_k1_mean": float(cert_k1_vals.mean()),
-                    "cert_k1_std": float(cert_k1_vals.std(ddof=0)),
-                    "cert_k2_mean": float(cert_k2_vals.mean()),
-                    "cert_k2_std": float(cert_k2_vals.std(ddof=0)),
+                    "diff_mean": float(diff_vals.mean()),
+                    "diff_std": float(diff_vals.std(ddof=0)),
                 }
             )
         bounds_by_alpha[float(alpha)] = bounds_for_alpha

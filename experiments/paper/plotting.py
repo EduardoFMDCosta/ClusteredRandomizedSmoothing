@@ -1163,21 +1163,22 @@ def plot_robustness_bounds_only(
 	bounds_by_alpha: "dict[float, list[dict]]",
 	output_path: Path,
 ) -> Path:
-	"""Plot certified probability lower bounds versus robustness radius.
+	"""Plot the difference in certified bounds (k=1 minus k=2) vs robustness radius.
 
-	For each alpha value in ``bounds_by_alpha``, one subplot is produced
-	comparing k=1 (alpha-smoothing) and k=2 (clustered) certified bounds.
-	Mean across inputs is plotted as a line; one-std shading is added when
-	``cert_k1_std`` / ``cert_k2_std`` keys are present.
+	A single chart with one line per alpha value.  Each line shows the mean
+	per-input difference  ``cert_k1 - cert_k2``  across all evaluated inputs;
+	the shaded band spans ±1 std dev.  A horizontal dashed line at zero marks
+	where both smoothers certify the same bound.
 
 	Each row in the per-alpha list must have:
-	    ``{"radius": float, "cert_k1_mean": float, "cert_k2_mean": float}``
-	and optionally ``"cert_k1_std"`` / ``"cert_k2_std"``.
+	    ``{"radius": float, "diff_mean": float, "diff_std": float}``
 	"""
 	alpha_values = sorted(bounds_by_alpha.keys())
-	n_alpha = len(alpha_values)
-	if n_alpha == 0:
+	if not alpha_values:
 		raise ValueError("bounds_by_alpha must be non-empty")
+
+	colors  = ["#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E45756"]
+	markers = ["o", "s", "^", "D", "v"]
 
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	with plt.rc_context(
@@ -1193,33 +1194,37 @@ def plot_robustness_bounds_only(
 			"legend.fontsize": 9,
 		}
 	):
-		fig, axes = plt.subplots(
-			1, n_alpha, figsize=(4.5 * n_alpha, 3.4), sharey=True,
-		)
-		if n_alpha == 1:
-			axes = [axes]
+		fig, ax = plt.subplots(figsize=(5.0, 3.4))
 
-		for ax, alpha in zip(axes, alpha_values):
+		for i, alpha in enumerate(alpha_values):
 			rows = sorted(bounds_by_alpha[alpha], key=lambda r: float(r["radius"]))
-			radii = np.array([float(r["radius"]) for r in rows])
-			cert_k1 = np.array([float(r["cert_k1_mean"]) for r in rows])
-			cert_k2 = np.array([float(r["cert_k2_mean"]) for r in rows])
-			std_k1 = np.array([float(r.get("cert_k1_std", 0.0)) for r in rows])
-			std_k2 = np.array([float(r.get("cert_k2_std", 0.0)) for r in rows])
+			radii     = np.array([float(r["radius"])   for r in rows])
+			diff_mean = np.array([float(r["diff_mean"]) for r in rows])
+			diff_std  = np.array([float(r.get("diff_std", 0.0)) for r in rows])
+			color  = colors[i % len(colors)]
+			marker = markers[i % len(markers)]
 
-			ax.fill_between(radii, cert_k1 - std_k1, cert_k1 + std_k1, alpha=0.15, color="#4C78A8")
-			ax.plot(radii, cert_k1, marker="o", linewidth=1.4, color="#4C78A8", label=r"$\alpha$-smoothing")
+			ax.fill_between(
+				radii,
+				diff_mean - diff_std,
+				diff_mean + diff_std,
+				alpha=0.15, color=color,
+			)
+			ax.plot(
+				radii, diff_mean,
+				marker=marker, linewidth=1.4, color=color,
+				label=rf"$\alpha = {alpha:g}$",
+			)
 
-			ax.fill_between(radii, cert_k2 - std_k2, cert_k2 + std_k2, alpha=0.15, color="#F58518")
-			ax.plot(radii, cert_k2, marker="s", linewidth=1.4, color="#F58518", label=r"Clustered $\alpha$-smoothing")
-
-			ax.set_xlabel(r"Robustness radius $r$")
-			ax.set_title(rf"$\alpha = {alpha:g}$", fontsize=10)
-			ax.set_ylim(0.0, 1.05)
-			ax.grid(True, linestyle=":", alpha=0.35)
-			ax.legend(loc="best", frameon=True)
-
-		axes[0].set_ylabel(r"Certified probability lower bound $\bar{p}$")
+		ax.axhline(0.0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
+		ax.set_xlabel(r"Robustness radius $r$")
+		ax.set_ylabel(
+			r"$\bar{p}^{(1)} - \bar{p}^{(2)}$"
+			"\n"
+			r"($\alpha$-smoothing $-$ clustered $\alpha$-smoothing)"
+		)
+		ax.grid(True, linestyle=":", alpha=0.35)
+		ax.legend(loc="best", frameon=True)
 		fig.tight_layout()
 		fig.savefig(output_path, dpi=200)
 		plt.close(fig)

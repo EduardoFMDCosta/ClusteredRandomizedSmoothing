@@ -107,7 +107,7 @@ class RobustnessConfig(_SmootherParams):
     """
     alpha_values: list[float] = field(default_factory=lambda: [0.4, 0.2, 0.0])
     """Alpha trimming values to sweep over."""
-    radius_values: list[float] = field(default_factory=lambda: [0.0, 0.5, 1.0, 2.0])
+    radius_values: list[float] = field(default_factory=lambda: [0.0, 0.05, 0.1, 0.2, 0.5, 0.7, 1.0])
     """Robustness radii (input-space L2) to certify."""
     # Overrides:
     smoothing_N: int = 5
