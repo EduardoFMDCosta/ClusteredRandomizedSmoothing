@@ -13,7 +13,6 @@ dependencies = [
     "numpy>=2.0",
     "pot>=0.9.5",
     "torch>=2.2",
-    "numpy>=2.0",
     "scikit-learn>=1.7.2",
 ]
 
