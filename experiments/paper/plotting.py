@@ -1350,30 +1350,30 @@ def plot_safety_analysis(
 		if p_stay_rsreg is not None:
 			nego_go_rsreg = p_stay_rsreg >= threshold
 			risk_rsreg = float(np.mean(nego_go_rsreg & gt_goes))
-			fig, axes = plt.subplots(1, 4, figsize=(16, 3.6))
-			fig.subplots_adjust(left=0.06, right=0.98, top=0.88, bottom=0.18, wspace=0.40)
+			fig, axes = plt.subplots(1, 4, figsize=(13.2, 3.5), gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.45]})
+			fig.subplots_adjust(left=0.06, right=0.985, top=0.88, bottom=0.20, wspace=0.12)
 			strip_specs = [
 				(axes[0], p_stay_rsreg, r"RSReg", "#E76F51", risk_rsreg),
 				(axes[1], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
 				(axes[2], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
 			]
 			ax_bar = axes[3]
-			methods = [r"RSReg", r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing"]
+			methods = [r"RSReg", r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
 			risks = [risk_rsreg, risk_k1, risk_k2]
 			bar_colors = ["#E76F51", "#4C78A8", "#F58518"]
 		else:
-			fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
-			fig.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.18, wspace=0.38)
+			fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.5), gridspec_kw={"width_ratios": [1.0, 1.0, 1.35]})
+			fig.subplots_adjust(left=0.07, right=0.985, top=0.88, bottom=0.20, wspace=0.14)
 			strip_specs = [
 				(axes[0], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
 				(axes[1], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
 			]
 			ax_bar = axes[2]
-			methods = [r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing"]
+			methods = [r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
 			risks = [risk_k1, risk_k2]
 			bar_colors = ["#4C78A8", "#F58518"]
 
-		for ax, p_stay, title, color, risk in strip_specs:
+		for strip_idx, (ax, p_stay, title, color, risk) in enumerate(strip_specs):
 			gt_x = np.where(gt_stays, 0.0, 1.0)
 			# Colour: use method colour for stays (correct), red for goes (potential risk)
 			point_colors = np.where(gt_stays, color, "#C73E1D")
@@ -1385,8 +1385,11 @@ def plot_safety_analysis(
 			# Shade the risky quadrant: ego goes (p_stay >= threshold) AND other goes (right half)
 			ax.axhspan(threshold, 1.05, xmin=0.5, color="#C73E1D", alpha=0.08, zorder=0)
 			ax.set_xticks([0.0, 1.0])
-			ax.set_xticklabels(["Other\nStays", "Other\nGoes"])
-			ax.set_ylabel(r"$P(\mbox{other stays})$")
+			ax.set_xticklabels(["Vehicle\nStays", "Vehicle\nGoes"])
+			if strip_idx == 0:
+				ax.set_ylabel(r"$P(\mbox{vehicle stays})$")
+			else:
+				ax.tick_params(axis="y", labelleft=False)
 			ax.set_ylim(-0.05, 1.05)
 			ax.set_title(title)
 			risk_pct = f"{risk * 100:.1f}\\%"
@@ -1399,7 +1402,9 @@ def plot_safety_analysis(
 			ax.grid(True, linestyle=":", alpha=0.35)
 
 		bars = ax_bar.bar(methods, risks, color=bar_colors, alpha=0.75, edgecolor="black", linewidth=0.8)
-		ax_bar.set_ylabel(r"Risk rate")
+		ax_bar.set_ylabel("")
+		ax_bar.tick_params(axis="y", left=False, right=False, labelleft=False, labelright=False)
+		ax_bar.tick_params(axis="x", labelsize=8)
 		ylim_top = min(1.0, max(max(risks, default=0.1) * 1.35, 0.1))
 		ax_bar.set_ylim(0.0, ylim_top)
 		for bar, risk in zip(bars, risks):
@@ -1411,7 +1416,7 @@ def plot_safety_analysis(
 				ha="center", va="bottom", fontsize=9,
 			)
 		ax_bar.grid(True, linestyle=":", alpha=0.35, axis="y")
-		ax_bar.set_title("Safety comparison")
+		ax_bar.set_title("Risk rate")
 
 		fig.savefig(output_path, dpi=200)
 		plt.close(fig)
