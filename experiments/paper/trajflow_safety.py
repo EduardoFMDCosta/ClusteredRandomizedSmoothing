@@ -194,6 +194,9 @@ def _compute_batch_safety_rows(
     p_stay_k1 = _p_stay_from_mc(mc_k1, cluster_anchor, stay_radius=cfg.behavior_stay_radius)
     p_stay_k2 = _p_stay_from_mc(mc_k2, cluster_anchor, stay_radius=cfg.behavior_stay_radius)
 
+    # Number of clusters found by k=2 smoother for each input.
+    num_clusters_k2: np.ndarray = smoother_k2.cluster.k_per_row.cpu().numpy()
+
     # GT labels for this batch.
     gt_stays_batch = _gt_stays_label(
         inputs=inputs,
@@ -210,6 +213,7 @@ def _compute_batch_safety_rows(
                 "p_stay_k1": float(p_stay_k1[i].item()),
                 "p_stay_k2": float(p_stay_k2[i].item()),
                 "gt_stays": bool(gt_stays_batch[i]),
+                "num_clusters_k2": int(num_clusters_k2[i]),
             }
         )
 
@@ -328,22 +332,42 @@ def main() -> None:
     if len(all_rows) == 0:
         raise ValueError("No safety rows found to plot.")
 
-    p_stay_k1 = np.array([float(r["p_stay_k1"]) for r in all_rows], dtype=float)
-    p_stay_k2 = np.array([float(r["p_stay_k2"]) for r in all_rows], dtype=float)
-    gt_stays = np.array([bool(r["gt_stays"]) for r in all_rows], dtype=bool)
+    # Filter: keep only inputs for which the k=2 smoother found 2 clusters.
+    # These are exactly the scenarios where the two smoothers fundamentally
+    # differ in structure (one mode vs. two modes), making the comparison
+    # meaningful.
+    total_before = len(all_rows)
+    two_cluster_rows = [r for r in all_rows if r.get("num_clusters_k2", 2) == 2]
+    total_after = len(two_cluster_rows)
+    print(
+        f"\nFiltering to 2-cluster scenarios: "
+        f"{total_after}/{total_before} inputs kept "
+        f"({total_before - total_after} had only 1 cluster in k=2 smoother)"
+    )
+    if total_after == 0:
+        raise ValueError(
+            "No inputs with 2 clusters found. "
+            "Try re-running with more inputs or a lower dbscan_min_samples."
+        )
+    rows_for_analysis = two_cluster_rows
+
+    p_stay_k1 = np.array([float(r["p_stay_k1"]) for r in rows_for_analysis], dtype=float)
+    p_stay_k2 = np.array([float(r["p_stay_k2"]) for r in rows_for_analysis], dtype=float)
+    gt_stays = np.array([bool(r["gt_stays"]) for r in rows_for_analysis], dtype=bool)
 
     gt_goes = ~gt_stays
+
     risk_k1 = float(np.mean((p_stay_k1 >= cfg.decision_threshold) & gt_goes))
     risk_k2 = float(np.mean((p_stay_k2 >= cfg.decision_threshold) & gt_goes))
 
-    print("\n=== TrajFlow Safety Analysis ===")
-    print(f"N scenarios:           {len(all_rows)}")
-    print(f"GT go rate:            {float(np.mean(gt_goes)):.3f}")
-    print(f"Decision threshold:    {cfg.decision_threshold}")
-    print(f"Risk rate  k=1:        {risk_k1:.3f}")
-    print(f"Risk rate  k=2:        {risk_k2:.3f}")
-    print(f"Mean P(stay)  k=1:     {float(np.mean(p_stay_k1)):.3f}")
-    print(f"Mean P(stay)  k=2:     {float(np.mean(p_stay_k2)):.3f}")
+    print(f"\n=== TrajFlow Safety Analysis (threshold = {cfg.decision_threshold}) ===")
+    print(f"N scenarios (2-cluster): {total_after}")
+    print(f"GT go rate:              {float(np.mean(gt_goes)):.3f}")
+    print(f"Decision threshold:      {cfg.decision_threshold}")
+    print(f"Risk rate  k=1:          {risk_k1:.3f}")
+    print(f"Risk rate  k=2:          {risk_k2:.3f}")
+    print(f"Mean P(stay)  k=1:       {float(np.mean(p_stay_k1)):.3f}")
+    print(f"Mean P(stay)  k=2:       {float(np.mean(p_stay_k2)):.3f}")
 
     figure_path = Path(args.figures_dir) / args.figure_name
     plot_safety_analysis(

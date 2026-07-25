@@ -1,0 +1,418 @@
+{
+  "config": {
+    "selected_indices": [
+      603,
+      217,
+      393,
+      55,
+      109,
+      245,
+      510,
+      284,
+      496,
+      697,
+      51,
+      2,
+      59,
+      380,
+      685,
+      427,
+      728,
+      261,
+      719,
+      338,
+      102,
+      151,
+      677,
+      115,
+      16,
+      111,
+      837,
+      785,
+      843,
+      678,
+      352,
+      710,
+      876,
+      660,
+      104,
+      445,
+      527,
+      346,
+      293,
+      765,
+      97,
+      22,
+      89,
+      699,
+      155,
+      125,
+      499,
+      27,
+      469,
+      9
+    ],
+    "mc_samples": 300,
+    "decision_threshold": 0.7,
+    "sigma": 1.0,
+    "smoothing_N": 8,
+    "alpha": 0.35,
+    "coverage": 0.85,
+    "cluster_strategy": "behavior_split",
+    "behavior_stay_radius": 1.5,
+    "confidence_num_samples": 100,
+    "seed": 0
+  },
+  "per_input": [
+    {
+      "dataset_index": 603,
+      "p_stay_k1": 0.2933333218097687,
+      "p_stay_k2": 0.5333333611488342,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 217,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.8999999761581421,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 393,
+      "p_stay_k1": 0.07000000029802322,
+      "p_stay_k2": 0.2433333396911621,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 55,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.9833333492279053,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 109,
+      "p_stay_k1": 0.9933333396911621,
+      "p_stay_k2": 0.903333306312561,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 245,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.95333331823349,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 510,
+      "p_stay_k1": 0.8933333158493042,
+      "p_stay_k2": 0.753333330154419,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 284,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.9133333563804626,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 496,
+      "p_stay_k1": 0.9900000095367432,
+      "p_stay_k2": 0.8133333325386047,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 697,
+      "p_stay_k1": 0.9200000166893005,
+      "p_stay_k2": 0.7933333516120911,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 51,
+      "p_stay_k1": 0.9833333492279053,
+      "p_stay_k2": 0.8999999761581421,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 2,
+      "p_stay_k1": 0.14666666090488434,
+      "p_stay_k2": 0.5066666603088379,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 59,
+      "p_stay_k1": 0.18333333730697632,
+      "p_stay_k2": 0.41999998688697815,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 380,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9599999785423279,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 685,
+      "p_stay_k1": 0.0,
+      "p_stay_k2": 0.09000000357627869,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 427,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9233333468437195,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 728,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.846666693687439,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 261,
+      "p_stay_k1": 0.0,
+      "p_stay_k2": 0.10000000149011612,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 719,
+      "p_stay_k1": 0.9900000095367432,
+      "p_stay_k2": 0.9399999976158142,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 338,
+      "p_stay_k1": 0.6233333349227905,
+      "p_stay_k2": 0.7766666412353516,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 102,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9666666388511658,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 151,
+      "p_stay_k1": 0.9866666793823242,
+      "p_stay_k2": 0.8366666436195374,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 677,
+      "p_stay_k1": 0.9800000190734863,
+      "p_stay_k2": 0.8733333349227905,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 115,
+      "p_stay_k1": 0.23333333432674408,
+      "p_stay_k2": 0.3266666531562805,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 16,
+      "p_stay_k1": 0.9866666793823242,
+      "p_stay_k2": 0.9733333587646484,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 111,
+      "p_stay_k1": 0.9866666793823242,
+      "p_stay_k2": 0.8766666650772095,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 837,
+      "p_stay_k1": 0.8100000023841858,
+      "p_stay_k2": 0.7699999809265137,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 785,
+      "p_stay_k1": 0.0033333334140479565,
+      "p_stay_k2": 0.2266666740179062,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 843,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9366666674613953,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 678,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9100000262260437,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 352,
+      "p_stay_k1": 0.9866666793823242,
+      "p_stay_k2": 0.903333306312561,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 710,
+      "p_stay_k1": 0.7699999809265137,
+      "p_stay_k2": 0.6000000238418579,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 876,
+      "p_stay_k1": 0.0,
+      "p_stay_k2": 0.0,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 660,
+      "p_stay_k1": 0.02666666731238365,
+      "p_stay_k2": 0.19333332777023315,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 104,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.8866666555404663,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 445,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.949999988079071,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 527,
+      "p_stay_k1": 0.9599999785423279,
+      "p_stay_k2": 0.8766666650772095,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 346,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.9633333086967468,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 293,
+      "p_stay_k1": 0.9900000095367432,
+      "p_stay_k2": 0.9333333373069763,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 765,
+      "p_stay_k1": 0.9933333396911621,
+      "p_stay_k2": 0.949999988079071,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 97,
+      "p_stay_k1": 1.0,
+      "p_stay_k2": 0.8199999928474426,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 22,
+      "p_stay_k1": 0.9933333396911621,
+      "p_stay_k2": 0.8799999952316284,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 89,
+      "p_stay_k1": 0.9800000190734863,
+      "p_stay_k2": 0.9399999976158142,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 699,
+      "p_stay_k1": 0.9933333396911621,
+      "p_stay_k2": 0.9666666388511658,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 155,
+      "p_stay_k1": 0.9933333396911621,
+      "p_stay_k2": 0.9800000190734863,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 125,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9200000166893005,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 499,
+      "p_stay_k1": 0.9133333563804626,
+      "p_stay_k2": 0.7233333587646484,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 27,
+      "p_stay_k1": 0.9900000095367432,
+      "p_stay_k2": 0.8999999761581421,
+      "gt_stays": true,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 469,
+      "p_stay_k1": 0.996666669845581,
+      "p_stay_k2": 0.9233333468437195,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    },
+    {
+      "dataset_index": 9,
+      "p_stay_k1": 0.0,
+      "p_stay_k2": 0.0,
+      "gt_stays": false,
+      "num_clusters_k2": 2
+    }
+  ]
+}
