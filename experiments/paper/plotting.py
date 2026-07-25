@@ -812,10 +812,10 @@ def plot_trajflow_wasserstein_histograms(
 	bins: int = 24,
 	w_noisy_vs_rsreg: np.ndarray | None = None,
 ) -> Path:
-	"""Plot Wasserstein histograms for RSReg (optional), k=1 and k=2 smoothers.
+	"""Plot Wasserstein histograms for RS-Reg (optional), k=1 and k=2 smoothers.
 
 	When ``w_noisy_vs_rsreg`` is supplied the figure shows three side-by-side
-	panels in the order RSReg → alpha-smoothing → clustered alpha-smoothing,
+	panels in the order RS-Reg → alpha-smoothing → clustered alpha-smoothing,
 	sharing a common x-axis range across all three distributions.  When it is
 	omitted the classic two-panel layout is produced.
 	"""
@@ -858,7 +858,7 @@ def plot_trajflow_wasserstein_histograms(
 				(
 					axes[0],
 					w_noisy_vs_rsreg.astype(float),
-					r"RSReg",
+					r"RS-Reg",
 					"#E76F51",
 				),
 				(
@@ -1133,7 +1133,7 @@ def plot_wasserstein_per_timestep(
 		timesteps: 1-D integer array of the actual 0-based prediction timestep
 		           indices corresponding to the columns of w2_k1/w2_k2.  When
 		           omitted, defaults to 0, 1, …, num_eval_steps-1.
-		w2_rsreg: Optional array of the same shape as w2_k1 – W2 for RSReg
+		w2_rsreg: Optional array of the same shape as w2_k1 – W2 for RS-Reg
 		          (alpha=0, k=1) versus h_w(x).  When supplied a third line is
 		          drawn as a baseline, plotted below the other two lines.
 	"""
@@ -1180,7 +1180,7 @@ def plot_wasserstein_per_timestep(
 			ax.plot(
 				timesteps, mean_rsreg,
 				marker=".", linewidth=1.4, color="#E76F51",
-				label=r"RSReg",
+				label=r"RS-Reg",
 			)
 
 		ax.fill_between(
@@ -1307,7 +1307,7 @@ def plot_safety_analysis(
 	"""Plot decision-making safety analysis comparing smoothers.
 
 	When ``p_stay_rsreg`` is supplied the figure shows four panels:
-	[RSReg strip, alpha-smoothing strip, clustered alpha-smoothing strip, bar chart].
+	[RS-Reg strip, alpha-smoothing strip, clustered alpha-smoothing strip, bar chart].
 	Otherwise the classic three-panel layout is produced.
 
 	For each scenario the ego vehicle decides to *go* when its predicted
@@ -1320,7 +1320,7 @@ def plot_safety_analysis(
 		gt_stays: Boolean array, True when the other vehicle actually stays.
 		threshold: Decision threshold; ego goes if predicted P(stays) >= threshold.
 		output_path: Where to save the figure.
-		p_stay_rsreg: Optional P(other stays) from RSReg (alpha=0, k=1).  When
+		p_stay_rsreg: Optional P(other stays) from RS-Reg (alpha=0, k=1).  When
 		    supplied it is plotted as the leftmost strip panel.
 	"""
 	gt_stays = np.asarray(gt_stays, dtype=bool)
@@ -1353,12 +1353,12 @@ def plot_safety_analysis(
 			fig, axes = plt.subplots(1, 4, figsize=(13.2, 3.5), gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.45]})
 			fig.subplots_adjust(left=0.06, right=0.985, top=0.88, bottom=0.20, wspace=0.12)
 			strip_specs = [
-				(axes[0], p_stay_rsreg, r"RSReg", "#E76F51", risk_rsreg),
+				(axes[0], p_stay_rsreg, r"RS-Reg", "#E76F51", risk_rsreg),
 				(axes[1], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
 				(axes[2], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
 			]
 			ax_bar = axes[3]
-			methods = [r"RSReg", r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
+			methods = [r"RS-Reg", r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
 			risks = [risk_rsreg, risk_k1, risk_k2]
 			bar_colors = ["#E76F51", "#4C78A8", "#F58518"]
 		else:
