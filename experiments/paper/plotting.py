@@ -810,15 +810,26 @@ def plot_trajflow_wasserstein_histograms(
 	w_noisy_vs_k2: np.ndarray,
 	output_path: Path,
 	bins: int = 24,
+	w_noisy_vs_rsreg: np.ndarray | None = None,
 ) -> Path:
-	"""Plot side-by-side Wasserstein histograms for k1 and k2 smoothers."""
+	"""Plot Wasserstein histograms for RSReg (optional), k=1 and k=2 smoothers.
+
+	When ``w_noisy_vs_rsreg`` is supplied the figure shows three side-by-side
+	panels in the order RSReg → alpha-smoothing → clustered alpha-smoothing,
+	sharing a common x-axis range across all three distributions.  When it is
+	omitted the classic two-panel layout is produced.
+	"""
 	if bins <= 0:
 		raise ValueError("bins must be positive")
 	if len(w_noisy_vs_k1) == 0 or len(w_noisy_vs_k2) == 0:
 		raise ValueError("Wasserstein arrays must be non-empty")
 
 	output_path.parent.mkdir(parents=True, exist_ok=True)
-	combined = np.concatenate([w_noisy_vs_k1, w_noisy_vs_k2]).astype(float)
+
+	arrays_for_range = [w_noisy_vs_k1, w_noisy_vs_k2]
+	if w_noisy_vs_rsreg is not None:
+		arrays_for_range.append(w_noisy_vs_rsreg)
+	combined = np.concatenate(arrays_for_range).astype(float)
 	min_v = float(np.min(combined))
 	max_v = float(np.max(combined))
 	if np.isclose(min_v, max_v):
@@ -840,23 +851,46 @@ def plot_trajflow_wasserstein_histograms(
 			"legend.fontsize": 9,
 		}
 	):
-		fig, axes = plt.subplots(1, 2, figsize=(9.2, 2.4), sharey=True)
-		fig.subplots_adjust(left=0.09, right=0.985, top=0.82, bottom=0.28, wspace=0.14)
-
-		panels = (
-			(
-				axes[0],
-				w_noisy_vs_k1.astype(float),
-				r"$\alpha$-smoothing",
-				"#4C78A8",
-			),
-			(
-				axes[1],
-				w_noisy_vs_k2.astype(float),
-				r"Clustered $\alpha$-smoothing",
-				"#2A9D8F",
-			),
-		)
+		if w_noisy_vs_rsreg is not None:
+			fig, axes = plt.subplots(1, 3, figsize=(13.5, 2.4), sharey=True)
+			fig.subplots_adjust(left=0.07, right=0.99, top=0.82, bottom=0.28, wspace=0.14)
+			panels = (
+				(
+					axes[0],
+					w_noisy_vs_rsreg.astype(float),
+					r"RSReg",
+					"#E76F51",
+				),
+				(
+					axes[1],
+					w_noisy_vs_k1.astype(float),
+					r"$\alpha$-smoothing",
+					"#4C78A8",
+				),
+				(
+					axes[2],
+					w_noisy_vs_k2.astype(float),
+					r"Clustered $\alpha$-smoothing",
+					"#2A9D8F",
+				),
+			)
+		else:
+			fig, axes = plt.subplots(1, 2, figsize=(9.2, 2.4), sharey=True)
+			fig.subplots_adjust(left=0.09, right=0.985, top=0.82, bottom=0.28, wspace=0.14)
+			panels = (
+				(
+					axes[0],
+					w_noisy_vs_k1.astype(float),
+					r"$\alpha$-smoothing",
+					"#4C78A8",
+				),
+				(
+					axes[1],
+					w_noisy_vs_k2.astype(float),
+					r"Clustered $\alpha$-smoothing",
+					"#2A9D8F",
+				),
+			)
 		for ax, values, subtitle, color in panels:
 			ax.set_title(subtitle, pad=8)
 			ax.hist(
@@ -1087,6 +1121,7 @@ def plot_wasserstein_per_timestep(
 	w2_k2: np.ndarray,
 	output_path: Path,
 	timesteps: np.ndarray | None = None,
+	w2_rsreg: np.ndarray | None = None,
 ) -> Path:
 	"""Plot per-timestep 2-Wasserstein distances with mean ± 1 std band.
 
@@ -1098,11 +1133,16 @@ def plot_wasserstein_per_timestep(
 		timesteps: 1-D integer array of the actual 0-based prediction timestep
 		           indices corresponding to the columns of w2_k1/w2_k2.  When
 		           omitted, defaults to 0, 1, …, num_eval_steps-1.
+		w2_rsreg: Optional array of the same shape as w2_k1 – W2 for RSReg
+		          (alpha=0, k=1) versus h_w(x).  When supplied a third line is
+		          drawn as a baseline, plotted below the other two lines.
 	"""
 	if w2_k1.ndim != 2 or w2_k2.ndim != 2:
 		raise ValueError("w2_k1 and w2_k2 must be 2-D arrays (num_inputs, num_eval_steps)")
 	if w2_k1.shape != w2_k2.shape:
 		raise ValueError("w2_k1 and w2_k2 must have the same shape")
+	if w2_rsreg is not None and w2_rsreg.shape != w2_k1.shape:
+		raise ValueError("w2_rsreg must have the same shape as w2_k1 when provided")
 
 	num_timesteps = w2_k1.shape[1]
 	if timesteps is None:
@@ -1112,6 +1152,9 @@ def plot_wasserstein_per_timestep(
 	std_k1 = w2_k1.std(axis=0, ddof=0)
 	mean_k2 = w2_k2.mean(axis=0)
 	std_k2 = w2_k2.std(axis=0, ddof=0)
+	if w2_rsreg is not None:
+		mean_rsreg = w2_rsreg.mean(axis=0)
+		std_rsreg = w2_rsreg.std(axis=0, ddof=0)
 
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	with plt.rc_context(
@@ -1128,6 +1171,17 @@ def plot_wasserstein_per_timestep(
 		}
 	):
 		fig, ax = plt.subplots(figsize=(5.5, 3.2))
+
+		if w2_rsreg is not None:
+			ax.fill_between(
+				timesteps, mean_rsreg - std_rsreg, mean_rsreg + std_rsreg,
+				alpha=0.20, color="#E76F51",
+			)
+			ax.plot(
+				timesteps, mean_rsreg,
+				marker=".", linewidth=1.4, color="#E76F51",
+				label=r"RSReg",
+			)
 
 		ax.fill_between(
 			timesteps, mean_k1 - std_k1, mean_k1 + std_k1,
@@ -1248,16 +1302,17 @@ def plot_safety_analysis(
 	gt_stays: np.ndarray,
 	threshold: float,
 	output_path: Path,
+	p_stay_rsreg: np.ndarray | None = None,
 ) -> Path:
-	"""Plot decision-making safety analysis comparing the two smoothers.
+	"""Plot decision-making safety analysis comparing smoothers.
+
+	When ``p_stay_rsreg`` is supplied the figure shows four panels:
+	[RSReg strip, alpha-smoothing strip, clustered alpha-smoothing strip, bar chart].
+	Otherwise the classic three-panel layout is produced.
 
 	For each scenario the ego vehicle decides to *go* when its predicted
 	P(other stays) >= ``threshold``.  Risk occurs when the ego goes AND the
 	other vehicle also goes in the ground truth.
-
-	Two strip panels show the predicted P(other stays) separated by GT label,
-	with the decision threshold annotated.  A bar chart on the right summarises
-	the overall risk rates.
 
 	Args:
 		p_stay_k1: P(other stays) predicted by alpha-smoothing (k=1).
@@ -1265,6 +1320,8 @@ def plot_safety_analysis(
 		gt_stays: Boolean array, True when the other vehicle actually stays.
 		threshold: Decision threshold; ego goes if predicted P(stays) >= threshold.
 		output_path: Where to save the figure.
+		p_stay_rsreg: Optional P(other stays) from RSReg (alpha=0, k=1).  When
+		    supplied it is plotted as the leftmost strip panel.
 	"""
 	gt_stays = np.asarray(gt_stays, dtype=bool)
 	gt_goes = ~gt_stays
@@ -1290,13 +1347,32 @@ def plot_safety_analysis(
 			"legend.fontsize": 9,
 		}
 	):
-		fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
-		fig.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.18, wspace=0.38)
+		if p_stay_rsreg is not None:
+			nego_go_rsreg = p_stay_rsreg >= threshold
+			risk_rsreg = float(np.mean(nego_go_rsreg & gt_goes))
+			fig, axes = plt.subplots(1, 4, figsize=(16, 3.6))
+			fig.subplots_adjust(left=0.06, right=0.98, top=0.88, bottom=0.18, wspace=0.40)
+			strip_specs = [
+				(axes[0], p_stay_rsreg, r"RSReg", "#E76F51", risk_rsreg),
+				(axes[1], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
+				(axes[2], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
+			]
+			ax_bar = axes[3]
+			methods = [r"RSReg", r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing"]
+			risks = [risk_rsreg, risk_k1, risk_k2]
+			bar_colors = ["#E76F51", "#4C78A8", "#F58518"]
+		else:
+			fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
+			fig.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.18, wspace=0.38)
+			strip_specs = [
+				(axes[0], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
+				(axes[1], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
+			]
+			ax_bar = axes[2]
+			methods = [r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing"]
+			risks = [risk_k1, risk_k2]
+			bar_colors = ["#4C78A8", "#F58518"]
 
-		strip_specs = [
-			(axes[0], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
-			(axes[1], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
-		]
 		for ax, p_stay, title, color, risk in strip_specs:
 			gt_x = np.where(gt_stays, 0.0, 1.0)
 			# Colour: use method colour for stays (correct), red for goes (potential risk)
@@ -1322,10 +1398,6 @@ def plot_safety_analysis(
 			)
 			ax.grid(True, linestyle=":", alpha=0.35)
 
-		ax_bar = axes[2]
-		methods = [r"$\alpha$-smoothing", r"Clustered $\alpha$-smoothing"]
-		risks = [risk_k1, risk_k2]
-		bar_colors = ["#4C78A8", "#F58518"]
 		bars = ax_bar.bar(methods, risks, color=bar_colors, alpha=0.75, edgecolor="black", linewidth=0.8)
 		ax_bar.set_ylabel(r"Risk rate")
 		ylim_top = min(1.0, max(max(risks, default=0.1) * 1.35, 0.1))

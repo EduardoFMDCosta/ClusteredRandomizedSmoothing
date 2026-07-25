@@ -131,6 +131,28 @@ def _build_reference_parameters(max_num_clusters: int) -> Parameters:
     )
 
 
+def _build_rsreg_parameters() -> Parameters:
+    """Build Parameters for RSReg: standard Gaussian smoothing with alpha=0, one cluster.
+
+    RSReg (Randomized Smoothing Regular) is the degenerate case of
+    alpha-trimming with alpha=0 — no samples are trimmed and the smoother
+    collapses to a single-cluster, unweighted mean of the noisy outputs.
+    It serves as a baseline that lacks both trimming and clustering.
+    """
+    return Parameters(
+        smoothing=SmoothingParameters(N=cfg.smoothing_N, alpha=0.0),
+        clustering=ClusteringParameters(
+            max_num_clusters=1,
+            coverage=cfg.coverage,
+            strategy="dbscan",
+            dbscan_eps=cfg.dbscan_eps,
+            dbscan_min_samples=cfg.dbscan_min_samples,
+        ),
+        confidence=ConfidenceParameters(num_samples=cfg.confidence_num_samples, beta=1e-5),
+        runtime=RuntimeHeuristics(noise_sub_batch_size=cfg.noise_sub_batch_size),
+    )
+
+
 def _clean_reference_samples(
     stochastic_fn: TrajFlowMeszarosStochasticFunction | TrajFlowMeszarosFullTrajectoryStochasticFunction,
     model_input: torch.Tensor,
@@ -185,6 +207,14 @@ def _compute_batch_wasserstein_rows(
         else cluster_anchor
     )
 
+    smoother_rsreg = GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=model_input,
+        sigma=cfg.sigma,
+        parameters=_build_rsreg_parameters(),
+        h=helper,
+        cluster_anchor=None,
+    )
     smoother_k1 = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
@@ -210,10 +240,12 @@ def _compute_batch_wasserstein_rows(
         num_samples=cfg.distribution_samples,
         noise_sub_batch_size=cfg.noise_sub_batch_size,
     )
+    smoothed_rsreg_samples = smoother_rsreg.monte_carlo(num_simulations=cfg.distribution_samples)
     smoothed_k1_samples = smoother_k1.monte_carlo(num_simulations=cfg.distribution_samples)
     smoothed_k2_samples = smoother_k2.monte_carlo(num_simulations=cfg.distribution_samples)
 
     clean_np = clean_samples.detach().cpu().numpy()      # (nx, n_samples, output_dim)
+    rsreg_np = smoothed_rsreg_samples.detach().cpu().numpy()
     k1_np = smoothed_k1_samples.detach().cpu().numpy()
     k2_np = smoothed_k2_samples.detach().cpu().numpy()
 
@@ -242,10 +274,17 @@ def _compute_batch_wasserstein_rows(
             eval_indices = [
                 t for t in cfg.timestep_eval_indices if t < num_timesteps
             ]
+            w2_per_t_rsreg: list[float] = []
             w2_per_t_k1: list[float] = []
             w2_per_t_k2: list[float] = []
             for t in eval_indices:
                 sl = slice(2 * t, 2 * t + 2)
+                w2_t_rsreg = _compute_sinkhorn_wasserstein_2_distance(
+                    clean_np[i, :, sl],
+                    rsreg_np[i, :, sl],
+                    reg=cfg.sinkhorn_reg,
+                    ot_method=cfg.ot_method,
+                )
                 w2_t_k1 = _compute_sinkhorn_wasserstein_2_distance(
                     clean_np[i, :, sl],
                     k1_np[i, :, sl],
@@ -258,16 +297,25 @@ def _compute_batch_wasserstein_rows(
                     reg=cfg.sinkhorn_reg,
                     ot_method=cfg.ot_method,
                 )
+                w2_per_t_rsreg.append(float(w2_t_rsreg))
                 w2_per_t_k1.append(float(w2_t_k1))
                 w2_per_t_k2.append(float(w2_t_k2))
+            row["w2_per_timestep_rsreg"] = w2_per_t_rsreg
             row["w2_per_timestep_k1"] = w2_per_t_k1
             row["w2_per_timestep_k2"] = w2_per_t_k2
             row["w2_timestep_indices"] = eval_indices
             # Histogram key = last evaluated (= final) timestep 2-D W2.
+            row["w2_clean_vs_rsreg"] = w2_per_t_rsreg[-1]
             row["w2_clean_vs_k1"] = w2_per_t_k1[-1]
             row["w2_clean_vs_k2"] = w2_per_t_k2[-1]
         else:
             # Endpoint mode: the full output is already 2-D.
+            w2_clean_rsreg = _compute_sinkhorn_wasserstein_2_distance(
+                clean_np[i],
+                rsreg_np[i],
+                reg=cfg.sinkhorn_reg,
+                ot_method=cfg.ot_method,
+            )
             w2_clean_k1 = _compute_sinkhorn_wasserstein_2_distance(
                 clean_np[i],
                 k1_np[i],
@@ -280,6 +328,7 @@ def _compute_batch_wasserstein_rows(
                 reg=cfg.sinkhorn_reg,
                 ot_method=cfg.ot_method,
             )
+            row["w2_clean_vs_rsreg"] = float(w2_clean_rsreg)
             row["w2_clean_vs_k1"] = float(w2_clean_k1)
             row["w2_clean_vs_k2"] = float(w2_clean_k2)
 
@@ -409,6 +458,16 @@ def main() -> None:
     if n_filtered > 0:
         print(f"  ({n_filtered} input(s) with <2 clusters excluded from plots; {len(rows_for_plot)} remaining)")
 
+    # RSReg rows: present in newly generated data; gracefully absent from old JSONs.
+    rows_with_rsreg = [r for r in rows_for_plot if "w2_clean_vs_rsreg" in r]
+    w_clean_vs_rsreg: np.ndarray | None = (
+        np.array([float(r["w2_clean_vs_rsreg"]) for r in rows_with_rsreg], dtype=float)
+        if rows_with_rsreg
+        else None
+    )
+    if w_clean_vs_rsreg is None:
+        print("  (RSReg W2 data not found in loaded JSON; RSReg will be omitted from plots)")
+
     w_clean_vs_k1 = np.array(
         [_get_row_w2(r, "w2_clean_vs_k1", "w2_noisy_vs_k1") for r in rows_for_plot], dtype=float
     )
@@ -416,20 +475,44 @@ def main() -> None:
         [_get_row_w2(r, "w2_clean_vs_k2", "w2_noisy_vs_k2") for r in rows_for_plot], dtype=float
     )
 
+    # When RSReg is present we restrict all three arrays to the same rows so the
+    # histograms are directly comparable.  Otherwise fall back to k1/k2 only.
+    if w_clean_vs_rsreg is not None and len(rows_with_rsreg) != len(rows_for_plot):
+        rsreg_mask = np.array(["w2_clean_vs_rsreg" in r for r in rows_for_plot], dtype=bool)
+        w_clean_vs_k1 = w_clean_vs_k1[rsreg_mask]
+        w_clean_vs_k2 = w_clean_vs_k2[rsreg_mask]
+
     histogram_path = Path(args.figures_dir) / args.histogram_name
     plot_trajflow_wasserstein_histograms(
         w_noisy_vs_k1=w_clean_vs_k1,
         w_noisy_vs_k2=w_clean_vs_k2,
         output_path=histogram_path,
         bins=cfg.hist_bins,
+        w_noisy_vs_rsreg=w_clean_vs_rsreg,
     )
 
     # Per-timestep Wasserstein plot (trajectory mode only).
     if cfg.output_mode == "trajectory" or any("w2_per_timestep_k1" in r for r in rows_for_plot):
-        rows_with_ts = [r for r in rows_for_plot if "w2_per_timestep_k1" in r and "w2_per_timestep_k2" in r]
+        rows_with_ts = [
+            r for r in rows_for_plot
+            if "w2_per_timestep_k1" in r and "w2_per_timestep_k2" in r
+        ]
         if rows_with_ts:
             w2_ts_k1 = np.array([r["w2_per_timestep_k1"] for r in rows_with_ts], dtype=float)
             w2_ts_k2 = np.array([r["w2_per_timestep_k2"] for r in rows_with_ts], dtype=float)
+            w2_ts_rsreg: np.ndarray | None = None
+            rows_with_ts_rsreg = [r for r in rows_with_ts if "w2_per_timestep_rsreg" in r]
+            if rows_with_ts_rsreg:
+                w2_ts_rsreg = np.array(
+                    [r["w2_per_timestep_rsreg"] for r in rows_with_ts_rsreg], dtype=float
+                )
+                # Align k1/k2 arrays to RSReg rows.
+                if len(rows_with_ts_rsreg) != len(rows_with_ts):
+                    rsreg_ts_mask = np.array(
+                        ["w2_per_timestep_rsreg" in r for r in rows_with_ts], dtype=bool
+                    )
+                    w2_ts_k1 = w2_ts_k1[rsreg_ts_mask]
+                    w2_ts_k2 = w2_ts_k2[rsreg_ts_mask]
             ts_indices = np.array(rows_with_ts[0].get(
                 "w2_timestep_indices", list(range(w2_ts_k1.shape[1]))
             ), dtype=int)
@@ -437,10 +520,20 @@ def main() -> None:
             plot_wasserstein_per_timestep(
                 w2_k1=w2_ts_k1, w2_k2=w2_ts_k2,
                 output_path=timestep_path, timesteps=ts_indices,
+                w2_rsreg=w2_ts_rsreg,
             )
             print(f"saved: {timestep_path}")
 
     if do_regenerate:
+        aggregate: dict[str, Any] = {
+            "mean_w2_clean_vs_k1": float(np.mean(w_clean_vs_k1)),
+            "std_w2_clean_vs_k1": float(np.std(w_clean_vs_k1)),
+            "mean_w2_clean_vs_k2": float(np.mean(w_clean_vs_k2)),
+            "std_w2_clean_vs_k2": float(np.std(w_clean_vs_k2)),
+        }
+        if w_clean_vs_rsreg is not None:
+            aggregate["mean_w2_clean_vs_rsreg"] = float(np.mean(w_clean_vs_rsreg))
+            aggregate["std_w2_clean_vs_rsreg"] = float(np.std(w_clean_vs_rsreg))
         summary = {
             "config": {
                 "selected_indices": selected_indices.tolist(),
@@ -458,12 +551,7 @@ def main() -> None:
                 "input_batch_size": cfg.input_batch_size,
                 "seed": cfg.seed,
             },
-            "aggregate": {
-                "mean_w2_clean_vs_k1": float(np.mean(w_clean_vs_k1)),
-                "std_w2_clean_vs_k1": float(np.std(w_clean_vs_k1)),
-                "mean_w2_clean_vs_k2": float(np.mean(w_clean_vs_k2)),
-                "std_w2_clean_vs_k2": float(np.std(w_clean_vs_k2)),
-            },
+            "aggregate": aggregate,
             "per_input": all_rows,
         }
         _save_json(json_path, summary)

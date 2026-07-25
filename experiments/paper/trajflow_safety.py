@@ -99,6 +99,28 @@ def _build_parameters(max_num_clusters: int) -> Parameters:
     )
 
 
+def _build_rsreg_parameters() -> Parameters:
+    """RSReg: Gaussian smoothing with alpha=0, single cluster, no trimming.
+
+    This is the degenerate alpha=0 case that ignores the bimodal structure
+    of the TrajFlow output distribution.  It serves as a baseline against
+    which both alpha-smoothing (k=1) and clustered alpha-smoothing (k=2)
+    are compared.
+    """
+    return Parameters(
+        smoothing=SmoothingParameters(N=cfg.smoothing_N, alpha=0.0),
+        clustering=ClusteringParameters(
+            max_num_clusters=1,
+            coverage=cfg.coverage,
+            strategy="dbscan",
+            dbscan_eps=cfg.dbscan_eps,
+            dbscan_min_samples=cfg.dbscan_min_samples,
+        ),
+        confidence=ConfidenceParameters(num_samples=cfg.confidence_num_samples, beta=1e-5),
+        runtime=RuntimeHeuristics(noise_sub_batch_size=cfg.noise_sub_batch_size),
+    )
+
+
 # ---------------------------------------------------------------------------
 # P(stays) computation helpers
 # ---------------------------------------------------------------------------
@@ -171,6 +193,14 @@ def _compute_batch_safety_rows(
     else:
         model_input, helper = stochastic_fn.pos_to_ctrl(x_position)
 
+    smoother_rsreg = GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=model_input,
+        sigma=cfg.sigma,
+        parameters=_build_rsreg_parameters(),
+        h=helper,
+        cluster_anchor=None,
+    )
     smoother_k1 = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
@@ -188,9 +218,11 @@ def _compute_batch_safety_rows(
         cluster_anchor=cluster_anchor,
     )
 
+    mc_rsreg = smoother_rsreg.monte_carlo(num_simulations=cfg.mc_samples)
     mc_k1 = smoother_k1.monte_carlo(num_simulations=cfg.mc_samples)
     mc_k2 = smoother_k2.monte_carlo(num_simulations=cfg.mc_samples)
 
+    p_stay_rsreg = _p_stay_from_mc(mc_rsreg, cluster_anchor, stay_radius=cfg.behavior_stay_radius)
     p_stay_k1 = _p_stay_from_mc(mc_k1, cluster_anchor, stay_radius=cfg.behavior_stay_radius)
     p_stay_k2 = _p_stay_from_mc(mc_k2, cluster_anchor, stay_radius=cfg.behavior_stay_radius)
 
@@ -210,6 +242,7 @@ def _compute_batch_safety_rows(
         rows.append(
             {
                 "dataset_index": int(dataset_idx),
+                "p_stay_rsreg": float(p_stay_rsreg[i].item()),
                 "p_stay_k1": float(p_stay_k1[i].item()),
                 "p_stay_k2": float(p_stay_k2[i].item()),
                 "gt_stays": bool(gt_stays_batch[i]),
@@ -319,6 +352,7 @@ def main() -> None:
                     "behavior_stay_radius": cfg.behavior_stay_radius,
                     "confidence_num_samples": cfg.confidence_num_samples,
                     "seed": cfg.seed,
+                    "rsreg_alpha": 0.0,
                 },
                 "per_input": all_rows,
             },
@@ -351,6 +385,16 @@ def main() -> None:
         )
     rows_for_analysis = two_cluster_rows
 
+    # RSReg: present in newly generated data; absent from older JSONs.
+    has_rsreg = all("p_stay_rsreg" in r for r in rows_for_analysis)
+    p_stay_rsreg: np.ndarray | None = (
+        np.array([float(r["p_stay_rsreg"]) for r in rows_for_analysis], dtype=float)
+        if has_rsreg
+        else None
+    )
+    if p_stay_rsreg is None:
+        print("  (RSReg P(stay) data not found in loaded JSON; RSReg will be omitted from plots)")
+
     p_stay_k1 = np.array([float(r["p_stay_k1"]) for r in rows_for_analysis], dtype=float)
     p_stay_k2 = np.array([float(r["p_stay_k2"]) for r in rows_for_analysis], dtype=float)
     gt_stays = np.array([bool(r["gt_stays"]) for r in rows_for_analysis], dtype=bool)
@@ -364,6 +408,10 @@ def main() -> None:
     print(f"N scenarios (2-cluster): {total_after}")
     print(f"GT go rate:              {float(np.mean(gt_goes)):.3f}")
     print(f"Decision threshold:      {cfg.decision_threshold}")
+    if p_stay_rsreg is not None:
+        risk_rsreg = float(np.mean((p_stay_rsreg >= cfg.decision_threshold) & gt_goes))
+        print(f"Risk rate  RSReg:        {risk_rsreg:.3f}")
+        print(f"Mean P(stay)  RSReg:     {float(np.mean(p_stay_rsreg)):.3f}")
     print(f"Risk rate  k=1:          {risk_k1:.3f}")
     print(f"Risk rate  k=2:          {risk_k2:.3f}")
     print(f"Mean P(stay)  k=1:       {float(np.mean(p_stay_k1)):.3f}")
@@ -376,6 +424,7 @@ def main() -> None:
         gt_stays=gt_stays,
         threshold=cfg.decision_threshold,
         output_path=figure_path,
+        p_stay_rsreg=p_stay_rsreg,
     )
     print(f"saved: {figure_path}")
 
