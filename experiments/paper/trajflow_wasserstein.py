@@ -178,9 +178,10 @@ def _compute_batch_wasserstein_rows(
     else:
         model_input, helper = stochastic_fn.pos_to_ctrl(x_position)
 
-    # For trajectory_dbscan we do not need an endpoint anchor.
+    # For endpoint_dbscan we do not need an endpoint anchor (data-driven from
+    # model outputs). behavior_split requires the initial position of the target agent.
     anchor_k2 = (
-        None if cfg.cluster_strategy == "trajectory_dbscan"
+        None if cfg.cluster_strategy == "endpoint_dbscan"
         else cluster_anchor
     )
 

@@ -64,9 +64,7 @@ class ExamplesConfig(_SmootherParams):
     smoothing_N: int = 10
     coverage: float = 0.80
     behavior_stay_radius: float = 1.0
-    dbscan_min_samples: int = 100
-    cluster_strategy: str = "trajectory_dbscan"
-    dbscan_eps: float = 8.0
+    cluster_strategy: str = "behavior_split"
 
 
 @dataclass
@@ -84,8 +82,7 @@ class WassersteinConfig(_SmootherParams):
     """Number of histogram bins in the W2 comparison figure."""
     # Overrides:
     coverage: float = 0.80
-    cluster_strategy: str = "trajectory_dbscan"
-    dbscan_eps: float = 8.0
+    cluster_strategy: str = "behavior_split"
 
 
 @dataclass

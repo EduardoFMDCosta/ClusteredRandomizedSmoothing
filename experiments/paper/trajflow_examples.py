@@ -113,9 +113,10 @@ def main():
         confidence=ConfidenceParameters(num_samples=cfg.confidence_num_samples, beta=1e-5),
     )
 
-    # For trajectory_dbscan we do not need a behavior anchor (endpoint-free).
+    # For endpoint_dbscan we do not need a behavior anchor (data-driven from
+    # model outputs). behavior_split requires the initial position of the target agent.
     cluster_anchor_for_smoother = (
-        None if cfg.cluster_strategy == "trajectory_dbscan"
+        None if cfg.cluster_strategy == "endpoint_dbscan"
         else _extract_target_initial_position(x)
     )
 
