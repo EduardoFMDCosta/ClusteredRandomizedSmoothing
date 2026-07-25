@@ -80,6 +80,8 @@ class WassersteinConfig(_SmootherParams):
     """Sinkhorn regularisation (only used when ot_method='sinkhorn_log')."""
     hist_bins: int = 24
     """Number of histogram bins in the W2 comparison figure."""
+    timestep_eval_indices: list[int] = field(default_factory=lambda: [1, 5, 10, 15, 19])
+    """0-based prediction timestep indices at which to evaluate per-step W2."""
     # Overrides:
     coverage: float = 0.80
     cluster_strategy: str = "behavior_split"

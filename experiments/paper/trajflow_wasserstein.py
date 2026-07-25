@@ -217,6 +217,10 @@ def _compute_batch_wasserstein_rows(
     k1_np = smoothed_k1_samples.detach().cpu().numpy()
     k2_np = smoothed_k2_samples.detach().cpu().numpy()
 
+    # Record how many clusters were actually found for each input so callers
+    # can filter to inputs where k=2 was genuinely observed.
+    k2_k_per_row: list[int] = smoother_k2.cluster.k_per_row.tolist()
+
     output_dim = clean_np.shape[-1]
     # Detect trajectory mode: full output (num_timesteps * 2) vs endpoint (2).
     is_trajectory = output_dim > 2
@@ -224,30 +228,23 @@ def _compute_batch_wasserstein_rows(
 
     rows: list[dict[str, Any]] = []
     for i, dataset_idx in enumerate(batch_indices.tolist()):
-        # Full-space Wasserstein (endpoint distance for endpoint mode, full trajectory for traj mode).
-        w2_clean_k1 = _compute_sinkhorn_wasserstein_2_distance(
-            clean_np[i],
-            k1_np[i],
-            reg=cfg.sinkhorn_reg,
-            ot_method=cfg.ot_method,
-        )
-        w2_clean_k2 = _compute_sinkhorn_wasserstein_2_distance(
-            clean_np[i],
-            k2_np[i],
-            reg=cfg.sinkhorn_reg,
-            ot_method=cfg.ot_method,
-        )
         row: dict[str, Any] = {
             "dataset_index": int(dataset_idx),
-            "w2_clean_vs_k1": float(w2_clean_k1),
-            "w2_clean_vs_k2": float(w2_clean_k2),
+            "k_per_row_k2": int(k2_k_per_row[i]),
         }
 
-        # Per-timestep Wasserstein: computed in 2-D slice at each prediction step.
         if is_trajectory:
+            # All metrics are 2-D, evaluated only at the selected timesteps so
+            # that the computation stays tractable while still capturing the
+            # temporal trend.  The main histogram key reuses the last selected
+            # timestep (= final position), which is the same quantity as
+            # endpoint mode and avoids inflating W2 over 40-D trajectory space.
+            eval_indices = [
+                t for t in cfg.timestep_eval_indices if t < num_timesteps
+            ]
             w2_per_t_k1: list[float] = []
             w2_per_t_k2: list[float] = []
-            for t in range(num_timesteps):
+            for t in eval_indices:
                 sl = slice(2 * t, 2 * t + 2)
                 w2_t_k1 = _compute_sinkhorn_wasserstein_2_distance(
                     clean_np[i, :, sl],
@@ -265,6 +262,26 @@ def _compute_batch_wasserstein_rows(
                 w2_per_t_k2.append(float(w2_t_k2))
             row["w2_per_timestep_k1"] = w2_per_t_k1
             row["w2_per_timestep_k2"] = w2_per_t_k2
+            row["w2_timestep_indices"] = eval_indices
+            # Histogram key = last evaluated (= final) timestep 2-D W2.
+            row["w2_clean_vs_k1"] = w2_per_t_k1[-1]
+            row["w2_clean_vs_k2"] = w2_per_t_k2[-1]
+        else:
+            # Endpoint mode: the full output is already 2-D.
+            w2_clean_k1 = _compute_sinkhorn_wasserstein_2_distance(
+                clean_np[i],
+                k1_np[i],
+                reg=cfg.sinkhorn_reg,
+                ot_method=cfg.ot_method,
+            )
+            w2_clean_k2 = _compute_sinkhorn_wasserstein_2_distance(
+                clean_np[i],
+                k2_np[i],
+                reg=cfg.sinkhorn_reg,
+                ot_method=cfg.ot_method,
+            )
+            row["w2_clean_vs_k1"] = float(w2_clean_k1)
+            row["w2_clean_vs_k2"] = float(w2_clean_k2)
 
         rows.append(row)
 
@@ -383,11 +400,20 @@ def main() -> None:
             return float(row[key_old])
         raise KeyError(f"Row missing both '{key_new}' and '{key_old}' keys")
 
+    # Focus on inputs where the k=2 smoother genuinely found 2 clusters.
+    # Rows without the key (e.g. loaded from older JSON) are kept by default.
+    rows_for_plot = [r for r in all_rows if r.get("k_per_row_k2", 2) >= 2]
+    if not rows_for_plot:
+        rows_for_plot = all_rows  # safety fallback
+    n_filtered = len(all_rows) - len(rows_for_plot)
+    if n_filtered > 0:
+        print(f"  ({n_filtered} input(s) with <2 clusters excluded from plots; {len(rows_for_plot)} remaining)")
+
     w_clean_vs_k1 = np.array(
-        [_get_row_w2(r, "w2_clean_vs_k1", "w2_noisy_vs_k1") for r in all_rows], dtype=float
+        [_get_row_w2(r, "w2_clean_vs_k1", "w2_noisy_vs_k1") for r in rows_for_plot], dtype=float
     )
     w_clean_vs_k2 = np.array(
-        [_get_row_w2(r, "w2_clean_vs_k2", "w2_noisy_vs_k2") for r in all_rows], dtype=float
+        [_get_row_w2(r, "w2_clean_vs_k2", "w2_noisy_vs_k2") for r in rows_for_plot], dtype=float
     )
 
     histogram_path = Path(args.figures_dir) / args.histogram_name
@@ -399,13 +425,19 @@ def main() -> None:
     )
 
     # Per-timestep Wasserstein plot (trajectory mode only).
-    if cfg.output_mode == "trajectory" or any("w2_per_timestep_k1" in r for r in all_rows):
-        rows_with_ts = [r for r in all_rows if "w2_per_timestep_k1" in r and "w2_per_timestep_k2" in r]
+    if cfg.output_mode == "trajectory" or any("w2_per_timestep_k1" in r for r in rows_for_plot):
+        rows_with_ts = [r for r in rows_for_plot if "w2_per_timestep_k1" in r and "w2_per_timestep_k2" in r]
         if rows_with_ts:
             w2_ts_k1 = np.array([r["w2_per_timestep_k1"] for r in rows_with_ts], dtype=float)
             w2_ts_k2 = np.array([r["w2_per_timestep_k2"] for r in rows_with_ts], dtype=float)
+            ts_indices = np.array(rows_with_ts[0].get(
+                "w2_timestep_indices", list(range(w2_ts_k1.shape[1]))
+            ), dtype=int)
             timestep_path = Path(args.figures_dir) / args.timestep_plot_name
-            plot_wasserstein_per_timestep(w2_k1=w2_ts_k1, w2_k2=w2_ts_k2, output_path=timestep_path)
+            plot_wasserstein_per_timestep(
+                w2_k1=w2_ts_k1, w2_k2=w2_ts_k2,
+                output_path=timestep_path, timesteps=ts_indices,
+            )
             print(f"saved: {timestep_path}")
 
     if do_regenerate:

@@ -1086,22 +1086,28 @@ def plot_wasserstein_per_timestep(
 	w2_k1: np.ndarray,
 	w2_k2: np.ndarray,
 	output_path: Path,
+	timesteps: np.ndarray | None = None,
 ) -> Path:
 	"""Plot per-timestep 2-Wasserstein distances with mean ± 1 std band.
 
 	Args:
-		w2_k1: Array of shape (num_inputs, num_timesteps) – W2 per (input, time)
+		w2_k1: Array of shape (num_inputs, num_eval_steps) – W2 per (input, step)
 		        for the alpha-smoothing (k=1) smoother versus h_w(x).
 		w2_k2: Same shape – W2 for clustered alpha-smoothing (k=2) versus h_w(x).
 		output_path: Where to save the figure.
+		timesteps: 1-D integer array of the actual 0-based prediction timestep
+		           indices corresponding to the columns of w2_k1/w2_k2.  When
+		           omitted, defaults to 0, 1, …, num_eval_steps-1.
 	"""
 	if w2_k1.ndim != 2 or w2_k2.ndim != 2:
-		raise ValueError("w2_k1 and w2_k2 must be 2-D arrays (num_inputs, num_timesteps)")
+		raise ValueError("w2_k1 and w2_k2 must be 2-D arrays (num_inputs, num_eval_steps)")
 	if w2_k1.shape != w2_k2.shape:
 		raise ValueError("w2_k1 and w2_k2 must have the same shape")
 
 	num_timesteps = w2_k1.shape[1]
-	timesteps = np.arange(num_timesteps)
+	if timesteps is None:
+		timesteps = np.arange(num_timesteps)
+	timesteps = np.asarray(timesteps, dtype=int)
 	mean_k1 = w2_k1.mean(axis=0)
 	std_k1 = w2_k1.std(axis=0, ddof=0)
 	mean_k2 = w2_k2.mean(axis=0)
@@ -1145,7 +1151,7 @@ def plot_wasserstein_per_timestep(
 
 		ax.set_xlabel(r"Prediction timestep $t$")
 		ax.set_ylabel(r"Mean $W_2$ distance to $h_w(x)$")
-		ax.set_xticks(np.arange(0, num_timesteps, max(1, num_timesteps // 10)))
+		ax.set_xticks(timesteps)
 		ax.grid(True, linestyle=":", alpha=0.35)
 		ax.legend(loc="best", frameon=True)
 		fig.tight_layout()
