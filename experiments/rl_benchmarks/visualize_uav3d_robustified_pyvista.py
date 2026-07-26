@@ -2,48 +2,22 @@
 """PyVista visualization of UAV3D trajectories driven by a **robustified**
 controller.
 
-At every environment step we:
-  1. Wrap the VI-BNN policy in ``UAV3DPolicyStochasticFunction``.
-  2. Build ``GaussianAlphaTrimmingSmoothing`` on the current (normalized) state
-     with Gaussian state-space noise of std ``sigma``.
-  3. Either sample from the resulting ``MixtureDirac`` or pick the mode
-     (highest partition weight) as the action.
-
-Optionally also rolls out the raw (non-robustified) policy for comparison and
-plots both bundles of trajectories in the same scene.
+Reads a ``RolloutBundle`` produced by ``collect_uav3d_rollouts.py`` (see
+``rollout_io.py``) and renders it. This script never simulates anything —
+it's the cheap, iterable half of the old combined script, so camera angle /
+legend / color / line-style tweaks don't require re-running the benchmark.
+Only numpy + pyvista are needed here (no torch, no policy checkpoint).
 """
 from __future__ import annotations
 
 import argparse
-import time
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pyvista as pv
-import torch
 from dynamics import UAV3D
-from stochastic_functions import UAV3DPolicyStochasticFunction
-from train_rl import VariationalPolicy, normalize_state
-
-from randomized_smoothing.dataclasses import (
-    ClusteringParameters,
-    ConfidenceParameters,
-    Parameters,
-    SmoothingParameters,
-)
-from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-
-# State where the trained K=2 policy is sharply bimodal AND the raw policy
-# is "clutch": some trajectories collide, so the visualization shows a
-# non-trivial failure mode that randomized smoothing can mitigate. From this
-# far-west, low-y, low-z position the two mixture components encode two
-# distinct route bundles toward the goal in the far-east, low-z corner.
-# 200-trajectory rollout: ~25-unit cluster separation at quarter-horizon
-# with a ~66/34 split, and ~72% goal / 24% collision / 4% timeout. Zero
-# initial velocity.
-BIMODAL_START_STATE = np.array([-13.5, 0.0, -3.0, 0.0, -5.0, 0.0], dtype=np.float32)
-
+from rollout_io import BIMODAL_START_STATE, RolloutBundle, load_rollouts
 
 
 def _create_box(bounds):
@@ -56,9 +30,9 @@ def _add_legend_text(
     plotter,
     entries: list[list[str]],
     *,
-    x_ndc: float = 0.76,
+    x_ndc: float = 0.70,
     margin_ndc: float = 0.04,
-    font_size: int = 32,
+    font_size: int = 24,
     window_height: int = 1200,
     line_dy_ndc: float | None = None,
 ) -> None:
@@ -94,140 +68,6 @@ def _add_legend_text(
             color=color,
             viewport=True,
         )
-
-
-def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]:
-    """Load a UAV3D VI-BNN policy checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
-        raise ValueError("Expected checkpoint dict with model_state_dict (legacy checkpoints are not supported).")
-
-    required_fields = ["state_dim", "action_dim", "hidden_dim", "action_scale"]
-    missing_fields = [field for field in required_fields if field not in checkpoint]
-    if missing_fields:
-        raise ValueError(f"Checkpoint missing required fields: {missing_fields}")
-
-    model_state_dict = checkpoint["model_state_dict"]
-    state_dim = int(checkpoint["state_dim"])
-    action_dim = int(checkpoint["action_dim"])
-    hidden_dim = int(checkpoint["hidden_dim"])
-    action_scale = float(checkpoint["action_scale"])
-    num_components = int(checkpoint.get("num_components", 1))
-
-    policy = VariationalPolicy(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hidden_dim=hidden_dim,
-        action_scale=action_scale,
-        num_components=num_components,
-    )
-    policy.load_state_dict(model_state_dict)
-    policy.eval()
-    return policy, action_scale
-
-def _robustified_action(
-    stochastic_fn: UAV3DPolicyStochasticFunction,
-    state: np.ndarray,
-    parameters: Parameters,
-    sigma: float,
-) -> np.ndarray:
-    """Build a smoother at ``state`` and return one action from the
-    robustified ``MixtureDirac``.
-    """
-    x = torch.tensor(normalize_state(state), dtype=torch.float32).unsqueeze(0)
-    smoother = GaussianAlphaTrimmingSmoothing(
-        stochastic_function=stochastic_fn,
-        x=x,
-        sigma=sigma,
-        parameters=parameters,
-    )
-    distribution = smoother.smooth()
-    action_t = distribution.sample(size=())
-    return action_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
-    
-
-
-def _rollout(
-    env: UAV3D,
-    start_state: np.ndarray,
-    horizon: int,
-    action_fn,
-) -> tuple[np.ndarray, str]:
-    """Roll out until natural termination (goal / collision / corridor exit).
-
-    The env should be constructed with ``max_steps=None`` so it never times
-    out from inside ``step()``; ``horizon`` here is just a safety cap that
-    should never bind in practice.
-    """
-    env._state = start_state.copy()
-    env._step_count = 0
-    env._done = False
-    start_pos = np.array([start_state[0], start_state[2], start_state[4]], dtype=np.float32)
-    env._prev_dist = float(np.linalg.norm(start_pos - env.goal_center))
-
-    state = env._state.copy()
-    trace = [start_pos.copy()]
-    steps = 0
-    while not env.is_done() and steps < horizon:
-        action = action_fn(state)
-        _, _reward, state = env.step(action)
-        trace.append(np.array([state[0], state[2], state[4]], dtype=np.float32))
-        steps += 1
-
-    # Trust the env's terminal_reason: with swept-segment collision the
-    # post-step position may lie past the obstacle, so deriving the outcome
-    # from final_pos alone misclassifies those as "timeout".
-    outcome = env._terminal_reason if env._terminal_reason is not None else "timeout"
-    return np.stack(trace, axis=0), outcome
-
-
-def _raw_policy_action_fn(policy: VariationalPolicy):
-    def f(state: np.ndarray) -> np.ndarray:
-        state_t = torch.tensor(normalize_state(state), dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            action_t, _, _ = policy.sample(state_t)
-        return action_t.squeeze(0).cpu().numpy().astype(np.float32)
-    return f
-
-
-def _robustified_action_fn(
-    stochastic_fn: UAV3DPolicyStochasticFunction,
-    parameters: Parameters,
-    sigma: float,
-):
-
-    def action(state: np.ndarray) -> np.ndarray:
-        a = _robustified_action(
-            stochastic_fn=stochastic_fn,
-            state=state,
-            parameters=parameters,
-            sigma=sigma,
-        )
-        return a
-
-    return action
-
-
-def _collect_trajectories(
-    env: UAV3D,
-    start_state: np.ndarray,
-    horizon: int,
-    num_trajectories: int,
-    action_fn,
-    label: str,
-) -> tuple[list[np.ndarray], list[str], dict[str, int]]:
-    counts = {"goal": 0, "collision": 0, "timeout": 0}
-    traces: list[np.ndarray] = []
-    outcomes: list[str] = []
-    t0 = time.time()
-    for i in range(num_trajectories):
-        trace, outcome = _rollout(env, start_state, horizon, action_fn)
-        traces.append(trace)
-        outcomes.append(outcome)
-        counts[outcome] += 1
-        print(f"  [{label}] {i + 1}/{num_trajectories} → {outcome} "
-              f"({time.time() - t0:.1f}s elapsed)")
-    return traces, outcomes, counts
 
 
 def _add_env_geometry(plotter: Any, env: UAV3D) -> None:
@@ -304,37 +144,42 @@ def _make_plotter_with_env(env: UAV3D, off_screen: bool) -> Any:
 
 
 def _legend_entries_for(
-    outcomes: list[str], color_map: dict[str, str],
+    outcomes: list[str],
+    color_map: dict[str, str],
+    rate_stats: dict[str, tuple[float, float]] | None = None,
+    std_multiplier: float = 1.0,
 ) -> list[list[str]]:
+    """Build (label, color) legend rows. When ``rate_stats`` provides a
+    (mean, std) rate — across seeds, not across this one figure's
+    trajectories — for an outcome, add it as its own ``mean% ± k*std%`` row
+    right under the count so neither line grows too wide for the upper-right
+    corner it's anchored in.
+    """
     entries: list[list[str]] = []
     for outcome, color in color_map.items():
         n = sum(1 for o in outcomes if o == outcome)
-        if n > 0:
-            entries.append([f"{outcome}: {n}", color])
+        if n == 0:
+            continue
+        entries.append([f"{outcome}: {n}", color])
+        if rate_stats is not None and outcome in rate_stats:
+            mean, std = rate_stats[outcome]
+            entries.append(
+                [f"  {100 * mean:.1f}% ± {100 * std_multiplier * std:.1f}%", color]
+            )
     return entries
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
-    parser.add_argument("--num-trajectories", type=int, default=100)
-    parser.add_argument("--horizon", type=int, default=1000)
-    parser.add_argument("--sigma", type=float, default=0.05)
-    parser.add_argument("--smoothing-N", type=int, default=30,
-                        help="Noisy-state samples used inside smooth() per env step.")
-    parser.add_argument("--confidence-N", type=int, default=4000)
-    parser.add_argument("--alpha", type=float, default=0.4)
-    parser.add_argument("--coverage", type=float, default=0.9)
-    parser.add_argument("--max-clusters", type=int, default=3)
-    parser.add_argument("--dbscan-eps", type=float, default=0.45)
-    parser.add_argument("--dbscan-min-samples", type=int, default=50)
+    parser.add_argument("--data", type=str,
+                        default="experiments/uav_3d/bimodal_rollouts.pkl",
+                        help="Rollout bundle written by collect_uav3d_rollouts.py.")
     parser.add_argument("--no-raw", action="store_true",
-                        help="Skip rolling out the raw policy for comparison.")
+                        help="Skip rendering the raw-policy figure, even if "
+                             "it's present in --data.")
     parser.add_argument("--no-alpha", action="store_true",
-                        help="Skip rolling out the alpha-smoothing baseline "
-                             "(``max_clusters=1``).")
-    parser.add_argument("--noise-std", type=float, default=0.05,
-                        help="UAV3D process-noise std used when rolling out.")
+                        help="Skip rendering the alpha-smoothing figure, even "
+                             "if it's present in --data.")
     parser.add_argument("--out-dir", type=str,
                         default="experiments/uav_3d/bimodal_figures",
                         help="Directory to write rendered figures into. Each "
@@ -361,97 +206,33 @@ def main() -> None:
                              "positive values move the camera CCW viewed from "
                              "above, which makes the scene appear to rotate to "
                              "the right. Flip the sign to rotate the other way.")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--std-multiplier", type=float, default=2.0,
+                        help="Multiplier k applied to the across-seed std when "
+                             "annotating goal/collision rate as 'mean ± k*std' "
+                             "in the rendered legends (k=2 ≈ a 95%% band under "
+                             "normality; only meaningful if --data was collected "
+                             "with --num-seeds > 1).")
+    parser.add_argument("--line-width", type=float, default=2.8,
+                        help="Trajectory line width.")
+    parser.add_argument("--line-opacity", type=float, default=0.95,
+                        help="Trajectory line opacity.")
     args = parser.parse_args()
 
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    bundle: RolloutBundle = load_rollouts(Path(args.data))
+    meta = bundle.meta
 
-    checkpoint_path = Path(args.checkpoint)
-    policy, action_scale = _load_uav3d_policy(checkpoint_path)
-    print(f"Loaded VI-BNN policy from {checkpoint_path} (action_scale={action_scale}).")
+    policy_names = [n for n in ("raw", "alpha", "robust") if n in bundle.policies]
+    if args.no_raw:
+        policy_names = [n for n in policy_names if n != "raw"]
+    if args.no_alpha:
+        policy_names = [n for n in policy_names if n != "alpha"]
+    if not policy_names:
+        raise ValueError("Nothing to render: --data has no policies left after "
+                          "applying --no-raw/--no-alpha.")
 
-    stochastic_fn = UAV3DPolicyStochasticFunction(policy=policy)
-
-    def _make_parameters(max_clusters: int) -> Parameters:
-        return Parameters(
-            smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
-            clustering=ClusteringParameters(
-                max_num_clusters=max_clusters,
-                coverage=args.coverage,
-                dbscan_eps=args.dbscan_eps,
-                dbscan_min_samples=args.dbscan_min_samples,
-            ),
-            confidence=ConfidenceParameters(num_samples=args.confidence_N, beta=1e-2),
-        )
-
-    parameters_robust = _make_parameters(args.max_clusters)
-    parameters_alpha = _make_parameters(1)
-
-    # max_steps=None: rollouts run to natural termination (goal / collision
-    # / corridor exit). args.horizon is a safety cap inside _rollout.
-    env = UAV3D(gaussian_noise=True, noise_std=args.noise_std, max_steps=None)
-
-    # ---- raw policy rollouts (optional) ----
-    raw_traces: list[np.ndarray] = []
-    raw_outcomes: list[str] = []
-    raw_counts: dict[str, int] = {"goal": 0, "collision": 0, "timeout": 0}
-    if not args.no_raw:
-        print("Rolling out raw policy trajectories...")
-        raw_traces, raw_outcomes, raw_counts = _collect_trajectories(
-            env=env,
-            start_state=BIMODAL_START_STATE,
-            horizon=args.horizon,
-            num_trajectories=args.num_trajectories,
-            action_fn=_raw_policy_action_fn(policy),
-            label="raw",
-        )
-
-    # ---- alpha-smoothing baseline (max_clusters=1) ----
-    alpha_traces: list[np.ndarray] = []
-    alpha_outcomes: list[str] = []
-    alpha_counts: dict[str, int] = {"goal": 0, "collision": 0, "timeout": 0}
-    if not args.no_alpha:
-        print(f"Rolling out alpha-smoothing (max_clusters=1) trajectories "
-              f"— this calls the policy ~{2 * args.smoothing_N} times per env step...")
-        alpha_traces, alpha_outcomes, alpha_counts = _collect_trajectories(
-            env=env,
-            start_state=BIMODAL_START_STATE,
-            horizon=args.horizon,
-            num_trajectories=args.num_trajectories,
-            action_fn=_robustified_action_fn(
-                stochastic_fn=stochastic_fn,
-                parameters=parameters_alpha,
-                sigma=args.sigma,
-            ),
-            label="alpha",
-        )
-
-    # ---- robustified (clustered) rollouts ----
-    print(f"Rolling out clustered robustified trajectories "
-          f"— this calls the policy ~{2 * args.smoothing_N} times per env step...")
-    rob_traces, rob_outcomes, rob_counts = _collect_trajectories(
-        env=env,
-        start_state=BIMODAL_START_STATE,
-        horizon=args.horizon,
-        num_trajectories=args.num_trajectories,
-        action_fn=_robustified_action_fn(
-            stochastic_fn=stochastic_fn,
-            parameters=parameters_robust,
-            sigma=args.sigma,
-        ),
-        label="robust",
-    )
-
-    print("")
-    if not args.no_raw:
-        print(f"Raw   : goal={raw_counts['goal']} / "
-              f"collision={raw_counts['collision']} / timeout={raw_counts['timeout']}")
-    if not args.no_alpha:
-        print(f"Alpha : goal={alpha_counts['goal']} / "
-              f"collision={alpha_counts['collision']} / timeout={alpha_counts['timeout']}")
-    print(f"Robust: goal={rob_counts['goal']} / "
-          f"collision={rob_counts['collision']} / timeout={rob_counts['timeout']}")
+    # Geometry-only: noise/seed don't matter here, this env instance is never
+    # stepped, just used for its obstacle/goal layout.
+    env = UAV3D(gaussian_noise=True, noise_std=meta.get("noise_std", 0.05), max_steps=None)
 
     # Color-code each trajectory by outcome only — with separate figures per
     # policy, the policy is already identified by the figure title, so reusing
@@ -459,15 +240,10 @@ def main() -> None:
     # from having to remap colors between plots. Pair from Paul Tol's
     # "vibrant" qualitative palette.
     outcome_colors = {"goal": "#0077BB", "collision": "#CC3311"}  # blue / red
-    raw_colors   = outcome_colors
-    alpha_colors = outcome_colors
-    rob_colors   = outcome_colors
-    line_width = 2.8
-    line_opacity = 0.95
 
-    base_subtitle = (
-        f"σ={args.sigma}, α={args.alpha}, N={args.smoothing_N}, "
-        f"trajectories={args.num_trajectories}"
+    subtitle = (
+        f"σ={meta['sigma']}, α={meta['alpha']}, N={meta['smoothing_N']}, "
+        f"trajectories={meta['num_trajectories']}"
     )
 
     # Camera presets framed around the BIMODAL_START_STATE → goal axis.
@@ -546,20 +322,17 @@ def main() -> None:
     if args.interactive:
         plotter = _make_plotter_with_env(env, off_screen=False)
         legend_entries: list[list[str]] = []
-        if not args.no_raw:
-            _add_trajectories(plotter, raw_traces, raw_outcomes,
-                              raw_colors, line_width, line_opacity)
-            legend_entries += _legend_entries_for(raw_outcomes, raw_colors)
-        if not args.no_alpha:
-            _add_trajectories(plotter, alpha_traces, alpha_outcomes,
-                              alpha_colors, line_width, line_opacity)
-            legend_entries += _legend_entries_for(alpha_outcomes, alpha_colors)
-        _add_trajectories(plotter, rob_traces, rob_outcomes,
-                          rob_colors, line_width, line_opacity)
-        legend_entries += _legend_entries_for(rob_outcomes, rob_colors)
+        for name in policy_names:
+            data = bundle.policies[name]
+            _add_trajectories(plotter, data.traces, data.outcomes,
+                              outcome_colors, args.line_width, args.line_opacity)
+            legend_entries += _legend_entries_for(
+                data.outcomes, outcome_colors,
+                rate_stats=data.rate_stats, std_multiplier=args.std_multiplier,
+            )
         if legend_entries:
             _add_legend_text(plotter, entries=legend_entries)
-        plotter.add_text(f"Bimodal — {base_subtitle}",
+        plotter.add_text(f"Bimodal — {subtitle}",
                          position="upper_edge", font_size=10, color="black")
         plotter.camera_position = preset
 
@@ -586,20 +359,23 @@ def main() -> None:
         _print_camera()
         return
 
-    # ---- Non-interactive: render up to four separate figures.
+    # ---- Non-interactive: render one figure per policy, plus an env-only one.
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     def _render_one(
         out_name: str,
-        groups: list[tuple[list[np.ndarray], list[str], dict[str, str]]],
+        groups: list[tuple[list[np.ndarray], list[str], dict[str, str], dict[str, tuple[float, float]] | None]],
     ) -> None:
         plotter = _make_plotter_with_env(env, off_screen=True)
         legend_entries: list[list[str]] = []
-        for traces, outcomes, color_map in groups:
+        for traces, outcomes, color_map, rate_stats in groups:
             _add_trajectories(plotter, traces, outcomes,
-                              color_map, line_width, line_opacity)
-            legend_entries += _legend_entries_for(outcomes, color_map)
+                              color_map, args.line_width, args.line_opacity)
+            legend_entries += _legend_entries_for(
+                outcomes, color_map,
+                rate_stats=rate_stats, std_multiplier=args.std_multiplier,
+            )
         if legend_entries:
             _add_legend_text(plotter, entries=legend_entries)
         plotter.camera_position = preset
@@ -607,24 +383,13 @@ def main() -> None:
         plotter.show(screenshot=str(out_path), auto_close=True)
         print(f"Saved {out_path}")
 
-    _render_one(
-        out_name="environment.png",
-        groups=[],
-    )
-    if not args.no_raw:
+    _render_one(out_name="environment.png", groups=[])
+    for name in policy_names:
+        data = bundle.policies[name]
         _render_one(
-            out_name="raw_trajectories.png",
-            groups=[(raw_traces, raw_outcomes, raw_colors)],
+            out_name=f"{name}_trajectories.png",
+            groups=[(data.traces, data.outcomes, outcome_colors, data.rate_stats)],
         )
-    if not args.no_alpha:
-        _render_one(
-            out_name="alpha_trajectories.png",
-            groups=[(alpha_traces, alpha_outcomes, alpha_colors)],
-        )
-    _render_one(
-        out_name="robust_trajectories.png",
-        groups=[(rob_traces, rob_outcomes, rob_colors)],
-    )
 
 
 if __name__ == "__main__":

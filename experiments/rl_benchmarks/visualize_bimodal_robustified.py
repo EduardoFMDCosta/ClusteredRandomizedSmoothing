@@ -25,9 +25,10 @@ import numpy as np
 import torch
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
+from collect_uav3d_rollouts import _load_uav3d_policy
+from rollout_io import BIMODAL_START_STATE
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import normalize_state
-from visualize_uav3d_robustified_pyvista import BIMODAL_START_STATE, _load_uav3d_policy
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
