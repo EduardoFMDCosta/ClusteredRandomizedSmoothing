@@ -169,6 +169,31 @@ def _gt_stays_label(
     return displacement <= stay_radius
 
 
+def _ask_decision_threshold(default: float) -> float:
+    """Prompt for decision threshold in [0, 1], with Enter to accept default."""
+    if not (0.0 <= default <= 1.0):
+        raise ValueError(f"default threshold must be in [0, 1], got {default}")
+    while True:
+        try:
+            raw = input(
+                f"Decision threshold for ego-go rule in [0, 1] "
+                f"(press Enter for {default:g}): "
+            ).strip()
+        except EOFError:
+            # Non-interactive fallback.
+            return default
+        if raw == "":
+            return default
+        try:
+            value = float(raw)
+        except ValueError:
+            print("Invalid threshold. Please enter a number in [0, 1].")
+            continue
+        if 0.0 <= value <= 1.0:
+            return value
+        print("Invalid threshold. Please enter a number in [0, 1].")
+
+
 # ---------------------------------------------------------------------------
 # Per-batch processing
 # ---------------------------------------------------------------------------
@@ -275,6 +300,15 @@ def main() -> None:
     parser.add_argument("--analysis-dir", default=str(EXPERIMENTS / "data" / "analysis" / "safety"))
     parser.add_argument("--figures-dir", default=str(EXPERIMENTS / "data" / "figures"))
     parser.add_argument("--figure-name", default="trajflow_safety_analysis.pdf")
+    parser.add_argument(
+        "--decision-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Override decision threshold used in analysis/plotting without "
+            "regenerating Monte Carlo rows."
+        ),
+    )
     parser.add_argument("--fixed-index-order-file", default="")
     args = parser.parse_args()
 
@@ -283,6 +317,14 @@ def main() -> None:
 
     analysis_dir = Path(args.analysis_dir)
     json_path = analysis_dir / "trajflow_safety.json"
+    if args.decision_threshold is not None:
+        decision_threshold = float(args.decision_threshold)
+        if not (0.0 <= decision_threshold <= 1.0):
+            raise ValueError(
+                f"--decision-threshold must be in [0, 1], got {decision_threshold}"
+            )
+    else:
+        decision_threshold = _ask_decision_threshold(default=float(cfg.decision_threshold))
 
     do_regenerate: bool
     if args.regenerate is not None:
@@ -401,15 +443,15 @@ def main() -> None:
 
     gt_goes = ~gt_stays
 
-    risk_k1 = float(np.mean((p_stay_k1 >= cfg.decision_threshold) & gt_goes))
-    risk_k2 = float(np.mean((p_stay_k2 >= cfg.decision_threshold) & gt_goes))
+    risk_k1 = float(np.mean((p_stay_k1 >= decision_threshold) & gt_goes))
+    risk_k2 = float(np.mean((p_stay_k2 >= decision_threshold) & gt_goes))
 
-    print(f"\n=== TrajFlow Safety Analysis (threshold = {cfg.decision_threshold}) ===")
+    print(f"\n=== TrajFlow Safety Analysis (threshold = {decision_threshold}) ===")
     print(f"N scenarios (2-cluster): {total_after}")
     print(f"GT go rate:              {float(np.mean(gt_goes)):.3f}")
-    print(f"Decision threshold:      {cfg.decision_threshold}")
+    print(f"Decision threshold:      {decision_threshold}")
     if p_stay_rsreg is not None:
-        risk_rsreg = float(np.mean((p_stay_rsreg >= cfg.decision_threshold) & gt_goes))
+        risk_rsreg = float(np.mean((p_stay_rsreg >= decision_threshold) & gt_goes))
         print(f"Risk rate  RSReg:        {risk_rsreg:.3f}")
         print(f"Mean P(stay)  RSReg:     {float(np.mean(p_stay_rsreg)):.3f}")
     print(f"Risk rate  k=1:          {risk_k1:.3f}")
@@ -422,7 +464,7 @@ def main() -> None:
         p_stay_k1=p_stay_k1,
         p_stay_k2=p_stay_k2,
         gt_stays=gt_stays,
-        threshold=cfg.decision_threshold,
+        threshold=decision_threshold,
         output_path=figure_path,
         p_stay_rsreg=p_stay_rsreg,
     )
