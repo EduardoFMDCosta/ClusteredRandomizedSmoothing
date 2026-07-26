@@ -90,8 +90,8 @@ def robustness_bound(
     N = num_samples
     s = torch.arange(1, N + 1, device=device, dtype=dtype)
     j = torch.arange(0, N + 1, device=device, dtype=dtype)
-    two_alpha_floor = 2 * torch.floor(alpha * s)
-    j_min = (s - two_alpha_floor).to(dtype=torch.long).clamp(min=0)
+    alpha_floor = torch.floor(alpha * s)
+    j_min = (s - alpha_floor).to(dtype=torch.long).clamp(min=0)
 
     s_row = s.view(1, 1, N, 1)
     j_row = j.view(1, 1, 1, N + 1)
@@ -199,7 +199,7 @@ def eval_f_m(p: float, p_R_m: float, N: int, alpha: float) -> float:
     log_per_s = np.full(N, -math.inf, dtype=np.float64)
     for idx, s_i in enumerate(s_arr):
         s_int = int(s_i)
-        j_min = max(s_int - 2 * math.floor(alpha * s_int), 0)
+        j_min = max(s_int - math.floor(alpha * s_int), 0)
         j_arr = np.arange(j_min, s_int + 1, dtype=np.int64)
         log_comb_sj = log_factorial[s_int] - log_factorial[j_arr] - log_factorial[s_int - j_arr]
         log_terms = (
