@@ -1278,11 +1278,7 @@ def plot_robustness_bounds_only(
 
 		ax.axhline(0.0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
 		ax.set_xlabel(r"Robustness radius $r$")
-		ax.set_ylabel(
-			r"$\bar{p}^{(1)} - \bar{p}^{(2)}$"
-			"\n"
-			r"($\alpha$-smoothing $-$ clustered $\alpha$-smoothing)"
-		)
+		ax.set_ylabel(r"Lower-bound difference \\ $\alpha$-smooth. -- clustered $\alpha$-smooth.")
 		ax.grid(True, linestyle=":", alpha=0.35)
 		ax.legend(loc="best", frameon=True)
 		fig.tight_layout()
