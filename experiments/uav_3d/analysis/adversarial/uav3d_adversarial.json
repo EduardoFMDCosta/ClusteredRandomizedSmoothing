@@ -1,0 +1,598 @@
+{
+  "config": {
+    "checkpoint": "experiments/uav_3d/policy.pt",
+    "num_states": 8,
+    "num_seed_rollouts": 20,
+    "state_horizon": 64,
+    "radius_values": [
+      0.0,
+      0.02,
+      0.05,
+      0.08,
+      0.12,
+      0.16
+    ],
+    "attack_num_candidates": 32,
+    "attack_screen_samples": 6,
+    "attack_obstacle_margin_weight": 0.0,
+    "distribution_samples": 300,
+    "sigma": 0.05,
+    "smoothing_N": 30,
+    "confidence_N": 4000,
+    "alpha": 0.4,
+    "coverage": 0.9,
+    "max_clusters": 3,
+    "dbscan_eps": 0.45,
+    "dbscan_min_samples": 50,
+    "noise_sub_batch_size": 300,
+    "sinkhorn_reg": 0.1,
+    "ot_method": "sinkhorn_log",
+    "branches": [
+      "raw",
+      "alpha",
+      "robust"
+    ],
+    "seed": 0,
+    "figure_path": "experiments/uav_3d/adversarial_figures/uav3d_adversarial_tradeoff.png"
+  },
+  "per_radius": [
+    {
+      "radius": 0.0,
+      "mean_w2_raw": 0.3989465602221549,
+      "std_w2_raw": 0.1587397416065979,
+      "mean_w2_alpha": 0.20771558269752372,
+      "std_w2_alpha": 0.09484841277986891,
+      "mean_w2_robust": 0.21462464139473847,
+      "std_w2_robust": 0.10830353153815192,
+      "mean_cert_prob_robust": 0.9924300834536552,
+      "std_cert_prob_robust": 0.020028116627141178,
+      "per_state": [
+        {
+          "state_index": 0,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.09440169432922876,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.09005876111540838,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.20144158773493256,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 1,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.2426285687575618,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.24498821260198433,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.4561856902412259,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 2,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.25836446483210956,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.23886658492847715,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.3088703954941906,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 3,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.20450546761634367,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.20901235196544296,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.3715806945293017,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 4,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.12430128601078559,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.12343726407018399,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.368695627875319,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 5,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.07475691249717235,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.07619596780301373,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.2111422147046076,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 6,
+          "cert_prob_robust": 0.9394406676292419,
+          "w2_alpha": 0.32390235797905315,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.4041767836962152,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.6136071602490218,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 7,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.3388639095579347,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.33026120497718187,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.6600491109486403,
+          "attack_norm_raw": 0.0
+        }
+      ]
+    },
+    {
+      "radius": 0.02,
+      "mean_w2_raw": 0.4298230331880618,
+      "std_w2_raw": 0.18486402154970186,
+      "mean_w2_alpha": 0.23860130589757886,
+      "std_w2_alpha": 0.11637188391784956,
+      "mean_w2_robust": 0.22100728434741262,
+      "std_w2_robust": 0.11162236670500884,
+      "mean_cert_prob_robust": 0.9666987732052803,
+      "std_cert_prob_robust": 0.08810676445218892,
+      "per_state": [
+        {
+          "state_index": 0,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.10480756445217067,
+          "attack_norm_alpha": 0.016930628567934036,
+          "w2_robust": 0.08946211458841677,
+          "attack_norm_robust": 0.019576948136091232,
+          "w2_raw": 0.20738392429268282,
+          "attack_norm_raw": 0.014419980347156525
+        },
+        {
+          "state_index": 1,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.2644677744531094,
+          "attack_norm_alpha": 0.01192718930542469,
+          "w2_robust": 0.28054525725128615,
+          "attack_norm_robust": 0.018574543297290802,
+          "w2_raw": 0.6491773060861623,
+          "attack_norm_raw": 0.017917079851031303
+        },
+        {
+          "state_index": 2,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.42840049874129893,
+          "attack_norm_alpha": 0.018658416345715523,
+          "w2_robust": 0.22882872367615004,
+          "attack_norm_robust": 0.01937972940504551,
+          "w2_raw": 0.3910574325540658,
+          "attack_norm_raw": 0.01991449110209942
+        },
+        {
+          "state_index": 3,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.25345393422193746,
+          "attack_norm_alpha": 0.016098367050290108,
+          "w2_robust": 0.22752721254118985,
+          "attack_norm_robust": 0.01913013681769371,
+          "w2_raw": 0.3698435307596789,
+          "attack_norm_raw": 0.019716469570994377
+        },
+        {
+          "state_index": 4,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.12336023772422328,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.12272099420092311,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.30928079379547824,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 5,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.08165746947269263,
+          "attack_norm_alpha": 0.019001668319106102,
+          "w2_robust": 0.07665857780278036,
+          "attack_norm_robust": 0.013440647162497044,
+          "w2_raw": 0.22037213128702943,
+          "attack_norm_raw": 0.014679263345897198
+        },
+        {
+          "state_index": 6,
+          "cert_prob_robust": 0.7335901856422424,
+          "w2_alpha": 0.3158407879539991,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.41076071960653626,
+          "attack_norm_robust": 0.014096623286604881,
+          "w2_raw": 0.54809701181305,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 7,
+          "cert_prob_robust": 1.0,
+          "w2_alpha": 0.33682218016119936,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.3315546751120186,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.743372134916347,
+          "attack_norm_raw": 0.0
+        }
+      ]
+    },
+    {
+      "radius": 0.05,
+      "mean_w2_raw": 0.5553542613599018,
+      "std_w2_raw": 0.2472436022233081,
+      "mean_w2_alpha": 0.4216859663810759,
+      "std_w2_alpha": 0.37865929775628626,
+      "mean_w2_robust": 0.44214203445342126,
+      "std_w2_robust": 0.30691884774616185,
+      "mean_cert_prob_robust": 0.92487907782197,
+      "std_cert_prob_robust": 0.1987463446148497,
+      "per_state": [
+        {
+          "state_index": 0,
+          "cert_prob_robust": 0.9999971389770508,
+          "w2_alpha": 0.13240404050048277,
+          "attack_norm_alpha": 0.0477362722158432,
+          "w2_robust": 0.15899641672701798,
+          "attack_norm_robust": 0.04998107999563217,
+          "w2_raw": 0.2836439925412126,
+          "attack_norm_raw": 0.046914421021938324
+        },
+        {
+          "state_index": 1,
+          "cert_prob_robust": 0.9999988675117493,
+          "w2_alpha": 1.260495232031881,
+          "attack_norm_alpha": 0.048491787165403366,
+          "w2_robust": 0.6498291503735952,
+          "attack_norm_robust": 0.049076613038778305,
+          "w2_raw": 0.6682908630252967,
+          "attack_norm_raw": 0.04810803756117821
+        },
+        {
+          "state_index": 2,
+          "cert_prob_robust": 0.9999979734420776,
+          "w2_alpha": 0.7908788535387467,
+          "attack_norm_alpha": 0.048827316612005234,
+          "w2_robust": 0.8744153080579907,
+          "attack_norm_robust": 0.04454829916357994,
+          "w2_raw": 1.0438829202547468,
+          "attack_norm_raw": 0.04586619511246681
+        },
+        {
+          "state_index": 3,
+          "cert_prob_robust": 0.9999982714653015,
+          "w2_alpha": 0.3177020952529282,
+          "attack_norm_alpha": 0.04477231204509735,
+          "w2_robust": 0.4000318084825066,
+          "attack_norm_robust": 0.04612860828638077,
+          "w2_raw": 0.4445794052284157,
+          "attack_norm_raw": 0.043455466628074646
+        },
+        {
+          "state_index": 4,
+          "cert_prob_robust": 0.9999975562095642,
+          "w2_alpha": 0.11994301409108152,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.11999003755505039,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.36638973074378406,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 5,
+          "cert_prob_robust": 0.9999971985816956,
+          "w2_alpha": 0.10092767085201178,
+          "attack_norm_alpha": 0.041688304394483566,
+          "w2_robust": 0.10205327710000654,
+          "attack_norm_robust": 0.04310671240091324,
+          "w2_raw": 0.26977064281163093,
+          "attack_norm_raw": 0.04899924248456955
+        },
+        {
+          "state_index": 6,
+          "cert_prob_robust": 0.3990456759929657,
+          "w2_alpha": 0.31438811106948383,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.9003583937022834,
+          "attack_norm_robust": 0.04707219824194908,
+          "w2_raw": 0.6548573254113159,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 7,
+          "cert_prob_robust": 0.9999999403953552,
+          "w2_alpha": 0.3367487137119919,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.3314618836289188,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.7114192108628112,
+          "attack_norm_raw": 0.0
+        }
+      ]
+    },
+    {
+      "radius": 0.08,
+      "mean_w2_raw": 0.8394456193911957,
+      "std_w2_raw": 0.5490266472847295,
+      "mean_w2_alpha": 0.6534251501605699,
+      "std_w2_alpha": 0.5242207336420316,
+      "mean_w2_robust": 0.6659160991939126,
+      "std_w2_robust": 0.4369997829106932,
+      "mean_cert_prob_robust": 0.8603309616446495,
+      "std_cert_prob_robust": 0.32522958168180693,
+      "per_state": [
+        {
+          "state_index": 0,
+          "cert_prob_robust": 0.9778364896774292,
+          "w2_alpha": 0.1992025339845182,
+          "attack_norm_alpha": 0.07716362178325653,
+          "w2_robust": 0.17606662232305031,
+          "attack_norm_robust": 0.07546994090080261,
+          "w2_raw": 0.3028809258779798,
+          "attack_norm_raw": 0.06394718587398529
+        },
+        {
+          "state_index": 1,
+          "cert_prob_robust": 0.9857810735702515,
+          "w2_alpha": 1.5716686269690927,
+          "attack_norm_alpha": 0.05736031383275986,
+          "w2_robust": 1.290902296166408,
+          "attack_norm_robust": 0.07388156652450562,
+          "w2_raw": 1.7795428608055546,
+          "attack_norm_raw": 0.07475714385509491
+        },
+        {
+          "state_index": 2,
+          "cert_prob_robust": 0.981210470199585,
+          "w2_alpha": 1.232940635128972,
+          "attack_norm_alpha": 0.07866284996271133,
+          "w2_robust": 1.1163515750537158,
+          "attack_norm_robust": 0.061971262097358704,
+          "w2_raw": 1.6202761965474604,
+          "attack_norm_raw": 0.07448795437812805
+        },
+        {
+          "state_index": 3,
+          "cert_prob_robust": 0.9825024008750916,
+          "w2_alpha": 0.6075299773578138,
+          "attack_norm_alpha": 0.07533460855484009,
+          "w2_robust": 0.731493400799449,
+          "attack_norm_robust": 0.07355815172195435,
+          "w2_raw": 1.0437233956106982,
+          "attack_norm_raw": 0.07716098427772522
+        },
+        {
+          "state_index": 4,
+          "cert_prob_robust": 0.979572594165802,
+          "w2_alpha": 0.12024376267626427,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.12275912740348366,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.32931093583157617,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 5,
+          "cert_prob_robust": 0.9781327843666077,
+          "w2_alpha": 0.1334832827749421,
+          "attack_norm_alpha": 0.07351846247911453,
+          "w2_robust": 0.15036681023982318,
+          "attack_norm_robust": 0.07240281999111176,
+          "w2_raw": 0.33678876497181887,
+          "attack_norm_raw": 0.07666973769664764
+        },
+        {
+          "state_index": 6,
+          "cert_prob_robust": 0.0,
+          "w2_alpha": 0.3241899170872,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 1.021575852854342,
+          "attack_norm_robust": 0.0664542093873024,
+          "w2_raw": 0.6025357302836744,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 7,
+          "cert_prob_robust": 0.9976118803024292,
+          "w2_alpha": 1.0381424653057567,
+          "attack_norm_alpha": 0.07453158497810364,
+          "w2_robust": 0.7178131087110283,
+          "attack_norm_robust": 0.07356137037277222,
+          "w2_raw": 0.7005061452008039,
+          "attack_norm_raw": 0.0
+        }
+      ]
+    },
+    {
+      "radius": 0.12,
+      "mean_w2_raw": 1.2046621315180637,
+      "std_w2_raw": 0.8919292726004834,
+      "mean_w2_alpha": 1.3536384159502728,
+      "std_w2_alpha": 1.1415540655132954,
+      "mean_w2_robust": 1.0393316552653762,
+      "std_w2_robust": 0.7696097441450481,
+      "mean_cert_prob_robust": 0.15919151902198792,
+      "std_cert_prob_robust": 0.09161467080830023,
+      "per_state": [
+        {
+          "state_index": 0,
+          "cert_prob_robust": 0.13870741426944733,
+          "w2_alpha": 0.2319065016017347,
+          "attack_norm_alpha": 0.1083010733127594,
+          "w2_robust": 0.24061839374671837,
+          "attack_norm_robust": 0.11471577733755112,
+          "w2_raw": 0.4024005643622648,
+          "attack_norm_raw": 0.10939794778823853
+        },
+        {
+          "state_index": 1,
+          "cert_prob_robust": 0.17753653228282928,
+          "w2_alpha": 3.0847428301828326,
+          "attack_norm_alpha": 0.11721190810203552,
+          "w2_robust": 2.3766432737035807,
+          "attack_norm_robust": 0.11832231283187866,
+          "w2_raw": 2.920366499152845,
+          "attack_norm_raw": 0.10730041563510895
+        },
+        {
+          "state_index": 2,
+          "cert_prob_robust": 0.15270258486270905,
+          "w2_alpha": 1.8634311315200172,
+          "attack_norm_alpha": 0.11762388050556183,
+          "w2_robust": 1.6975669330663352,
+          "attack_norm_robust": 0.11007477343082428,
+          "w2_raw": 2.051666831119964,
+          "attack_norm_raw": 0.11815288662910461
+        },
+        {
+          "state_index": 3,
+          "cert_prob_robust": 0.15890929102897644,
+          "w2_alpha": 1.600411693200462,
+          "attack_norm_alpha": 0.10120030492544174,
+          "w2_robust": 1.5576727557102383,
+          "attack_norm_robust": 0.11913155764341354,
+          "w2_raw": 1.3480344347340545,
+          "attack_norm_raw": 0.10501229763031006
+        },
+        {
+          "state_index": 4,
+          "cert_prob_robust": 0.14554955065250397,
+          "w2_alpha": 0.12027658594740569,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 0.12582291617486951,
+          "attack_norm_robust": 0.0,
+          "w2_raw": 0.3438209941509297,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 5,
+          "cert_prob_robust": 0.13982677459716797,
+          "w2_alpha": 0.1362231745747357,
+          "attack_norm_alpha": 0.11408014595508575,
+          "w2_robust": 0.16298559878255053,
+          "attack_norm_robust": 0.10702242702245712,
+          "w2_raw": 0.3725848434648359,
+          "attack_norm_raw": 0.11128195375204086
+        },
+        {
+          "state_index": 6,
+          "cert_prob_robust": 0.0,
+          "w2_alpha": 2.9585209252465523,
+          "attack_norm_alpha": 0.11146213859319687,
+          "w2_robust": 1.0275409051103095,
+          "attack_norm_robust": 0.08655218034982681,
+          "w2_raw": 0.5591072081181384,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 7,
+          "cert_prob_robust": 0.3603000044822693,
+          "w2_alpha": 0.8335944853284427,
+          "attack_norm_alpha": 0.10054346919059753,
+          "w2_robust": 1.125802465828407,
+          "attack_norm_robust": 0.11656346172094345,
+          "w2_raw": 1.6393156770414774,
+          "attack_norm_raw": 0.10843238979578018
+        }
+      ]
+    },
+    {
+      "radius": 0.16,
+      "mean_w2_raw": 1.8330704351003657,
+      "std_w2_raw": 1.19022819694612,
+      "mean_w2_alpha": 1.245887799696472,
+      "std_w2_alpha": 1.1762291387112018,
+      "mean_w2_robust": 2.045754037745163,
+      "std_w2_robust": 1.3670800866542552,
+      "mean_cert_prob_robust": 0.00015361528767243726,
+      "std_cert_prob_robust": 0.0002204254164393557,
+      "per_state": [
+        {
+          "state_index": 0,
+          "cert_prob_robust": 6.647170812357217e-05,
+          "w2_alpha": 0.2329344275193572,
+          "attack_norm_alpha": 0.15529747307300568,
+          "w2_robust": 0.21530116146319198,
+          "attack_norm_robust": 0.139576256275177,
+          "w2_raw": 0.3980622093332441,
+          "attack_norm_raw": 0.15074008703231812
+        },
+        {
+          "state_index": 1,
+          "cert_prob_robust": 0.00011683782213367522,
+          "w2_alpha": 3.5106379824106604,
+          "attack_norm_alpha": 0.147598996758461,
+          "w2_robust": 4.011083127117726,
+          "attack_norm_robust": 0.15607978403568268,
+          "w2_raw": 3.3812368950582963,
+          "attack_norm_raw": 0.141593337059021
+        },
+        {
+          "state_index": 2,
+          "cert_prob_robust": 8.252092084148899e-05,
+          "w2_alpha": 1.779946838220354,
+          "attack_norm_alpha": 0.14758044481277466,
+          "w2_robust": 1.8371553592272043,
+          "attack_norm_robust": 0.15383847057819366,
+          "w2_raw": 2.416609661067244,
+          "attack_norm_raw": 0.159796804189682
+        },
+        {
+          "state_index": 3,
+          "cert_prob_robust": 9.037042036652565e-05,
+          "w2_alpha": 1.5118451115909524,
+          "attack_norm_alpha": 0.1518557369709015,
+          "w2_robust": 2.75373988506164,
+          "attack_norm_robust": 0.14464034140110016,
+          "w2_raw": 2.1410940328781596,
+          "attack_norm_raw": 0.14089347422122955
+        },
+        {
+          "state_index": 4,
+          "cert_prob_robust": 7.40394534659572e-05,
+          "w2_alpha": 0.12184764938697736,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 2.031632341476355,
+          "attack_norm_robust": 0.1401626318693161,
+          "w2_raw": 0.30030463475992847,
+          "attack_norm_raw": 0.0
+        },
+        {
+          "state_index": 5,
+          "cert_prob_robust": 6.767414015484974e-05,
+          "w2_alpha": 0.1460871677767256,
+          "attack_norm_alpha": 0.12603259086608887,
+          "w2_robust": 0.19246321624308801,
+          "attack_norm_robust": 0.14889909327030182,
+          "w2_raw": 0.44268137775854366,
+          "attack_norm_raw": 0.1538977026939392
+        },
+        {
+          "state_index": 6,
+          "cert_prob_robust": 0.0,
+          "w2_alpha": 0.3147548213646402,
+          "attack_norm_alpha": 0.0,
+          "w2_robust": 3.8867091611257636,
+          "attack_norm_robust": 0.15354856848716736,
+          "w2_raw": 3.1916204504189585,
+          "attack_norm_raw": 0.15385831892490387
+        },
+        {
+          "state_index": 7,
+          "cert_prob_robust": 0.0007310078362934291,
+          "w2_alpha": 2.3490483993021076,
+          "attack_norm_alpha": 0.1526874601840973,
+          "w2_robust": 1.437948050246339,
+          "attack_norm_robust": 0.13615013659000397,
+          "w2_raw": 2.3929542195285523,
+          "attack_norm_raw": 0.15612585842609406
+        }
+      ]
+    }
+  ]
+}

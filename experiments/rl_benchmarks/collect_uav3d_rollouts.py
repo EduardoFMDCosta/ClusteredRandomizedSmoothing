@@ -69,6 +69,32 @@ def _load_uav3d_policy(checkpoint_path: Path) -> tuple[VariationalPolicy, float]
     return policy, action_scale
 
 
+def _robustified_action_from_x(
+    stochastic_fn: UAV3DPolicyStochasticFunction,
+    x: torch.Tensor,
+    parameters: Parameters,
+    sigma: float,
+) -> np.ndarray:
+    """Build a smoother at an already-normalized state tensor ``x`` (shape
+    ``(1, state_dim)``) and return one action from the robustified
+    ``MixtureDirac``.
+
+    Split out of ``_robustified_action`` so callers that need to perturb the
+    normalized state directly (e.g. an adversarial attack module) can reuse
+    the exact same smoothing/sampling path without re-deriving normalization
+    or duplicating the ``GaussianAlphaTrimmingSmoothing`` construction.
+    """
+    smoother = GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=x,
+        sigma=sigma,
+        parameters=parameters,
+    )
+    distribution = smoother.smooth()
+    action_t = distribution.sample(size=())
+    return action_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+
+
 def _robustified_action(
     stochastic_fn: UAV3DPolicyStochasticFunction,
     state: np.ndarray,
@@ -85,15 +111,7 @@ def _robustified_action(
     rather than the CPU.
     """
     x = torch.tensor(normalize_state(state), dtype=torch.float32, device=device).unsqueeze(0)
-    smoother = GaussianAlphaTrimmingSmoothing(
-        stochastic_function=stochastic_fn,
-        x=x,
-        sigma=sigma,
-        parameters=parameters,
-    )
-    distribution = smoother.smooth()
-    action_t = distribution.sample(size=())
-    return action_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    return _robustified_action_from_x(stochastic_fn, x, parameters, sigma)
 
 
 def _rollout(
