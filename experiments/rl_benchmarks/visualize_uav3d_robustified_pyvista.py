@@ -30,7 +30,7 @@ def _add_legend_text(
     plotter,
     entries: list[list[str]],
     *,
-    x_ndc: float = 0.70,
+    x_ndc: float = 0.78,
     margin_ndc: float = 0.04,
     font_size: int = 24,
     window_height: int = 1200,
@@ -57,9 +57,9 @@ def _add_legend_text(
     text_height_ndc = 1.83 * font_size / float(window_height)
     y_top_ndc = 1.0 - margin_ndc - text_height_ndc
     if line_dy_ndc is None:
-        # Default line height = 1.9 × font height keeps the gap proportional
+        # Default line height = 2.3 × font height keeps the gap proportional
         # to the font size when the caller scales font_size.
-        line_dy_ndc = 1.9 * font_size / float(window_height)
+        line_dy_ndc = 2.3 * font_size / float(window_height)
     for i, (text, color) in enumerate(entries):
         plotter.add_text(
             text,

@@ -74,11 +74,17 @@ def _robustified_action(
     state: np.ndarray,
     parameters: Parameters,
     sigma: float,
+    device: torch.device,
 ) -> np.ndarray:
     """Build a smoother at ``state`` and return one action from the
     robustified ``MixtureDirac``.
+
+    ``x`` is created directly on ``device`` so the ``confidence.num_samples``
+    / ``smoothing.N`` additive-noise samples that ``smooth()`` evaluates the
+    policy on are batched through the network on the GPU (when available)
+    rather than the CPU.
     """
-    x = torch.tensor(normalize_state(state), dtype=torch.float32).unsqueeze(0)
+    x = torch.tensor(normalize_state(state), dtype=torch.float32, device=device).unsqueeze(0)
     smoother = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=x,
@@ -141,9 +147,9 @@ def _kinematic_magnitudes(state_trace: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return np.linalg.norm(accel, axis=1), np.linalg.norm(jerk, axis=1)
 
 
-def _raw_policy_action_fn(policy: VariationalPolicy):
+def _raw_policy_action_fn(policy: VariationalPolicy, device: torch.device):
     def f(state: np.ndarray) -> np.ndarray:
-        state_t = torch.tensor(normalize_state(state), dtype=torch.float32).unsqueeze(0)
+        state_t = torch.tensor(normalize_state(state), dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             action_t, _, _ = policy.sample(state_t)
         return action_t.squeeze(0).cpu().numpy().astype(np.float32)
@@ -154,6 +160,7 @@ def _robustified_action_fn(
     stochastic_fn: UAV3DPolicyStochasticFunction,
     parameters: Parameters,
     sigma: float,
+    device: torch.device,
 ):
 
     def action(state: np.ndarray) -> np.ndarray:
@@ -162,6 +169,7 @@ def _robustified_action_fn(
             state=state,
             parameters=parameters,
             sigma=sigma,
+            device=device,
         )
         return a
 
@@ -210,6 +218,7 @@ def _run_all_policies(
     stochastic_fn: UAV3DPolicyStochasticFunction,
     parameters_robust: Parameters,
     parameters_alpha: Parameters,
+    device: torch.device,
     keep_traces: bool,
 ) -> dict[str, _PolicyResult]:
     """Roll out raw / alpha / robust policies once under whatever seed the
@@ -223,7 +232,7 @@ def _run_all_policies(
         results["raw"] = _collect_trajectories(
             env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
             num_trajectories=args.num_trajectories,
-            action_fn=_raw_policy_action_fn(policy), label="raw",
+            action_fn=_raw_policy_action_fn(policy, device=device), label="raw",
             keep_traces=keep_traces,
         )
     if not args.no_alpha:
@@ -233,7 +242,7 @@ def _run_all_policies(
             env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
             num_trajectories=args.num_trajectories,
             action_fn=_robustified_action_fn(
-                stochastic_fn=stochastic_fn, parameters=parameters_alpha, sigma=args.sigma,
+                stochastic_fn=stochastic_fn, parameters=parameters_alpha, sigma=args.sigma, device=device,
             ),
             label="alpha", keep_traces=keep_traces,
         )
@@ -243,7 +252,7 @@ def _run_all_policies(
         env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
         num_trajectories=args.num_trajectories,
         action_fn=_robustified_action_fn(
-            stochastic_fn=stochastic_fn, parameters=parameters_robust, sigma=args.sigma,
+            stochastic_fn=stochastic_fn, parameters=parameters_robust, sigma=args.sigma, device=device,
         ),
         label="robust", keep_traces=keep_traces,
     )
@@ -284,11 +293,17 @@ def main() -> None:
                         default="experiments/uav_3d/bimodal_rollouts.pkl",
                         help="Where to write the rollout bundle consumed by "
                              "visualize_uav3d_robustified_pyvista.py.")
+    parser.add_argument("--device", type=str, default=None,
+                        help="torch device for the policy / smoothing forward passes "
+                             "(e.g. 'cuda', 'cpu'). Defaults to cuda if available.")
     args = parser.parse_args()
+
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
     checkpoint_path = Path(args.checkpoint)
     policy, action_scale = _load_uav3d_policy(checkpoint_path)
-    print(f"Loaded VI-BNN policy from {checkpoint_path} (action_scale={action_scale}).")
+    policy.to(device)
+    print(f"Loaded VI-BNN policy from {checkpoint_path} (action_scale={action_scale}) onto {device}.")
 
     stochastic_fn = UAV3DPolicyStochasticFunction(policy=policy)
 
@@ -332,7 +347,7 @@ def main() -> None:
         seed_results = _run_all_policies(
             env=env, args=args, policy=policy, stochastic_fn=stochastic_fn,
             parameters_robust=parameters_robust, parameters_alpha=parameters_alpha,
-            keep_traces=is_primary,
+            device=device, keep_traces=is_primary,
         )
         for name, result in seed_results.items():
             per_seed_results[name].append(result)
