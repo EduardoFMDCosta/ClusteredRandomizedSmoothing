@@ -8,7 +8,7 @@ the UAV3D controller, with the task-directed attack objective from
 branches instead of two: the raw policy, single-cluster alpha-smoothing, and
 clustered robust smoothing.
 
-For each representative state and each swept radius, the task-directed search
+For each collected state and each swept radius, the task-directed search
 finds the worst-case ``delta`` independently per branch (against its own
 smoother/policy), and the reported quantity is the Wasserstein-2 distance
 between the clean and attacked *action* distributions — for the smoothed
@@ -59,6 +59,13 @@ _BRANCH_STYLE = {
 }
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = int(max(0.0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m{s:02d}s"
+
+
 def _parse_radius_values(text: str) -> list[float]:
     values = [item.strip() for item in text.split(",") if item.strip()]
     if not values:
@@ -75,22 +82,20 @@ def _save_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, f, indent=2)
 
 
-def _sample_representative_states(
+def _collect_states(
     env: UAV3D,
     policy: VariationalPolicy,
-    num_states: int,
     num_seed_rollouts: int,
     horizon: int,
     seed: int,
     device: torch.device,
 ) -> np.ndarray:
-    """Pool states visited across a few clean, deterministic rollouts from
-    ``BIMODAL_START_STATE``, then subsample ``num_states`` of them with a
-    fixed RNG. Gives a handful of "typical, in-flight" states to attack,
-    without needing a persistent dataset-index cache like the TrajFlow
-    precedent (UAV3D states are cheap to regenerate on demand).
+    """Pool every state visited across ``num_seed_rollouts`` clean,
+    deterministic rollouts from ``BIMODAL_START_STATE`` — every step of every
+    rollout becomes an attack target, no subsampling. UAV3D states are cheap
+    to regenerate on demand, so unlike the TrajFlow precedent this doesn't
+    need a persistent dataset-index cache.
     """
-    rng = np.random.default_rng(seed)
     visited: list[np.ndarray] = []
     for i in range(num_seed_rollouts):
         np.random.seed(seed + 1000 + i)
@@ -115,10 +120,7 @@ def _sample_representative_states(
 
     if not visited:
         raise ValueError("No visited states collected — check --state-horizon/--num-seed-rollouts.")
-    visited_arr = np.stack(visited, axis=0)
-    num_states = min(num_states, visited_arr.shape[0])
-    idx = rng.choice(visited_arr.shape[0], size=num_states, replace=False)
-    return visited_arr[idx]
+    return np.stack(visited, axis=0)
 
 
 def _plot_radius_tradeoff(
@@ -154,12 +156,13 @@ def _plot_radius_tradeoff(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
-    parser.add_argument("--num-states", type=int, default=8,
-                        help="Number of representative in-flight states to attack.")
     parser.add_argument("--num-seed-rollouts", type=int, default=20,
-                        help="Clean deterministic rollouts used to pool candidate states.")
+                        help="Clean deterministic rollouts to collect states from. Every "
+                             "visited state across all of them is attacked (no subsampling), "
+                             "so this directly controls how many states get attacked.")
     parser.add_argument("--state-horizon", type=int, default=64,
-                        help="Max steps per seed rollout used only to sample states.")
+                        help="Max steps per seed rollout (safety cap; many rollouts "
+                             "terminate earlier at goal/collision).")
     parser.add_argument("--radius-values", type=str, default="0.0,0.02,0.05,0.08,0.12,0.16")
     parser.add_argument("--attack-num-candidates", type=int, default=32)
     parser.add_argument("--attack-screen-samples", type=int, default=6)
@@ -204,12 +207,13 @@ def main() -> None:
     stochastic_fn = UAV3DPolicyStochasticFunction(policy=policy)
     env = UAV3D(gaussian_noise=True, noise_std=0.05, max_steps=None)
 
-    print(f"Sampling {args.num_states} representative states from {args.num_seed_rollouts} seed rollouts...")
-    states = _sample_representative_states(
-        env=env, policy=policy, num_states=args.num_states,
+    print(f"Collecting states from {args.num_seed_rollouts} seed rollouts (horizon {args.state_horizon})...")
+    states = _collect_states(
+        env=env, policy=policy,
         num_seed_rollouts=args.num_seed_rollouts, horizon=args.state_horizon,
         seed=args.seed, device=device,
     )
+    print(f"Collected {states.shape[0]} states — every one will be attacked.")
 
     def _make_parameters(max_clusters: int) -> Parameters:
         return Parameters(
@@ -255,8 +259,12 @@ def main() -> None:
         clean_samples["raw"].append(raw_actions.detach().cpu().numpy())
     print(f"smoothers built in {time.perf_counter() - t_build:.1f}s")
 
+    total_iterations = len(radii) * len(states)
+    sweep_start = time.perf_counter()
+    done = 0
+
     per_radius_rows: list[dict[str, Any]] = []
-    for radius in radii:
+    for radius_idx, radius in enumerate(radii):
         t0 = time.perf_counter()
         per_state_rows: list[dict[str, Any]] = []
 
@@ -305,6 +313,17 @@ def main() -> None:
 
             per_state_rows.append(state_row)
 
+            done += 1
+            elapsed_total = time.perf_counter() - sweep_start
+            eta = (elapsed_total / done) * (total_iterations - done)
+            print(
+                f"\r  [{done}/{total_iterations}] radius {radius_idx + 1}/{len(radii)} "
+                f"(r={radius:.4f}) state {i + 1}/{len(states)} | "
+                f"elapsed {_format_duration(elapsed_total)} | ETA {_format_duration(eta)}   ",
+                end="", flush=True,
+            )
+
+        print()  # move past the in-place progress line before the radius summary
         row: dict[str, Any] = {"radius": float(radius)}
         for branch in all_branches:
             arr = np.array([r[f"w2_{branch}"] for r in per_state_rows], dtype=float)
@@ -328,7 +347,7 @@ def main() -> None:
     summary = {
         "config": {
             "checkpoint": str(checkpoint_path),
-            "num_states": int(args.num_states),
+            "num_states_collected": int(states.shape[0]),
             "num_seed_rollouts": int(args.num_seed_rollouts),
             "state_horizon": int(args.state_horizon),
             "radius_values": [float(r) for r in radii],

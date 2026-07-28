@@ -161,22 +161,23 @@ def _find_best_delta_for_smoother(
     Exploits ``AlphaTrimmingSmoothing.monte_carlo(z=...)`` reusing the
     smoother's cluster (built once, around the clean anchor) — cost per
     candidate is only ``screen_samples`` policy calls, not a full
-    re-clustering.
+    re-clustering. All ``num_candidates`` deltas are scored in a single
+    batched ``monte_carlo`` call (one query point per candidate along its
+    batch dimension) rather than one call per candidate.
     """
     x = smoother.x
     dim = x.shape[-1]
     deltas = _random_ball_points(num_candidates, dim, radius, x.device, x.dtype)
-    best_idx, best_cost = 0, float("-inf")
-    for c in range(deltas.shape[0]):
-        draws = smoother.monte_carlo(num_simulations=screen_samples, z=x + deltas[c : c + 1])[0]
-        draws_np = draws.detach().cpu().numpy()
-        cost = float(np.mean([
-            _analytic_one_step_task_cost(env, true_state, draws_np[k], obstacle_margin_weight)
-            for k in range(draws_np.shape[0])
-        ]))
-        if cost > best_cost:
-            best_cost, best_idx = cost, c
-    return deltas[best_idx]
+    draws = smoother.monte_carlo(num_simulations=screen_samples, z=x + deltas)
+    draws_np = draws.detach().cpu().numpy()  # (num_candidates, screen_samples, action_dim)
+    costs = np.array([
+        np.mean([
+            _analytic_one_step_task_cost(env, true_state, draws_np[c, k], obstacle_margin_weight)
+            for k in range(draws_np.shape[1])
+        ])
+        for c in range(draws_np.shape[0])
+    ])
+    return deltas[int(np.argmax(costs))]
 
 
 def _compute_sinkhorn_wasserstein_2_distance(

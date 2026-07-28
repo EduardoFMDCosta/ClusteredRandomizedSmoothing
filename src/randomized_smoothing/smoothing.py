@@ -179,7 +179,14 @@ class AlphaTrimmingSmoothing(Smoothing):
                 centroids[:, j, :].unsqueeze(1),
             )
 
-        sampled_cluster = torch.multinomial(probs_partition, num_samples=num_simulations, replacement=True)
+        # ``probs_partition`` is fixed at construction (batch size = however
+        # many anchors ``self.x`` had, typically 1) and doesn't vary with the
+        # query batch size ``nx`` of ``z`` — expand it so each of the ``nx``
+        # query points gets its own independently-sampled cluster choice per
+        # simulation, instead of ``multinomial``/``gather`` silently
+        # collapsing the result back down to the anchor's original batch size.
+        probs_partition_query = probs_partition.expand(nx, -1)
+        sampled_cluster = torch.multinomial(probs_partition_query, num_samples=num_simulations, replacement=True)
         gather_idx = sampled_cluster.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 1, output_dim)
 
         return trimmed_mean.gather(dim=2, index=gather_idx).squeeze(2)

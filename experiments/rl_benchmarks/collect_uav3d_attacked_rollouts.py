@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Roll out UAV3D trajectories under a task-directed adversarial attack on the
-policy's **state** input, for the raw and the robustified (state-space
-smoothed) controller side by side.
+policy's **state** input, for the raw, alpha-smoothing, and robustified
+(state-space smoothed) controllers side by side.
 
 At every environment step, before the policy sees the (normalized) state, an
 attacker searches a small L2 ball ``||delta|| <= --attack-radius`` around it
@@ -10,10 +10,15 @@ steers toward an obstacle — see ``uav3d_attacks.py``), then the resulting
 ``state + delta`` is fed to the policy:
 
   * raw branch: ``policy.sample(state + delta)`` — no defense.
+  * alpha branch: the same state-space ``GaussianAlphaTrimmingSmoothing``
+    defense as the robust branch, but with ``max_clusters=1`` (pure
+    alpha-trimming, no cluster splitting) — the baseline compared against
+    ``collect_uav3d_rollouts.py``'s clean-run alpha branch.
   * robust branch: the existing state-space ``GaussianAlphaTrimmingSmoothing``
-    defense from ``collect_uav3d_rollouts.py``, but centered on the attacked
-    observation ``state + delta`` (a deployed system only ever sees the
-    attacked reading, never the clean one).
+    defense from ``collect_uav3d_rollouts.py`` (``--max-clusters``, default
+    3), but centered on the attacked observation ``state + delta`` (a
+    deployed system only ever sees the attacked reading, never the clean
+    one) — same centering applies to the alpha branch.
 
 This is the companion, attacked-input counterpart to ``collect_uav3d_rollouts.py``
 — it writes a ``RolloutBundle`` (see ``rollout_io.py``) with the same schema,
@@ -146,6 +151,9 @@ def main() -> None:
                              "(1.0 = every step).")
     parser.add_argument("--no-raw", action="store_true",
                         help="Skip rolling out the attacked raw policy.")
+    parser.add_argument("--no-alpha", action="store_true",
+                        help="Skip rolling out the attacked alpha-smoothing "
+                             "baseline (``max_clusters=1``).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-seeds", type=int, default=1)
     parser.add_argument("--out", type=str,
@@ -164,22 +172,27 @@ def main() -> None:
 
     stochastic_fn = UAV3DPolicyStochasticFunction(policy=policy)
 
-    parameters = Parameters(
-        smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
-        clustering=ClusteringParameters(
-            max_num_clusters=args.max_clusters,
-            coverage=args.coverage,
-            dbscan_eps=args.dbscan_eps,
-            dbscan_min_samples=args.dbscan_min_samples,
-        ),
-        confidence=ConfidenceParameters(num_samples=args.confidence_N, beta=1e-2),
-    )
+    def _make_parameters(max_clusters: int) -> Parameters:
+        return Parameters(
+            smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
+            clustering=ClusteringParameters(
+                max_num_clusters=max_clusters,
+                coverage=args.coverage,
+                dbscan_eps=args.dbscan_eps,
+                dbscan_min_samples=args.dbscan_min_samples,
+            ),
+            confidence=ConfidenceParameters(num_samples=args.confidence_N, beta=1e-2),
+        )
+
+    parameters_robust = _make_parameters(args.max_clusters)
+    parameters_alpha = _make_parameters(1)
 
     # max_steps=None: rollouts run to natural termination (goal / collision
     # / corridor exit). args.horizon is a safety cap inside _rollout.
     env = UAV3D(gaussian_noise=True, noise_std=args.noise_std, max_steps=None)
 
-    policy_names = (["raw"] if not args.no_raw else []) + ["robust"]
+    policy_names = (["raw"] if not args.no_raw else []) + \
+                   (["alpha"] if not args.no_alpha else []) + ["robust"]
     num_seeds = max(1, args.num_seeds)
     seeds = [args.seed + i for i in range(num_seeds)]
 
@@ -210,6 +223,27 @@ def main() -> None:
             if is_primary:
                 primary["raw"] = result
 
+        if not args.no_alpha:
+            print(f"Rolling out attacked alpha-smoothing (max_clusters=1) "
+                  f"trajectories — this calls the policy ~{2 * args.smoothing_N} "
+                  f"times per env step, plus the attack search...")
+            result = _collect_trajectories(
+                env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
+                num_trajectories=args.num_trajectories,
+                action_fn=_attacked_robust_action_fn(
+                    stochastic_fn=stochastic_fn, env=env, parameters=parameters_alpha,
+                    sigma=args.sigma, radius=args.attack_radius,
+                    num_candidates=args.attack_num_candidates,
+                    screen_samples=args.attack_screen_samples, device=device,
+                    obstacle_margin_weight=args.attack_obstacle_margin_weight,
+                    attack_prob=args.attack_prob,
+                ),
+                label="attacked-alpha", keep_traces=is_primary,
+            )
+            per_seed_results["alpha"].append(result)
+            if is_primary:
+                primary["alpha"] = result
+
         print(f"Rolling out attacked robustified trajectories "
               f"— this calls the policy ~{2 * args.smoothing_N} times per env "
               f"step, plus the attack search...")
@@ -217,7 +251,7 @@ def main() -> None:
             env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
             num_trajectories=args.num_trajectories,
             action_fn=_attacked_robust_action_fn(
-                stochastic_fn=stochastic_fn, env=env, parameters=parameters,
+                stochastic_fn=stochastic_fn, env=env, parameters=parameters_robust,
                 sigma=args.sigma, radius=args.attack_radius,
                 num_candidates=args.attack_num_candidates,
                 screen_samples=args.attack_screen_samples, device=device,
@@ -231,7 +265,7 @@ def main() -> None:
             primary["robust"] = result
 
     print("")
-    label_map = {"raw": "Raw   ", "robust": "Robust"}
+    label_map = {"raw": "Raw   ", "alpha": "Alpha ", "robust": "Robust"}
     policies: dict[str, PolicyRolloutData] = {}
     for name in policy_names:
         label = label_map[name]
