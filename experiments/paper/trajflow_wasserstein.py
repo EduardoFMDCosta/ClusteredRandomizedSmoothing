@@ -37,7 +37,7 @@ from randomized_smoothing.dataclasses import (
     SmoothingParameters,
 )
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-from plotting import plot_trajflow_wasserstein_histograms, plot_wasserstein_per_timestep
+from plotting import plot_trajflow_wasserstein_histograms, plot_wasserstein_per_timestep, plot_wasserstein_trajectory_barchart
 from stochastic_functions import (
     TrajFlowMeszarosStochasticFunction,
     TrajFlowMeszarosFullTrajectoryStochasticFunction,
@@ -310,6 +310,18 @@ def _compute_batch_wasserstein_rows(
             row["w2_noisy_vs_rsreg"] = w2_per_t_rsreg[-1]
             row["w2_noisy_vs_k1"] = w2_per_t_k1[-1]
             row["w2_noisy_vs_k2"] = w2_per_t_k2[-1]
+            # Full-trajectory W2: treat each complete trajectory (R^{output_dim})
+            # as a single sample.  This captures joint-distribution discrepancy
+            # across all timesteps, unlike the per-step 2-D quantities above.
+            row["w2_traj_noisy_vs_rsreg"] = float(_compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i], rsreg_np[i], reg=cfg.sinkhorn_reg, ot_method=cfg.ot_method,
+            ))
+            row["w2_traj_noisy_vs_k1"] = float(_compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i], k1_np[i], reg=cfg.sinkhorn_reg, ot_method=cfg.ot_method,
+            ))
+            row["w2_traj_noisy_vs_k2"] = float(_compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i], k2_np[i], reg=cfg.sinkhorn_reg, ot_method=cfg.ot_method,
+            ))
         else:
             # Endpoint mode: the full output is already 2-D.
             w2_noisy_rsreg = _compute_sinkhorn_wasserstein_2_distance(
@@ -364,6 +376,7 @@ def main() -> None:
     parser.add_argument("--figures-dir", default=str(EXPERIMENTS / "data" / "figures"))
     parser.add_argument("--histogram-name", default="trajflow_wasserstein_histograms.pdf")
     parser.add_argument("--timestep-plot-name", default="trajflow_wasserstein_per_timestep.pdf")
+    parser.add_argument("--traj-barchart-name", default="trajflow_wasserstein_trajectory_barchart.pdf")
     parser.add_argument("--fixed-index-order-file", default="")
     args = parser.parse_args()
 
@@ -512,6 +525,27 @@ def main() -> None:
             )
             print(f"saved: {timestep_path}")
 
+    # Full-trajectory W2 bar chart (trajectory mode only).
+    rows_with_traj = [r for r in rows_for_plot if "w2_traj_noisy_vs_k1" in r and "w2_traj_noisy_vs_k2" in r]
+    if rows_with_traj:
+        w2_traj_k1 = np.array([r["w2_traj_noisy_vs_k1"] for r in rows_with_traj], dtype=float)
+        w2_traj_k2 = np.array([r["w2_traj_noisy_vs_k2"] for r in rows_with_traj], dtype=float)
+        w2_traj_rsreg: np.ndarray | None = None
+        rows_with_traj_rsreg = [r for r in rows_with_traj if "w2_traj_noisy_vs_rsreg" in r]
+        if rows_with_traj_rsreg:
+            w2_traj_rsreg = np.array([r["w2_traj_noisy_vs_rsreg"] for r in rows_with_traj_rsreg], dtype=float)
+            if len(rows_with_traj_rsreg) != len(rows_with_traj):
+                traj_rsreg_mask = np.array(["w2_traj_noisy_vs_rsreg" in r for r in rows_with_traj], dtype=bool)
+                w2_traj_k1 = w2_traj_k1[traj_rsreg_mask]
+                w2_traj_k2 = w2_traj_k2[traj_rsreg_mask]
+        traj_barchart_path = Path(args.figures_dir) / args.traj_barchart_name
+        plot_wasserstein_trajectory_barchart(
+            w2_traj_k1=w2_traj_k1, w2_traj_k2=w2_traj_k2,
+            output_path=traj_barchart_path,
+            w2_traj_rsreg=w2_traj_rsreg,
+        )
+        print(f"saved: {traj_barchart_path}")
+
     if do_regenerate:
         aggregate: dict[str, Any] = {
             "mean_w2_noisy_vs_k1": float(np.mean(w_noisy_vs_k1)),
@@ -522,6 +556,14 @@ def main() -> None:
         if w_noisy_vs_rsreg is not None:
             aggregate["mean_w2_noisy_vs_rsreg"] = float(np.mean(w_noisy_vs_rsreg))
             aggregate["std_w2_noisy_vs_rsreg"] = float(np.std(w_noisy_vs_rsreg))
+        if rows_with_traj:
+            aggregate["mean_w2_traj_noisy_vs_k1"] = float(np.mean(w2_traj_k1))
+            aggregate["std_w2_traj_noisy_vs_k1"] = float(np.std(w2_traj_k1))
+            aggregate["mean_w2_traj_noisy_vs_k2"] = float(np.mean(w2_traj_k2))
+            aggregate["std_w2_traj_noisy_vs_k2"] = float(np.std(w2_traj_k2))
+            if w2_traj_rsreg is not None:
+                aggregate["mean_w2_traj_noisy_vs_rsreg"] = float(np.mean(w2_traj_rsreg))
+                aggregate["std_w2_traj_noisy_vs_rsreg"] = float(np.std(w2_traj_rsreg))
         summary = {
             "config": {
                 "selected_indices": selected_indices.tolist(),

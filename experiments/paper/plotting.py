@@ -1215,6 +1215,72 @@ def plot_wasserstein_per_timestep(
 	return output_path
 
 
+def plot_wasserstein_trajectory_barchart(
+	w2_traj_k1: np.ndarray,
+	w2_traj_k2: np.ndarray,
+	output_path: Path,
+	w2_traj_rsreg: np.ndarray | None = None,
+) -> Path:
+	"""Bar chart of mean full-trajectory (R^d) 2-Wasserstein distances.
+
+	Each bar shows the mean W2 over all evaluated inputs; error bars span ±1
+	standard deviation.  The three smoothers are RS-Reg (optional),
+	alpha-smoothing (k=1) and clustered alpha-smoothing (k=2).
+	"""
+	if len(w2_traj_k1) == 0 or len(w2_traj_k2) == 0:
+		raise ValueError("Wasserstein arrays must be non-empty")
+
+	labels: list[str] = []
+	means: list[float] = []
+	stds: list[float] = []
+	colors_bar: list[str] = []
+
+	if w2_traj_rsreg is not None:
+		labels.append(r"RS-Reg")
+		means.append(float(np.mean(w2_traj_rsreg)))
+		stds.append(float(np.std(w2_traj_rsreg, ddof=0)))
+		colors_bar.append("#E76F51")
+	labels.append(r"$\alpha$-smoothing")
+	means.append(float(np.mean(w2_traj_k1)))
+	stds.append(float(np.std(w2_traj_k1, ddof=0)))
+	colors_bar.append("#4C78A8")
+	labels.append(r"Clustered $\alpha$-smoothing")
+	means.append(float(np.mean(w2_traj_k2)))
+	stds.append(float(np.std(w2_traj_k2, ddof=0)))
+	colors_bar.append("#2A9D8F")
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with plt.rc_context(
+		{
+			"text.usetex": True,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 10,
+			"axes.titlesize": 10,
+			"xtick.labelsize": 9,
+			"ytick.labelsize": 9,
+		}
+	):
+		fig, ax = plt.subplots(figsize=(5.0, 3.2))
+		x = np.arange(len(labels))
+		bars = ax.bar(
+			x, means, yerr=stds,
+			color=colors_bar, alpha=0.75, edgecolor="black", linewidth=0.8,
+			capsize=5, error_kw={"linewidth": 1.0},
+		)
+		ax.set_xticks(x)
+		ax.set_xticklabels(labels)
+		ax.set_ylabel(r"Mean $W_2$ distance to $h_w(x)$")
+		ax.set_title(r"Full-trajectory $W_2$ ($\mathbf{R}^d$, mean $\pm$ std)")
+		ax.grid(True, axis="y", linestyle=":", alpha=0.35)
+		fig.tight_layout()
+		fig.savefig(output_path, dpi=200)
+		plt.close(fig)
+
+	return output_path
+
+
 # ---------------------------------------------------------------------------
 # Bounds-only robustness plot
 # ---------------------------------------------------------------------------
