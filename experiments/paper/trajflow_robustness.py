@@ -507,20 +507,18 @@ def main() -> None:
             all_rows = payload.get("rows", [])
             print(f"alpha={alpha:.3f}: loaded {json_path}")
 
-        # Aggregate by radius for the plot: compute per-input difference (k=1 − k=2).
+        # Aggregate by radius for the plot: clustered alpha-smoothing lower bound.
         bounds_for_alpha: list[dict[str, Any]] = []
         for radius in radii:
             subset = [r for r in all_rows if float(r["radius"]) == float(radius)]
             if not subset:
                 continue
-            cert_k1_vals = np.array([float(r["cert_k1"]) for r in subset])
             cert_k2_vals = np.array([float(r["cert_k2"]) for r in subset])
-            diff_vals = cert_k1_vals - cert_k2_vals
             bounds_for_alpha.append(
                 {
                     "radius": float(radius),
-                    "diff_mean": float(diff_vals.mean()),
-                    "diff_std": float(diff_vals.std(ddof=0)),
+                    "cert_k2_mean": float(cert_k2_vals.mean()),
+                    "cert_k2_std": float(cert_k2_vals.std(ddof=0)),
                 }
             )
         bounds_by_alpha[float(alpha)] = bounds_for_alpha

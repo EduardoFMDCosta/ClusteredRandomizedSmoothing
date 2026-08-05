@@ -92,7 +92,7 @@ class SafetyConfig(_SmootherParams):
     """Parameters for trajflow_safety.py — decision-making risk analysis."""
     mc_samples: int = 300
     """Monte Carlo simulations of the smoother used to estimate P(stays)."""
-    decision_threshold: float = 0.85
+    decision_threshold: float = 0.9
     """Ego decides to go when P(other stays) >= decision_threshold.
     At 0.50 the two smoothers behave similarly (both go when uncertain).
     At 0.85 the clustered smoother is significantly safer: k=1 has a hard

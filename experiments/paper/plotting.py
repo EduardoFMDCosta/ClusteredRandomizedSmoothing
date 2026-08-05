@@ -1289,15 +1289,14 @@ def plot_robustness_bounds_only(
 	bounds_by_alpha: "dict[float, list[dict]]",
 	output_path: Path,
 ) -> Path:
-	"""Plot the difference in certified bounds (k=1 minus k=2) vs robustness radius.
+	"""Plot clustered alpha-smoothing certified bounds vs robustness radius.
 
-	A single chart with one line per alpha value.  Each line shows the mean
-	per-input difference  ``cert_k1 - cert_k2``  across all evaluated inputs;
-	the shaded band spans ±1 std dev.  A horizontal dashed line at zero marks
-	where both smoothers certify the same bound.
+	A single chart with one line per alpha value. Each line shows the mean
+	per-input clustered certified lower bound (k=2) across all evaluated inputs;
+	the shaded band spans ±1 std dev.
 
 	Each row in the per-alpha list must have:
-	    ``{"radius": float, "diff_mean": float, "diff_std": float}``
+	    ``{"radius": float, "cert_k2_mean": float, "cert_k2_std": float}``
 	"""
 	alpha_values = sorted(bounds_by_alpha.keys())
 	if not alpha_values:
@@ -1313,38 +1312,37 @@ def plot_robustness_bounds_only(
 			"font.family": "serif",
 			"font.serif": ["Computer Modern Roman"],
 			"mathtext.fontset": "cm",
-			"axes.labelsize": 10,
-			"axes.titlesize": 10,
-			"xtick.labelsize": 9,
-			"ytick.labelsize": 9,
-			"legend.fontsize": 9,
+			"axes.labelsize": 11,
+			"axes.titlesize": 11,
+			"xtick.labelsize": 10,
+			"ytick.labelsize": 10,
+			"legend.fontsize": 10,
 		}
 	):
 		fig, ax = plt.subplots(figsize=(5.0, 3.4))
 
 		for i, alpha in enumerate(alpha_values):
 			rows = sorted(bounds_by_alpha[alpha], key=lambda r: float(r["radius"]))
-			radii     = np.array([float(r["radius"])   for r in rows])
-			diff_mean = np.array([float(r["diff_mean"]) for r in rows])
-			diff_std  = np.array([float(r.get("diff_std", 0.0)) for r in rows])
+			radii = np.array([float(r["radius"]) for r in rows])
+			cert_k2_mean = np.array([float(r["cert_k2_mean"]) for r in rows])
+			cert_k2_std = np.array([float(r.get("cert_k2_std", 0.0)) for r in rows])
 			color  = colors[i % len(colors)]
 			marker = markers[i % len(markers)]
 
 			ax.fill_between(
 				radii,
-				diff_mean - diff_std,
-				diff_mean + diff_std,
+				cert_k2_mean - cert_k2_std,
+				cert_k2_mean + cert_k2_std,
 				alpha=0.15, color=color,
 			)
 			ax.plot(
-				radii, diff_mean,
+				radii, cert_k2_mean,
 				marker=marker, linewidth=1.4, color=color,
 				label=rf"$\alpha = {alpha:g}$",
 			)
 
-		ax.axhline(0.0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
 		ax.set_xlabel(r"Robustness radius $r$")
-		ax.set_ylabel(r"Lower-bound difference \\ $\alpha$-smooth. -- clustered $\alpha$-smooth.")
+		ax.set_ylabel("Certified lower-bound")
 		ax.grid(True, linestyle=":", alpha=0.35)
 		ax.legend(loc="best", frameon=True)
 		fig.tight_layout()
@@ -1402,29 +1400,29 @@ def plot_safety_analysis(
 			"font.family": "serif",
 			"font.serif": ["Computer Modern Roman"],
 			"mathtext.fontset": "cm",
-			"axes.labelsize": 10,
-			"axes.titlesize": 10,
-			"xtick.labelsize": 9,
-			"ytick.labelsize": 9,
-			"legend.fontsize": 9,
+			"axes.labelsize": 13,
+			"axes.titlesize": 13,
+			"xtick.labelsize": 12,
+			"ytick.labelsize": 12,
+			"legend.fontsize": 12,
 		}
 	):
 		if p_stay_rsreg is not None:
 			nego_go_rsreg = p_stay_rsreg >= threshold
 			risk_rsreg = float(np.mean(nego_go_rsreg & gt_goes))
-			fig, axes = plt.subplots(1, 4, figsize=(13.2, 3.5), gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.45]})
+			fig, axes = plt.subplots(1, 4, figsize=(14.4, 4.2), gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.45]})
 			fig.subplots_adjust(left=0.06, right=0.985, top=0.88, bottom=0.20, wspace=0.12)
 			strip_specs = [
-				(axes[0], p_stay_rsreg, r"RS-Reg", "#E76F51", risk_rsreg),
+				(axes[0], p_stay_rsreg, r"RS-Reg", "#6A3D9A", risk_rsreg),
 				(axes[1], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
 				(axes[2], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
 			]
 			ax_bar = axes[3]
 			methods = [r"RS-Reg", r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
 			risks = [risk_rsreg, risk_k1, risk_k2]
-			bar_colors = ["#E76F51", "#4C78A8", "#F58518"]
+			bar_colors = ["#6A3D9A", "#4C78A8", "#F58518"]
 		else:
-			fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.5), gridspec_kw={"width_ratios": [1.0, 1.0, 1.35]})
+			fig, axes = plt.subplots(1, 3, figsize=(10.9, 4.2), gridspec_kw={"width_ratios": [1.0, 1.0, 1.35]})
 			fig.subplots_adjust(left=0.07, right=0.985, top=0.88, bottom=0.20, wspace=0.14)
 			strip_specs = [
 				(axes[0], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
@@ -1437,8 +1435,8 @@ def plot_safety_analysis(
 
 		for strip_idx, (ax, p_stay, title, color, risk) in enumerate(strip_specs):
 			gt_x = np.where(gt_stays, 0.0, 1.0)
-			# Colour: use method colour for stays (correct), red for goes (potential risk)
-			point_colors = np.where(gt_stays, color, "#C73E1D")
+			# Keep scatter colours fixed across methods for comparability.
+			point_colors = np.where(gt_stays, "#4C78A8", "#C73E1D")
 			ax.scatter(gt_x + jitter, p_stay, c=point_colors, alpha=0.55, s=20, linewidths=0, zorder=2)
 			ax.axhline(
 				threshold, color="#333333", linestyle="--", linewidth=1.1, zorder=3,
@@ -1454,19 +1452,12 @@ def plot_safety_analysis(
 				ax.tick_params(axis="y", labelleft=False)
 			ax.set_ylim(-0.05, 1.05)
 			ax.set_title(title)
-			risk_pct = f"{risk * 100:.1f}\\%"
-			ax.text(
-				0.97, 0.04,
-				f"Risk: {risk_pct}",
-				transform=ax.transAxes, ha="right", va="bottom", fontsize=9, color="#C73E1D",
-				bbox=dict(facecolor="white", edgecolor="#C73E1D", alpha=0.85, boxstyle="round,pad=0.2"),
-			)
 			ax.grid(True, linestyle=":", alpha=0.35)
 
 		bars = ax_bar.bar(methods, risks, color=bar_colors, alpha=0.75, edgecolor="black", linewidth=0.8)
 		ax_bar.set_ylabel("")
 		ax_bar.tick_params(axis="y", left=False, right=False, labelleft=False, labelright=False)
-		ax_bar.tick_params(axis="x", labelsize=8)
+		ax_bar.tick_params(axis="x", labelsize=10)
 		ylim_top = min(1.0, max(max(risks, default=0.1) * 1.35, 0.1))
 		ax_bar.set_ylim(0.0, ylim_top)
 		for bar, risk in zip(bars, risks):
@@ -1475,7 +1466,7 @@ def plot_safety_analysis(
 				bar.get_x() + bar.get_width() / 2,
 				bar.get_height() + 0.005,
 				risk_pct,
-				ha="center", va="bottom", fontsize=9,
+				ha="center", va="bottom", fontsize=11,
 			)
 		ax_bar.grid(True, linestyle=":", alpha=0.35, axis="y")
 		ax_bar.set_title("Risk rate")
