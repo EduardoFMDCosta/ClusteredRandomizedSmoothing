@@ -231,9 +231,9 @@ class TrainConfig:
     eval_interval: int = 200  # in updates, not episodes
     eval_episodes: int = 16
     uav3d_noise_std: float = 0.05
-    uav3d_max_steps: int = 64
     uav3d_curriculum_episodes: int = 40000
     metrics_path: str = ""
+    out_path: str = "experiments/uav_3d/policy.pt"
 
 
 def normalize_state(state: np.ndarray) -> np.ndarray:
@@ -446,7 +446,10 @@ def evaluate_policy(
         got_goal = 0
         for _ in range(horizon):
             s_t = torch.from_numpy(normalize_state(state)).unsqueeze(0)
-            action, _, _ = policy.sample(s_t)
+            # ``sample`` reparameterizes (rsample), so without no_grad the action
+            # carries a graph and ``.numpy()`` below raises.
+            with torch.no_grad():
+                action, _, _ = policy.sample(s_t)
             a = action.squeeze(0).cpu().numpy().astype(np.float32)
             _, reward, state = env.step(a)
             total += float(reward)
@@ -463,20 +466,21 @@ def evaluate_policy(
     }
 
 
-def train(config: TrainConfig) -> tuple[VariationalPolicy, dict[str, list[float]]]:
+def train(config: TrainConfig) -> tuple[VariationalPolicy, ValueNetwork, dict[str, list[float]]]:
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
-    env = UAV3D(
-        gaussian_noise=True,
-        noise_std=config.uav3d_noise_std,
-        max_steps=max(int(config.uav3d_max_steps), int(config.horizon)),
-    )
-    eval_env = UAV3D(
-        gaussian_noise=True,
-        noise_std=config.uav3d_noise_std,
-        max_steps=max(int(config.uav3d_max_steps), int(config.horizon)),
-    )
+    # ``max_steps=None`` disables the env's own timeout branch, matching how every
+    # downstream collection script builds the env. Episodes are instead truncated
+    # at ``config.horizon`` by the rollout loop, where ``collect_rollout_batch``
+    # bootstraps ``last_val = critic(s)`` rather than treating the cut-off as
+    # terminal. The critic therefore estimates the *untruncated* value, which is
+    # what the adversarial experiments evaluate it under; with a finite
+    # ``max_steps`` it would instead learn the value of a 64-step episode ending
+    # in the ``-0.05 * dist`` timeout penalty and be miscalibrated by exactly
+    # that penalty.
+    env = UAV3D(gaussian_noise=True, noise_std=config.uav3d_noise_std, max_steps=None)
+    eval_env = UAV3D(gaussian_noise=True, noise_std=config.uav3d_noise_std, max_steps=None)
     state_dim, action_dim = 6, 3
 
     policy = VariationalPolicy(
@@ -577,7 +581,7 @@ def train(config: TrainConfig) -> tuple[VariationalPolicy, dict[str, list[float]
         metrics["eval_return"].append(eval_return)
         metrics["eval_goal_rate"].append(eval_goal)
 
-    return policy, metrics
+    return policy, critic, metrics
 
 
 def parse_args() -> TrainConfig:
@@ -606,9 +610,11 @@ def parse_args() -> TrainConfig:
                         help="Evaluate every N updates (not episodes).")
     parser.add_argument("--eval-episodes", type=int, default=16)
     parser.add_argument("--uav3d-noise-std", type=float, default=0.05)
-    parser.add_argument("--uav3d-max-steps", type=int, default=64)
     parser.add_argument("--uav3d-curriculum-episodes", type=int, default=40000)
     parser.add_argument("--metrics-path", type=str, default=None)
+    parser.add_argument("--out", type=str, default="experiments/uav_3d/policy.pt",
+                        help="Checkpoint destination. Override it for short "
+                             "throwaway runs so the real policy is not clobbered.")
 
     args = parser.parse_args()
     metrics_path = args.metrics_path
@@ -636,24 +642,31 @@ def parse_args() -> TrainConfig:
         eval_interval=args.eval_interval,
         eval_episodes=args.eval_episodes,
         uav3d_noise_std=args.uav3d_noise_std,
-        uav3d_max_steps=args.uav3d_max_steps,
         uav3d_curriculum_episodes=args.uav3d_curriculum_episodes,
         metrics_path=metrics_path,
+        out_path=args.out,
     )
 
 
 def main() -> None:
     config = parse_args()
-    policy, metrics = train(config)
+    policy, critic, metrics = train(config)
 
-    out_path = "experiments/uav_3d/policy.pt"
+    # The critic is saved alongside the policy: the adversarial experiments attack
+    # the expected discounted return, and ``V^pi`` is the only thing that can score
+    # that without an unaffordable rollout per candidate perturbation. ``gamma`` is
+    # saved with it because a value function is meaningless without the discount it
+    # was fitted under.
+    out_path = config.out_path
     checkpoint: dict[str, Any] = {
         "model_state_dict": policy.state_dict(),
+        "critic_state_dict": critic.state_dict(),
         "state_dim": policy.state_dim,
         "action_dim": policy.action_dim,
         "hidden_dim": config.hidden_dim,
         "num_components": config.num_components,
         "action_scale": config.action_scale,
+        "gamma": config.gamma,
     }
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint, out_path)

@@ -119,26 +119,39 @@ def _rollout(
     start_state: np.ndarray,
     horizon: int,
     action_fn,
-) -> tuple[np.ndarray, np.ndarray, str]:
+    gamma: float = 0.99,
+) -> tuple[np.ndarray, np.ndarray, str, float]:
     """Roll out until natural termination (goal / collision / corridor exit).
 
     The env should be constructed with ``max_steps=None`` so it never times
     out from inside ``step()``; ``horizon`` here is just a safety cap that
     should never bind in practice.
+
+    Also accumulates the **discounted return** ``sum_t gamma^t r_t``. This is the
+    quantity the adversarial experiments both attack and report; it was
+    previously discarded (the reward from ``env.step`` was bound and dropped),
+    which left outcome rates -- a coarse, saturating, high-variance categorical
+    readout -- as the only available metric.
     """
     env._state = start_state.copy()
     env._step_count = 0
     env._done = False
+    # Must be cleared too: it is the sole source of truth for the outcome below,
+    # so a stale value from the previous rollout would be reported for any
+    # trajectory that exits on the ``horizon`` cap instead of terminating.
+    env._terminal_reason = None
     start_pos = np.array([start_state[0], start_state[2], start_state[4]], dtype=np.float32)
     env._prev_dist = float(np.linalg.norm(start_pos - env.goal_center))
 
     state = env._state.copy()
     trace = [start_pos.copy()]
     state_trace = [state.copy()]
+    discounted_return = 0.0
     steps = 0
     while not env.is_done() and steps < horizon:
         action = action_fn(state)
-        _, _reward, state = env.step(action)
+        _, reward, state = env.step(action)
+        discounted_return += (gamma ** steps) * float(reward)
         trace.append(np.array([state[0], state[2], state[4]], dtype=np.float32))
         state_trace.append(state.copy())
         steps += 1
@@ -147,7 +160,7 @@ def _rollout(
     # post-step position may lie past the obstacle, so deriving the outcome
     # from final_pos alone misclassifies those as "timeout".
     outcome = env._terminal_reason if env._terminal_reason is not None else "timeout"
-    return np.stack(trace, axis=0), np.stack(state_trace, axis=0), outcome
+    return np.stack(trace, axis=0), np.stack(state_trace, axis=0), outcome, discounted_return
 
 
 def _kinematic_magnitudes(state_trace: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -202,31 +215,39 @@ def _collect_trajectories(
     action_fn,
     label: str,
     keep_traces: bool = True,
-) -> tuple[list[np.ndarray], list[str], dict[str, int], np.ndarray, np.ndarray]:
+    gamma: float = 0.99,
+) -> tuple[list[np.ndarray], list[str], dict[str, int], np.ndarray, np.ndarray, np.ndarray]:
     counts = {"goal": 0, "collision": 0, "timeout": 0}
     traces: list[np.ndarray] = []
     outcomes: list[str] = []
     accel_mags: list[np.ndarray] = []
     jerk_mags: list[np.ndarray] = []
+    returns: list[float] = []
     t0 = time.time()
     for i in range(num_trajectories):
-        trace, state_trace, outcome = _rollout(env, start_state, horizon, action_fn)
+        trace, state_trace, outcome, discounted_return = _rollout(
+            env, start_state, horizon, action_fn, gamma
+        )
         if keep_traces:
             traces.append(trace)
         outcomes.append(outcome)
         counts[outcome] += 1
+        returns.append(discounted_return)
         accel_mag, jerk_mag = _kinematic_magnitudes(state_trace)
         accel_mags.append(accel_mag)
         jerk_mags.append(jerk_mag)
         print(f"  [{label}] {i + 1}/{num_trajectories} → {outcome} "
-              f"({time.time() - t0:.1f}s elapsed)")
+              f"(return {discounted_return:+.3f}, {time.time() - t0:.1f}s elapsed)")
     return (
         traces, outcomes, counts,
         np.concatenate(accel_mags), np.concatenate(jerk_mags),
+        np.asarray(returns, dtype=np.float64),
     )
 
 
-_PolicyResult = tuple[list[np.ndarray], list[str], dict[str, int], np.ndarray, np.ndarray]
+_PolicyResult = tuple[
+    list[np.ndarray], list[str], dict[str, int], np.ndarray, np.ndarray, np.ndarray
+]
 
 
 def _run_all_policies(
@@ -286,7 +307,14 @@ def main() -> None:
     parser.add_argument("--smoothing-N", type=int, default=30,
                         help="Noisy-state samples used inside smooth() per env step.")
     parser.add_argument("--confidence-N", type=int, default=4000)
-    parser.add_argument("--alpha", type=float, default=0.4)
+    parser.add_argument("--alpha", type=float, default=0.2,
+                        help="Alpha-trim fraction, shared by both smoothed branches. "
+                             "Must be BELOW the state's minor-mode mass: alpha-trimming "
+                             "averages the modes only while some minority samples "
+                             "survive the trim. At alpha >= minor mass it removes the "
+                             "minority mode outright and k=1 silently becomes a mode "
+                             "*selector*, which does not fail and is not the baseline "
+                             "the paper is comparing against.")
     parser.add_argument("--coverage", type=float, default=0.9)
     parser.add_argument("--max-clusters", type=int, default=3)
     parser.add_argument("--dbscan-eps", type=float, default=0.45)
@@ -387,10 +415,16 @@ def main() -> None:
             "goal": (float(goal_rates.mean()), float(goal_rates.std())),
             "collision": (float(coll_rates.mean()), float(coll_rates.std())),
         }
-        traces, outcomes, counts, _, _ = primary[name]
+        traces, outcomes, counts, _, _, _ = primary[name]
+        returns_all = np.concatenate([r[5] for r in per_seed_results[name]])
 
         print(f"{label}: goal={counts['goal']} / collision={counts['collision']} / "
               f"timeout={counts['timeout']}  (seed={args.seed})")
+        # Reported here as well as in the attack sweep so the sweep's eps=0 point
+        # has a directly comparable clean baseline to be checked against.
+        print(f"{label}  discounted return = {returns_all.mean():+.3f} ± "
+              f"{returns_all.std() / np.sqrt(returns_all.size):.3f} (s.e., "
+              f"n={returns_all.size} trajectories)")
         print(f"{label}  collision rate = {coll_rates.mean():.3f} ± {coll_rates.std():.3f} "
               f"(goal = {goal_rates.mean():.3f} ± {goal_rates.std():.3f}, "
               f"timeout = {timeout_rates.mean():.3f} ± {timeout_rates.std():.3f}) "

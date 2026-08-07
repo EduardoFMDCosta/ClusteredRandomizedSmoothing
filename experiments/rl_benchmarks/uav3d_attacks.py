@@ -1,228 +1,457 @@
-"""Task-directed adversarial attack primitives for the UAV3D controller.
+#!/usr/bin/env python3
+"""PGD state attack on the UAV3D controller's expected discounted return.
 
-The threat model perturbs the (normalized) **state** fed to the policy within
-an L2 ball ``||delta|| <= radius`` — the same input space the existing
-state-space ``GaussianAlphaTrimmingSmoothing`` defense (see
-``collect_uav3d_rollouts.py``) smooths over. Rather than maximizing an
-abstract output-deviation metric, the attack searches the ball for the
-perturbation that most hurts the *mission*: reduces goal progress or steers
-into an obstacle, scored via a side-effect-free one-step analytic lookahead
-through UAV3D's own (deterministic, linear) dynamics and reward structure.
+Threat model: the attacker perturbs the (normalized) **state** handed to the
+controller inside an L2 ball ``||delta||_2 <= radius`` -- the same input space the
+``GaussianAlphaTrimmingSmoothing`` defense smooths over. The true state, and hence
+the actual dynamics, are untouched; only the observation is corrupted.
 
-``UAV3D.step()`` is stateful and consumes the ``np.random`` stream, so it
-cannot be called from inside a candidate-scoring loop without corrupting the
-real rollout. ``_analytic_one_step_task_cost`` instead reads only pure,
-side-effect-free env state (``env.A``/``env.B``/``env.obstacles``/geometry
-predicates) to score a candidate action without touching ``env._state``.
+**Objective.** The attacker minimizes the expected discounted return
+
+    J(delta) = E_{a ~ pi_branch(. | x + delta)} [ r(s, a) + gamma * V(s') ],
+    s' = A s + B a,
+
+evaluated at the *true* state ``s``. This is the quantity the task is scored on,
+so the attack and the reported metric are the same object -- no objective/metric
+mismatch to argue about.
+
+This replaces an earlier 24-candidate uniform random search over a one-step
+"distance to goal" cost. That objective had two fatal properties: it was a step
+function (the +/-5 collision and -10 goal branches, with a flat basin between
+them), so no gradient existed and random search was the only option; and with the
+obstacle term disabled it degenerated to "push the UAV backwards", which has no
+particular reason to find the perturbation that breaks mode-averaging. The random
+search then used ~62% of the available budget on average, i.e. it badly
+under-solved the inner maximization, which flatters every branch equally and
+compresses exactly the separation the experiment is trying to measure.
+
+The critic fixes both problems at once: ``V`` is a smooth learned surrogate for
+the collision and goal terminals, which makes the whole objective differentiable
+and therefore PGD-able.
+
+**Differentiability.** The full path ``delta -> action -> s' -> V(s')`` is
+differentiable:
+
+  * ``VariationalPolicy.sample`` reparameterizes (``rsample``), and
+    ``distribution_params`` exposes the mixture gate in closed form, so the raw
+    branch is handled analytically over its K components -- the gradient sees both
+    the component means moving *and* the gate re-weighting, which is the mechanism
+    a random search could never target.
+  * The smoother's alpha-trimming is a sort plus a mask, both of which pass
+    gradients in torch. The DBSCAN cluster assignment and the trim mask are
+    recomputed each forward and treated as constants in the backward pass -- the
+    standard BPDA treatment of a combinatorial component.
+
+**One value oracle for all branches, by design.** ``V`` is ``V^{pi_raw}``, not a
+per-branch value function. This is deliberate: a single task-value yardstick means
+no branch is attacked against an easier objective, so any difference in the
+measured return is attributable to the defense rather than to the attack.
 """
 from __future__ import annotations
 
-import math
+from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
-
-try:
-    import ot
-except ImportError as exc:  # pragma: no cover - import guard for optional runtime dependency
-    raise ImportError(
-        "POT is required for uav3d_attacks. Install with 'pip install pot'."
-    ) from exc
-
 from dynamics import UAV3D
+from train_rl import ValueNetwork, VariationalPolicy, normalize_state
+
+from randomized_smoothing.clusters import Cluster
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-from train_rl import VariationalPolicy
+
+# PGD step size as a multiple of ``radius / steps``. The standard Madry-style
+# choice: large enough that the iterate can cross the ball a couple of times and
+# escape a poor initialization, small enough that the projection is not doing all
+# the work.
+_STEP_SIZE_FACTOR = 2.5
 
 
-def _random_ball_points(
-    num_points: int,
-    dimension: int,
-    radius: float,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    """Uniformly sample points in the closed L2 ball ``||delta|| <= radius``.
+# ---------------------------------------------------------------------------
+# Checkpoint loading
+# ---------------------------------------------------------------------------
+def load_critic(checkpoint_path: Path, device: torch.device) -> tuple[ValueNetwork, float]:
+    """Load the PPO critic and the discount it was fitted under.
 
-    Duplicated verbatim from ``experiments/paper/trajflow_adversarial.py`` to
-    avoid a cross-directory import into that paper-figure-reproduction script.
+    Mirrors ``collect_uav3d_rollouts._load_uav3d_policy``. Checkpoints written
+    before the critic was persisted will fail here with an explicit message
+    rather than silently falling back to a myopic objective.
     """
-    if radius == 0.0:
-        return torch.zeros((1, dimension), device=device, dtype=dtype)
-    if num_points <= 1:
-        return torch.zeros((1, dimension), device=device, dtype=dtype)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict) or "critic_state_dict" not in checkpoint:
+        raise ValueError(
+            f"{checkpoint_path} has no 'critic_state_dict'. The critic used to be "
+            "discarded by train_rl.train(); retrain with the current train_rl.py, "
+            "which saves it alongside the policy."
+        )
+    if "gamma" not in checkpoint:
+        raise ValueError(
+            f"{checkpoint_path} has no 'gamma'. A value function is meaningless "
+            "without the discount it was fitted under; retrain with the current "
+            "train_rl.py."
+        )
 
-    # Include the clean point (delta=0) and sample the remaining candidates
-    # uniformly in the closed ball to search over ||delta|| <= radius.
-    vec = torch.randn((num_points - 1, dimension), device=device, dtype=dtype)
-    vec = vec / torch.linalg.norm(vec, dim=1, keepdim=True).clamp(min=1e-12)
-    scales = torch.rand((num_points - 1, 1), device=device, dtype=dtype)
-    scales = radius * scales.pow(1.0 / float(dimension))
-    sampled = scales * vec
-    origin = torch.zeros((1, dimension), device=device, dtype=dtype)
-    return torch.cat((origin, sampled), dim=0)
-
-
-def _min_obstacle_surface_distance(pos: np.ndarray, obstacles) -> float:
-    """L2 distance from ``pos`` to the nearest obstacle AABB (0 if inside)."""
-    best = float("inf")
-    for x_min, x_max, y_min, y_max, z_min, z_max in obstacles:
-        dx = max(x_min - pos[0], 0.0, pos[0] - x_max)
-        dy = max(y_min - pos[1], 0.0, pos[1] - y_max)
-        dz = max(z_min - pos[2], 0.0, pos[2] - z_max)
-        dist = float(math.sqrt(dx * dx + dy * dy + dz * dz))
-        if dist < best:
-            best = dist
-    return best if best != float("inf") else 0.0
+    critic = ValueNetwork(
+        state_dim=int(checkpoint["state_dim"]),
+        hidden_dim=int(checkpoint["hidden_dim"]),
+    )
+    critic.load_state_dict(checkpoint["critic_state_dict"])
+    critic.eval()
+    critic.to(device)
+    for parameter in critic.parameters():
+        parameter.requires_grad_(False)
+    return critic, float(checkpoint["gamma"])
 
 
-def _analytic_one_step_task_cost(
+# ---------------------------------------------------------------------------
+# Differentiable one-step action value
+# ---------------------------------------------------------------------------
+# Derived from ``train_rl.normalize_state`` rather than restated, so the two
+# cannot drift apart: normalizing the all-ones state yields the reciprocal of the
+# per-axis divisors.
+_NORMALIZER = torch.from_numpy(1.0 / normalize_state(np.ones(6, dtype=np.float32)))
+
+# ``UAV3D.step`` clips velocities (state indices 1/3/5) to +/-7 after applying the
+# dynamics; positions are unbounded within the corridor. Reproduced so the
+# lookahead matches the env exactly.
+_STATE_CLIP = torch.tensor([torch.inf, 7.0, torch.inf, 7.0, torch.inf, 7.0])
+
+
+def expected_q(
     env: UAV3D,
-    true_state: np.ndarray,
-    action: np.ndarray,
-    obstacle_margin_weight: float = 0.0,
-) -> float:
-    """Deterministic (noise-free) one-step lookahead cost, higher = worse.
+    true_state: np.ndarray | torch.Tensor,
+    actions: torch.Tensor,
+    critic: ValueNetwork,
+    gamma: float,
+) -> torch.Tensor:
+    """One-step action value ``r(s, a) + gamma * V(s')``, batched over ``actions``.
 
-    Mirrors ``UAV3D.step()``'s reward branches (corridor exit / obstacle
-    entry / goal / dense progress shaping), negated, using the env's public
-    ``A``/``B`` matrices instead of calling the stateful ``step()``. The
-    stochastic process noise term is intentionally omitted: it's zero-mean
-    and orthogonal to the attack direction we're searching for.
+    Two calling conventions:
 
-    ``obstacle_margin_weight`` adds a soft bias toward obstacle proximity even
-    when a single step doesn't yet clip an obstacle — real collisions are
-    usually a multi-step, compounding event, not something one perturbed step
-    always achieves outright.
+      * ``true_state`` ``(6,)`` with ``actions`` ``(..., 3)`` -> ``(...)``. The
+        attack path: one state, many candidate actions.
+      * ``true_state`` ``(n, 6)`` with ``actions`` ``(n, k, 3)`` -> ``(n, k)``.
+        The screening path in ``find_bimodal_state.py``: many states at once.
+
+    Fully differentiable in ``actions``.
+
+    Only the *dense* reward branch is used: ``0.5 * progress - 0.01``. The
+    terminal branches of ``UAV3D.step`` (-5 corridor exit, -5 obstacle entry,
+    +10 goal) are deliberately omitted -- they are discontinuous, and ``V``
+    already encodes their value smoothly, having been fitted on returns that
+    contain them. Dropping them is precisely what makes this objective
+    differentiable.
+
+    Side-effect free: reads only ``env.A``/``env.B``/``env.goal_center`` and the
+    action bounds, never ``env.step``, which is stateful and consumes the global
+    ``np.random`` stream shared with the live rollout.
     """
-    action = np.clip(action, env.u_min, env.u_max).astype(np.float32)
-    true_state = true_state.astype(np.float32)
-    old_pos = np.array([true_state[0], true_state[2], true_state[4]], dtype=np.float32)
-    next_state = env.A @ true_state + env.B @ action
-    new_pos = np.array([next_state[0], next_state[2], next_state[4]], dtype=np.float32)
+    device, dtype = actions.device, actions.dtype
+    A = torch.as_tensor(env.A, device=device, dtype=dtype)
+    B = torch.as_tensor(env.B, device=device, dtype=dtype)
+    state = torch.as_tensor(true_state, device=device, dtype=dtype)
+    goal = torch.as_tensor(env.goal_center, device=device, dtype=dtype)
 
-    if env._outside_corridor(new_pos):
-        return 5.0
-    if env._segment_obstacle_entry_t(old_pos, new_pos) is not None:
-        return 5.0
-    if env._check_goal(new_pos):
-        return -10.0
+    clipped = actions.clamp(float(env.u_min), float(env.u_max))
+    position_index = [0, 2, 4]
 
-    prev_dist = float(np.linalg.norm(old_pos - env.goal_center))
-    new_dist = float(np.linalg.norm(new_pos - env.goal_center))
-    progress = prev_dist - new_dist
-    cost = -(0.5 * progress - 0.01)
-    if obstacle_margin_weight > 0.0:
-        cost += obstacle_margin_weight * (-_min_obstacle_surface_distance(new_pos, env.obstacles))
-    return float(cost)
+    if state.ndim == 1:
+        next_state = (A @ state) + clipped @ B.T          # (..., 6)
+        old_position = state[position_index]
+    else:
+        next_state = (state @ A.T).unsqueeze(1) + clipped @ B.T   # (n, k, 6)
+        old_position = state[:, position_index].unsqueeze(1)      # (n, 1, 3)
+
+    clip = _STATE_CLIP.to(device=device, dtype=dtype)
+    next_state = next_state.clamp(-clip, clip)
+    new_position = next_state[..., position_index]
+
+    previous_distance = torch.linalg.norm(old_position - goal, dim=-1)
+    new_distance = torch.linalg.norm(new_position - goal, dim=-1)
+    reward = 0.5 * (previous_distance - new_distance) - 0.01
+
+    value = critic(next_state / _NORMALIZER.to(device=device, dtype=dtype))
+    return reward + gamma * value
 
 
-def _find_best_delta_raw(
+# ---------------------------------------------------------------------------
+# Per-branch action distributions, as (atoms, weights)
+# ---------------------------------------------------------------------------
+def raw_action_atoms(
+    policy: VariationalPolicy,
+    x: torch.Tensor,
+    component_noise: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The raw policy's action distribution at ``x``, handled analytically.
+
+    ``x`` is ``(1, state_dim)``; ``component_noise`` is a fixed ``(M, K, A)``
+    standard-normal draw (common random numbers). Returns ``atoms`` of shape
+    ``(K, M, A)`` -- ``M`` reparameterized draws from each mixture component --
+    and ``weights`` of shape ``(K,)``, the exact gate probabilities.
+
+    Keeping the gate analytic rather than sampling a component index matters: the
+    gradient then flows into ``log_mix_weights``, so PGD can search for the
+    perturbation that shifts probability mass *between* modes, not merely the one
+    that drags both modes somewhere bad.
+    """
+    means, log_stds, log_mix_weights = policy.distribution_params(x)
+    stds = log_stds.exp()
+    # (1, K, A) -> (M, K, A) by broadcasting against the fixed noise.
+    raw = means[0].unsqueeze(0) + stds[0].unsqueeze(0) * component_noise
+    atoms = torch.tanh(raw) * policy.action_scale
+    return atoms.permute(1, 0, 2), log_mix_weights.exp()[0]
+
+
+def _alpha_trimmed_atoms(
+    outputs: torch.Tensor,
+    cluster: Cluster,
+    alpha: float,
+) -> torch.Tensor:
+    """Per-cluster alpha-trimmed means of ``outputs``, shape ``(M, N, A) -> (M, k, A)``.
+
+    A batched transcription of ``AlphaTrimmingSmoothing.smooth`` (see
+    ``src/randomized_smoothing/smoothing.py``) over ``M`` independent realizations,
+    using a cluster frozen at the clean anchor.
+
+    ``sort`` and ``torch.where`` both propagate gradients to the selected entries,
+    so this is differentiable in ``outputs``. The partition assignment (an
+    ``argmin`` over regions) and the resulting trim mask are integer/boolean and
+    are treated as constants in the backward pass -- BPDA.
+    """
+    num_realizations, num_samples, output_dim = outputs.shape
+    num_clusters = cluster.num_clusters
+
+    with torch.no_grad():
+        flat = outputs.reshape(1, num_realizations * num_samples, output_dim)
+        assignments = cluster._compute_partition_assignments(flat).view(
+            num_realizations, num_samples
+        )
+
+    positions = torch.arange(num_samples, device=outputs.device).view(1, num_samples, 1)
+    infinity = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
+    zero = torch.zeros(1, device=outputs.device, dtype=outputs.dtype)
+
+    atoms = torch.zeros(
+        (num_realizations, num_clusters, output_dim),
+        device=outputs.device,
+        dtype=outputs.dtype,
+    )
+    for j in range(num_clusters):
+        mask = assignments == j
+        values = torch.where(mask.unsqueeze(-1), outputs, infinity)
+        # Out-of-cluster entries sort to the end, so the trimmed core below only
+        # ever indexes genuine members of cluster j.
+        ordered = values.sort(dim=1).values
+
+        counts = mask.sum(dim=1)
+        left = torch.floor(alpha * counts.to(outputs.dtype)).to(torch.long)
+        right = counts - left
+
+        in_core = (positions >= left.view(num_realizations, 1, 1)) & (
+            positions < right.view(num_realizations, 1, 1)
+        )
+        trimmed_sum = torch.where(in_core, ordered, zero).sum(dim=1)
+        trimmed_count = (right - left).to(outputs.dtype).view(num_realizations, 1)
+
+        atoms[:, j, :] = torch.where(
+            (trimmed_count.squeeze(-1) > 0).unsqueeze(-1),
+            trimmed_sum / trimmed_count.clamp(min=1),
+            cluster.centroids[0, j, :].unsqueeze(0),
+        )
+    return atoms
+
+
+def smoothed_action_atoms(
+    policy: VariationalPolicy,
+    smoother: GaussianAlphaTrimmingSmoothing,
+    x: torch.Tensor,
+    smoothing_noise: torch.Tensor,
+    component_index: torch.Tensor,
+    component_noise: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The smoothed controller's action distribution at ``x``.
+
+    ``smoothing_noise`` is ``(M, N, d)``, ``component_index`` is ``(M, N)`` and
+    ``component_noise`` is ``(M, N, A)`` -- all fixed across the PGD run (common
+    random numbers), so the objective is a deterministic, differentiable function
+    of ``x`` and the ``M`` realizations can be compared across steps.
+
+    Returns ``atoms`` of shape ``(M, k, A)`` and ``weights`` of shape ``(k,)``.
+
+    The cluster is the smoother's own, frozen at its clean anchor: centroids,
+    regions and ``probs_partition`` all come from construction. This mirrors what
+    the attack can actually compute, and the executed controller separately
+    re-clusters at the perturbed input.
+
+    Unlike the raw branch, the mixture component index here is frozen rather than
+    handled analytically. That is a much weaker approximation than it looks: the
+    emitted action is chosen by the frozen ``probs_partition``, so gate
+    re-weighting reaches the output only second-hand, via cluster occupancy. The
+    first-order path -- the component means moving under the perturbation -- is
+    fully differentiated.
+    """
+    num_realizations, num_samples, _ = smoothing_noise.shape
+    noisy = (x + smoothing_noise).reshape(num_realizations * num_samples, -1)
+
+    means, log_stds, _ = policy.distribution_params(noisy)
+    flat_index = component_index.reshape(-1)
+    rows = torch.arange(flat_index.shape[0], device=noisy.device)
+    selected_mean = means[rows, flat_index]
+    selected_std = log_stds.exp()[rows, flat_index]
+
+    raw = selected_mean + selected_std * component_noise.reshape(flat_index.shape[0], -1)
+    outputs = (torch.tanh(raw) * policy.action_scale).view(
+        num_realizations, num_samples, -1
+    )
+
+    atoms = _alpha_trimmed_atoms(outputs, smoother.cluster, smoother.parameters.smoothing.alpha)
+    return atoms, smoother.cluster.probs_partition[0]
+
+
+# ---------------------------------------------------------------------------
+# Objective builders -- each returns a closure over fixed noise
+# ---------------------------------------------------------------------------
+def make_raw_objective(
     policy: VariationalPolicy,
     env: UAV3D,
     true_state: np.ndarray,
-    x: torch.Tensor,
-    radius: float,
-    num_candidates: int,
-    obstacle_margin_weight: float = 0.0,
-) -> torch.Tensor:
-    """Search ``||delta|| <= radius`` for the state perturbation that most
-    hurts the mission, scoring candidates against the **raw** policy.
+    critic: ValueNetwork,
+    gamma: float,
+    eot_samples: int,
+    generator: torch.Generator | None = None,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """``x -> E_{a ~ pi(.|x)}[ r + gamma V ]`` for the raw policy."""
+    device = next(policy.parameters()).device
+    component_noise = torch.randn(
+        (eot_samples, policy.num_components, policy.action_dim),
+        device=device,
+        generator=generator,
+    )
 
-    All candidates are batched through one ``policy.deterministic()`` call
-    (mode action — stable candidate-to-candidate ranking, no sampling noise
-    confounding the search); the actually-executed action at the winning
-    ``x + delta`` still comes from the real stochastic ``policy.sample()``.
-    """
-    dim = x.shape[-1]
-    deltas = _random_ball_points(num_candidates, dim, radius, x.device, x.dtype)
-    x_batch = x + deltas
-    with torch.no_grad():
-        actions = policy.deterministic(x_batch)
-    actions_np = actions.detach().cpu().numpy()
-    costs = np.array([
-        _analytic_one_step_task_cost(env, true_state, actions_np[c], obstacle_margin_weight)
-        for c in range(actions_np.shape[0])
-    ])
-    return deltas[int(np.argmax(costs))]
+    def objective(x: torch.Tensor) -> torch.Tensor:
+        atoms, weights = raw_action_atoms(policy, x, component_noise)
+        q = expected_q(env, true_state, atoms, critic, gamma)   # (K, M)
+        return (weights * q.mean(dim=1)).sum()
+
+    return objective
 
 
-def _find_best_delta_for_smoother(
+def make_smoothed_objective(
+    policy: VariationalPolicy,
     smoother: GaussianAlphaTrimmingSmoothing,
     env: UAV3D,
     true_state: np.ndarray,
-    radius: float,
-    num_candidates: int,
-    screen_samples: int,
-    obstacle_margin_weight: float = 0.0,
-) -> torch.Tensor:
-    """Search ``||delta|| <= radius`` for the state perturbation that most
-    hurts the mission, scoring candidates against an already-built smoother.
+    critic: ValueNetwork,
+    gamma: float,
+    eot_samples: int,
+    generator: torch.Generator | None = None,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """``x -> E_{a ~ smoothed(.|x)}[ r + gamma V ]`` for one smoothed branch.
 
-    Exploits ``AlphaTrimmingSmoothing.monte_carlo(z=...)`` reusing the
-    smoother's cluster (built once, around the clean anchor) — cost per
-    candidate is only ``screen_samples`` policy calls, not a full
-    re-clustering. All ``num_candidates`` deltas are scored in a single
-    batched ``monte_carlo`` call (one query point per candidate along its
-    batch dimension) rather than one call per candidate.
+    ``eot_samples`` independent realizations of the smoothing draw are averaged.
+    The old search scored each candidate on **6** samples and took an argmax over
+    24 candidates, which selects the luckiest estimate rather than the worst
+    perturbation; averaging a few dozen fixed realizations removes that bias.
     """
-    x = smoother.x
-    dim = x.shape[-1]
-    deltas = _random_ball_points(num_candidates, dim, radius, x.device, x.dtype)
-    draws = smoother.monte_carlo(num_simulations=screen_samples, z=x + deltas)
-    draws_np = draws.detach().cpu().numpy()  # (num_candidates, screen_samples, action_dim)
-    costs = np.array([
-        np.mean([
-            _analytic_one_step_task_cost(env, true_state, draws_np[c, k], obstacle_margin_weight)
-            for k in range(draws_np.shape[1])
-        ])
-        for c in range(draws_np.shape[0])
-    ])
-    return deltas[int(np.argmax(costs))]
+    device = next(policy.parameters()).device
+    num_samples = smoother.parameters.smoothing.N
+    state_dim = smoother.x.shape[-1]
 
+    smoothing_noise = smoother.smoothing_distribution.sample(
+        size=(eot_samples, num_samples)
+    ).to(device).view(eot_samples, num_samples, state_dim)
 
-def _compute_sinkhorn_wasserstein_2_distance(
-    x_samples: np.ndarray,
-    y_samples: np.ndarray,
-    reg: float,
-    ot_method: str,
-) -> float:
-    """Compute empirical 2-Wasserstein distance using a POT solver.
-
-    Duplicated verbatim from ``experiments/paper/trajflow_adversarial.py``.
-    """
-    if x_samples.ndim != 2 or y_samples.ndim != 2:
-        raise ValueError("Both sample sets must be 2-D arrays of shape (n, d).")
-    if x_samples.shape[1] != y_samples.shape[1]:
-        raise ValueError(
-            "Both sample sets must have the same feature dimension; "
-            f"got {x_samples.shape[1]} and {y_samples.shape[1]}"
-        )
-    if reg <= 0.0 and ot_method != "emd":
-        raise ValueError("sinkhorn regularization (reg) must be positive")
-
-    n_x = x_samples.shape[0]
-    n_y = y_samples.shape[0]
-    a = np.full(n_x, 1.0 / n_x, dtype=np.float64)
-    b = np.full(n_y, 1.0 / n_y, dtype=np.float64)
-    cost_matrix = ot.dist(
-        x_samples.astype(np.float64, copy=False),
-        y_samples.astype(np.float64, copy=False),
-        metric="sqeuclidean",
+    # Freeze the mixture-component draw at the gate of the *clean* noisy inputs,
+    # matching the smoothing pushforward the smoother's own cluster was built from.
+    with torch.no_grad():
+        anchor_noisy = (smoother.x + smoothing_noise).reshape(-1, state_dim)
+        _, _, log_mix_weights = policy.distribution_params(anchor_noisy)
+    component_index = torch.multinomial(
+        log_mix_weights.exp(), num_samples=1, replacement=True, generator=generator
+    ).view(eot_samples, num_samples)
+    component_noise = torch.randn(
+        (eot_samples, num_samples, policy.action_dim), device=device, generator=generator
     )
 
-    if ot_method == "emd":
-        w2_squared = float(ot.emd2(a, b, cost_matrix))
-    else:
-        w2_squared = float(
-            ot.sinkhorn2(
-                a,
-                b,
-                cost_matrix,
-                reg=reg,
-                method=ot_method,
-                numItermax=5000,
-                stopThr=1e-9,
-            )
+    def objective(x: torch.Tensor) -> torch.Tensor:
+        atoms, weights = smoothed_action_atoms(
+            policy, smoother, x, smoothing_noise, component_index, component_noise
         )
+        q = expected_q(env, true_state, atoms, critic, gamma)   # (M, k)
+        return (weights.unsqueeze(0) * q).sum(dim=1).mean()
 
-    return float(math.sqrt(max(w2_squared, 0.0)))
+    return objective
+
+
+# ---------------------------------------------------------------------------
+# PGD
+# ---------------------------------------------------------------------------
+def _random_in_ball(
+    shape: tuple[int, ...],
+    radius: float,
+    device: torch.device,
+    dtype: torch.dtype,
+    generator: torch.Generator | None,
+) -> torch.Tensor:
+    direction = torch.randn(shape, device=device, dtype=dtype, generator=generator)
+    direction = direction / torch.linalg.norm(direction).clamp(min=1e-12)
+    scale = torch.rand((), device=device, dtype=dtype, generator=generator)
+    return radius * scale.pow(1.0 / float(np.prod(shape))) * direction
+
+
+def _project_to_ball(delta: torch.Tensor, radius: float) -> torch.Tensor:
+    norm = torch.linalg.norm(delta)
+    if norm <= radius:
+        return delta
+    return delta * (radius / norm)
+
+
+def pgd_attack(
+    objective: Callable[[torch.Tensor], torch.Tensor],
+    x: torch.Tensor,
+    radius: float,
+    steps: int,
+    restarts: int = 3,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Minimize ``objective(x + delta)`` over ``||delta||_2 <= radius`` by L2 PGD.
+
+    Returns the best ``delta`` found, shaped like ``x``.
+
+    ``delta = 0`` is both the first restart's initialization and the incumbent
+    best, so the returned perturbation can never score worse than the clean input
+    under the attacker's own objective -- at ``radius = 0`` the function is exactly
+    a no-op.
+
+    ``objective`` must be deterministic (built over fixed noise), otherwise the
+    across-restart comparison and the ``best`` bookkeeping are noise-dominated.
+    """
+    zero = torch.zeros_like(x)
+    if radius <= 0.0 or steps <= 0:
+        return zero
+
+    with torch.no_grad():
+        best_value = objective(x)
+    best_delta = zero
+    step_size = _STEP_SIZE_FACTOR * radius / steps
+
+    for restart in range(max(1, restarts)):
+        delta = (
+            zero.clone()
+            if restart == 0
+            else _random_in_ball(tuple(x.shape), radius, x.device, x.dtype, generator)
+        )
+        for _ in range(steps):
+            delta.requires_grad_(True)
+            value = objective(x + delta)
+            (gradient,) = torch.autograd.grad(value, delta)
+            with torch.no_grad():
+                normalized = gradient / torch.linalg.norm(gradient).clamp(min=1e-12)
+                delta = _project_to_ball(delta.detach() - step_size * normalized, radius)
+
+        with torch.no_grad():
+            value = objective(x + delta)
+        if value < best_value:
+            best_value, best_delta = value, delta.detach()
+
+    return best_delta

@@ -3,11 +3,11 @@
 policy's **state** input, for the raw, alpha-smoothing, and robustified
 (state-space smoothed) controllers side by side.
 
-At every environment step, before the policy sees the (normalized) state, an
-attacker searches a small L2 ball ``||delta|| <= --attack-radius`` around it
-for the perturbation that most hurts the mission (reduces goal progress /
-steers toward an obstacle — see ``uav3d_attacks.py``), then the resulting
-``state + delta`` is fed to the policy:
+At every environment step, before the controller sees the (normalized) state, an
+attacker runs PGD inside a small L2 ball ``||delta|| <= --attack-radius`` around
+it, minimizing the expected discounted return ``E[r + gamma V(s')]`` under that
+branch's own action distribution (see ``uav3d_attacks.py``). The resulting
+``state + delta`` is fed to the controller:
 
   * raw branch: ``policy.sample(state + delta)`` — no defense.
   * alpha branch: the same state-space ``GaussianAlphaTrimmingSmoothing``
@@ -40,8 +40,8 @@ from collect_uav3d_rollouts import (
 from dynamics import UAV3D
 from rollout_io import BIMODAL_START_STATE, PolicyRolloutData, RolloutBundle, save_rollouts
 from stochastic_functions import UAV3DPolicyStochasticFunction
-from train_rl import VariationalPolicy, normalize_state
-from uav3d_attacks import _find_best_delta_for_smoother, _find_best_delta_raw
+from train_rl import ValueNetwork, VariationalPolicy, normalize_state
+from uav3d_attacks import load_critic, make_raw_objective, make_smoothed_objective, pgd_attack
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -52,68 +52,75 @@ from randomized_smoothing.dataclasses import (
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 
 
-def _attacked_raw_action_fn(
+def attacked_raw_action_fn(
     policy: VariationalPolicy,
     env: UAV3D,
+    critic: ValueNetwork,
+    gamma: float,
     radius: float,
-    num_candidates: int,
+    pgd_steps: int,
+    pgd_restarts: int,
+    eot_samples: int,
     device: torch.device,
-    obstacle_margin_weight: float,
-    attack_prob: float,
 ):
+    """Per-step PGD-attacked raw policy.
+
+    The attack scores the *same* distribution the controller then executes --
+    ``pi(.|x+delta)``, with the mixture gate handled analytically. An earlier
+    version scored ``policy.deterministic()`` (the argmax-gate component mean)
+    while executing ``policy.sample()``, so on a bimodal state the attack was
+    aimed at an action the controller emitted only part of the time.
+    """
     def f(state: np.ndarray) -> np.ndarray:
         x = torch.tensor(normalize_state(state), dtype=torch.float32, device=device).unsqueeze(0)
-        attacked = attack_prob >= 1.0 or np.random.rand() < attack_prob
-        if attacked:
-            delta = _find_best_delta_raw(
-                policy=policy, env=env, true_state=state, x=x,
-                radius=radius, num_candidates=num_candidates,
-                obstacle_margin_weight=obstacle_margin_weight,
-            )
-            x = x + delta.unsqueeze(0)
+        objective = make_raw_objective(
+            policy=policy, env=env, true_state=state, critic=critic,
+            gamma=gamma, eot_samples=eot_samples,
+        )
+        delta = pgd_attack(objective, x, radius=radius, steps=pgd_steps, restarts=pgd_restarts)
         with torch.no_grad():
-            action_t, _, _ = policy.sample(x)
+            action_t, _, _ = policy.sample(x + delta)
         return action_t.squeeze(0).cpu().numpy().astype(np.float32)
     return f
 
 
-def _attacked_robust_action_fn(
+def attacked_smoothed_action_fn(
+    policy: VariationalPolicy,
     stochastic_fn: UAV3DPolicyStochasticFunction,
     env: UAV3D,
+    critic: ValueNetwork,
+    gamma: float,
     parameters: Parameters,
     sigma: float,
     radius: float,
-    num_candidates: int,
-    screen_samples: int,
+    pgd_steps: int,
+    pgd_restarts: int,
+    eot_samples: int,
     device: torch.device,
-    obstacle_margin_weight: float,
-    attack_prob: float,
 ):
+    """Per-step PGD-attacked smoothed controller (alpha ``k=1`` or clustered ``k>1``).
+
+    Two smoothers are built per step, deliberately:
+
+      * the **search** smoother, anchored at the clean ``x``, whose cluster the
+        attack differentiates through. Its partition is frozen, which is what
+        makes the attack tractable and is the strongest thing an attacker can
+        compute without re-clustering inside every PGD step.
+      * the **execution** smoother, anchored at ``x + delta``. A deployed
+        controller only ever sees the attacked reading, never the clean one, so
+        it re-clusters at the perturbed input.
+    """
     def f(state: np.ndarray) -> np.ndarray:
         x = torch.tensor(normalize_state(state), dtype=torch.float32, device=device).unsqueeze(0)
-        attacked = attack_prob >= 1.0 or np.random.rand() < attack_prob
-        if not attacked:
-            return _robustified_action_from_x(stochastic_fn, x, parameters, sigma)
-
-        # Cheap search: reuse a smoother anchored at the clean state as a
-        # proxy for "what would the robustified pipeline do near x+delta"
-        # (exploits AlphaTrimmingSmoothing.monte_carlo's cluster reuse), so
-        # scoring num_candidates deltas costs only screen_samples policy
-        # calls each, not a full re-clustering per candidate.
         search_smoother = GaussianAlphaTrimmingSmoothing(
             stochastic_function=stochastic_fn, x=x, sigma=sigma, parameters=parameters,
         )
-        delta = _find_best_delta_for_smoother(
-            smoother=search_smoother, env=env, true_state=state,
-            radius=radius, num_candidates=num_candidates, screen_samples=screen_samples,
-            obstacle_margin_weight=obstacle_margin_weight,
+        objective = make_smoothed_objective(
+            policy=policy, smoother=search_smoother, env=env, true_state=state,
+            critic=critic, gamma=gamma, eot_samples=eot_samples,
         )
-        x_adv = x + delta.unsqueeze(0)
-
-        # Actually-executed action: a fresh smoother anchored at the attacked
-        # observation, matching real deployment (the controller only ever
-        # sees x_adv, never the clean x).
-        return _robustified_action_from_x(stochastic_fn, x_adv, parameters, sigma)
+        delta = pgd_attack(objective, x, radius=radius, steps=pgd_steps, restarts=pgd_restarts)
+        return _robustified_action_from_x(stochastic_fn, x + delta, parameters, sigma)
     return f
 
 
@@ -126,7 +133,14 @@ def main() -> None:
     parser.add_argument("--smoothing-N", type=int, default=30,
                         help="Noisy-state samples used inside smooth() per env step.")
     parser.add_argument("--confidence-N", type=int, default=4000)
-    parser.add_argument("--alpha", type=float, default=0.4)
+    parser.add_argument("--alpha", type=float, default=0.2,
+                        help="Alpha-trim fraction, shared by both smoothed branches. "
+                             "Must be BELOW the state's minor-mode mass: alpha-trimming "
+                             "averages the modes only while some minority samples "
+                             "survive the trim. At alpha >= minor mass it removes the "
+                             "minority mode outright and k=1 silently becomes a mode "
+                             "*selector*, which does not fail and is not the baseline "
+                             "the paper is comparing against.")
     parser.add_argument("--coverage", type=float, default=0.9)
     parser.add_argument("--max-clusters", type=int, default=3)
     parser.add_argument("--dbscan-eps", type=float, default=0.45)
@@ -137,18 +151,16 @@ def main() -> None:
     parser.add_argument("--attack-radius", type=float, default=0.05,
                         help="Epsilon: L2 ball radius for the state-space attack, "
                              "in the same (normalized-state) units as --sigma.")
-    parser.add_argument("--attack-num-candidates", type=int, default=24,
-                        help="Candidate perturbations sampled per attack search.")
-    parser.add_argument("--attack-screen-samples", type=int, default=6,
-                        help="Monte Carlo draws per candidate when scoring "
-                             "against the robust branch's smoother.")
-    parser.add_argument("--attack-obstacle-margin-weight", type=float, default=0.0,
-                        help="Soft bias in the attack's scoring function toward "
-                             "obstacle proximity, even short of an outright "
-                             "one-step collision.")
-    parser.add_argument("--attack-prob", type=float, default=1.0,
-                        help="Probability the attack is applied at each step "
-                             "(1.0 = every step).")
+    parser.add_argument("--pgd-steps", type=int, default=40,
+                        help="PGD iterations per env step.")
+    parser.add_argument("--pgd-restarts", type=int, default=3,
+                        help="Random restarts per attack; the first always starts "
+                             "at delta=0, and the best result across restarts wins.")
+    parser.add_argument("--eot-samples", type=int, default=64,
+                        help="Fixed noise draws the attack objective averages over "
+                             "(expectation-over-transformation with common random "
+                             "numbers). Held constant across PGD steps so the "
+                             "objective is deterministic and the descent is real.")
     parser.add_argument("--no-raw", action="store_true",
                         help="Skip rolling out the attacked raw policy.")
     parser.add_argument("--no-alpha", action="store_true",
@@ -168,7 +180,9 @@ def main() -> None:
     checkpoint_path = Path(args.checkpoint)
     policy, action_scale = _load_uav3d_policy(checkpoint_path)
     policy.to(device)
+    critic, gamma = load_critic(checkpoint_path, device)
     print(f"Loaded VI-BNN policy from {checkpoint_path} (action_scale={action_scale}) onto {device}.")
+    print(f"Loaded critic (gamma={gamma}) — the attack minimizes E[r + gamma V(s')].")
 
     stochastic_fn = UAV3DPolicyStochasticFunction(policy=policy)
 
@@ -211,13 +225,13 @@ def main() -> None:
             result = _collect_trajectories(
                 env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
                 num_trajectories=args.num_trajectories,
-                action_fn=_attacked_raw_action_fn(
-                    policy=policy, env=env, radius=args.attack_radius,
-                    num_candidates=args.attack_num_candidates, device=device,
-                    obstacle_margin_weight=args.attack_obstacle_margin_weight,
-                    attack_prob=args.attack_prob,
+                action_fn=attacked_raw_action_fn(
+                    policy=policy, env=env, critic=critic, gamma=gamma,
+                    radius=args.attack_radius, pgd_steps=args.pgd_steps,
+                    pgd_restarts=args.pgd_restarts, eot_samples=args.eot_samples,
+                    device=device,
                 ),
-                label="attacked-raw", keep_traces=is_primary,
+                label="attacked-raw", keep_traces=is_primary, gamma=gamma,
             )
             per_seed_results["raw"].append(result)
             if is_primary:
@@ -230,15 +244,14 @@ def main() -> None:
             result = _collect_trajectories(
                 env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
                 num_trajectories=args.num_trajectories,
-                action_fn=_attacked_robust_action_fn(
-                    stochastic_fn=stochastic_fn, env=env, parameters=parameters_alpha,
+                action_fn=attacked_smoothed_action_fn(
+                    policy=policy, stochastic_fn=stochastic_fn, env=env,
+                    critic=critic, gamma=gamma, parameters=parameters_alpha,
                     sigma=args.sigma, radius=args.attack_radius,
-                    num_candidates=args.attack_num_candidates,
-                    screen_samples=args.attack_screen_samples, device=device,
-                    obstacle_margin_weight=args.attack_obstacle_margin_weight,
-                    attack_prob=args.attack_prob,
+                    pgd_steps=args.pgd_steps, pgd_restarts=args.pgd_restarts,
+                    eot_samples=args.eot_samples, device=device,
                 ),
-                label="attacked-alpha", keep_traces=is_primary,
+                label="attacked-alpha", keep_traces=is_primary, gamma=gamma,
             )
             per_seed_results["alpha"].append(result)
             if is_primary:
@@ -250,15 +263,14 @@ def main() -> None:
         result = _collect_trajectories(
             env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
             num_trajectories=args.num_trajectories,
-            action_fn=_attacked_robust_action_fn(
-                stochastic_fn=stochastic_fn, env=env, parameters=parameters_robust,
+            action_fn=attacked_smoothed_action_fn(
+                policy=policy, stochastic_fn=stochastic_fn, env=env,
+                critic=critic, gamma=gamma, parameters=parameters_robust,
                 sigma=args.sigma, radius=args.attack_radius,
-                num_candidates=args.attack_num_candidates,
-                screen_samples=args.attack_screen_samples, device=device,
-                obstacle_margin_weight=args.attack_obstacle_margin_weight,
-                attack_prob=args.attack_prob,
+                pgd_steps=args.pgd_steps, pgd_restarts=args.pgd_restarts,
+                eot_samples=args.eot_samples, device=device,
             ),
-            label="attacked-robust", keep_traces=is_primary,
+            label="attacked-robust", keep_traces=is_primary, gamma=gamma,
         )
         per_seed_results["robust"].append(result)
         if is_primary:
@@ -279,10 +291,14 @@ def main() -> None:
             "goal": (float(goal_rates.mean()), float(goal_rates.std())),
             "collision": (float(coll_rates.mean()), float(coll_rates.std())),
         }
-        traces, outcomes, counts, _, _ = primary[name]
+        traces, outcomes, counts, _, _, _ = primary[name]
+        returns_all = np.concatenate([r[5] for r in per_seed_results[name]])
 
         print(f"{label}: goal={counts['goal']} / collision={counts['collision']} / "
               f"timeout={counts['timeout']}  (seed={args.seed})")
+        print(f"{label}  discounted return = {returns_all.mean():+.3f} ± "
+              f"{returns_all.std() / np.sqrt(returns_all.size):.3f} (s.e., "
+              f"n={returns_all.size} trajectories)")
         print(f"{label}  collision rate = {coll_rates.mean():.3f} ± {coll_rates.std():.3f} "
               f"(goal = {goal_rates.mean():.3f} ± {goal_rates.std():.3f}, "
               f"timeout = {timeout_rates.mean():.3f} ± {timeout_rates.std():.3f}) "
@@ -315,10 +331,10 @@ def main() -> None:
             "dbscan_min_samples": args.dbscan_min_samples,
             "noise_std": args.noise_std,
             "attack_radius": args.attack_radius,
-            "attack_num_candidates": args.attack_num_candidates,
-            "attack_screen_samples": args.attack_screen_samples,
-            "attack_obstacle_margin_weight": args.attack_obstacle_margin_weight,
-            "attack_prob": args.attack_prob,
+            "pgd_steps": args.pgd_steps,
+            "pgd_restarts": args.pgd_restarts,
+            "eot_samples": args.eot_samples,
+            "gamma": gamma,
             "seed": args.seed,
             "num_seeds": num_seeds,
         },

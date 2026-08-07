@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 import torch
 
+from .distributions import Distribution
+
 
 class StochasticFunction(ABC):
     @abstractmethod
@@ -19,7 +21,7 @@ class StochasticFunction(ABC):
     def sample_from_noisy_inputs(
             self,
             x: torch.Tensor,
-            smoothing_distribution: torch.distributions.Distribution,
+            smoothing_distribution: Distribution,
             num_samples: int,
             h: list[torch.Tensor] = [],
             noise_sub_batch_size: int | None = None,
