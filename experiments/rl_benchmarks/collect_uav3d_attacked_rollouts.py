@@ -5,8 +5,9 @@ policy's **state** input, for the raw, alpha-smoothing, and robustified
 
 At every environment step, before the controller sees the (normalized) state, an
 attacker runs PGD inside a small L2 ball ``||delta|| <= --attack-radius`` around
-it, minimizing the expected discounted return ``E[r + gamma V(s')]`` under that
-branch's own action distribution (see ``uav3d_attacks.py``). The resulting
+it, minimizing the expected discounted return ``E_{a,w}[r + gamma V(x')]`` under
+that branch's own action distribution and the env's process noise (see
+``uav3d_attacks.py``). The resulting
 ``state + delta`` is fed to the controller:
 
   * raw branch: ``policy.sample(state + delta)`` — no defense.
@@ -182,7 +183,7 @@ def main() -> None:
     policy.to(device)
     critic, gamma = load_critic(checkpoint_path, device)
     print(f"Loaded VI-BNN policy from {checkpoint_path} (action_scale={action_scale}) onto {device}.")
-    print(f"Loaded critic (gamma={gamma}) — the attack minimizes E[r + gamma V(s')].")
+    print(f"Loaded critic (gamma={gamma}) — the attack minimizes E_a,w[r + gamma V(x')].")
 
     stochastic_fn = UAV3DPolicyStochasticFunction(policy=policy)
 

@@ -8,30 +8,20 @@ the actual dynamics, are untouched; only the observation is corrupted.
 
 **Objective.** The attacker minimizes the expected discounted return
 
-    J(delta) = E_{a ~ pi_branch(. | x + delta)} [ r(s, a) + gamma * V(s') ],
-    s' = A s + B a,
+    J(delta) = E_{a ~ pi_branch(. | x + delta), w ~ P_w} [ r(x, a) + gamma * V(x') ],
+    x' = A x + B a + w,
 
-evaluated at the *true* state ``s``. This is the quantity the task is scored on,
+evaluated at the *true* state ``x``. This is the quantity the task is scored on,
 so the attack and the reported metric are the same object -- no objective/metric
 mismatch to argue about.
 
-This replaces an earlier 24-candidate uniform random search over a one-step
-"distance to goal" cost. That objective had two fatal properties: it was a step
-function (the +/-5 collision and -10 goal branches, with a flat basin between
-them), so no gradient existed and random search was the only option; and with the
-obstacle term disabled it degenerated to "push the UAV backwards", which has no
-particular reason to find the perturbation that breaks mode-averaging. The random
-search then used ~62% of the available budget on average, i.e. it badly
-under-solved the inner maximization, which flatters every branch equally and
-compresses exactly the separation the experiment is trying to measure.
-
-The critic fixes both problems at once: ``V`` is a smooth learned surrogate for
-the collision and goal terminals, which makes the whole objective differentiable
-and therefore PGD-able.
-
-**Differentiability.** The full path ``delta -> action -> s' -> V(s')`` is
+**Differentiability.** The full path ``delta -> action -> x' -> V(x')`` is
 differentiable:
 
+  * The expectation over the process noise ``w`` is a deterministic
+    Gauss-Hermite rule over the three noisy velocity axes, not a Monte-Carlo
+    average, so it adds no variance and leaves the objective an exact function
+    of ``delta`` -- which is what lets PGD compare iterates and restarts.
   * ``VariationalPolicy.sample`` reparameterizes (``rsample``), and
     ``distribution_params`` exposes the mixture gate in closed form, so the raw
     branch is handled analytically over its K components -- the gradient sees both
@@ -49,6 +39,7 @@ measured return is attributable to the defense rather than to the attack.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -116,6 +107,59 @@ _NORMALIZER = torch.from_numpy(1.0 / normalize_state(np.ones(6, dtype=np.float32
 # lookahead matches the env exactly.
 _STATE_CLIP = torch.tensor([torch.inf, 7.0, torch.inf, 7.0, torch.inf, 7.0])
 
+# Gauss-Hermite nodes per velocity axis. The rule is exact for polynomials of
+# degree < 2*3 = 5 in each component, so with the process noise this small the
+# quadrature error is far below the critic's own approximation error. Three
+# axes carry noise, hence 3**3 = 27 evaluations of ``V`` per action.
+_NOISE_NODES_PER_AXIS = 3
+
+# Actions per critic call. The quadrature multiplies the batch by the node count,
+# which the attack path never notices (a few hundred actions) but which the dense
+# action grids in ``uav3d_attack_mechanism.py`` do: 220**2 actions x 27 nodes is
+# 1.3M rows and ~2 GB of activations in one shot. Chunking bounds that; under
+# autograd the graph is retained either way, but those batches are small.
+_ACTION_CHUNK = 4096
+
+
+@lru_cache(maxsize=None)
+def _process_noise_quadrature(
+    gaussian: bool, sigma: float, nodes_per_axis: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Product Gauss-Hermite rule for ``E_{w ~ P_w}`` under ``UAV3D._sample_noise``.
+
+    Returns ``(offsets, weights)``, ``(Q, 6)`` and ``(Q,)`` with the weights
+    summing to one. The offsets are zero in the position slots: ``_sample_noise``
+    perturbs only the velocity components 1/3/5, independently per axis.
+
+    A deterministic rule rather than a Monte-Carlo average over sampled ``w``,
+    because ``pgd_attack`` compares objective values across steps and restarts
+    and needs the objective to be an exact function of ``delta``. Common random
+    numbers would also work, but at equal cost they are strictly less accurate:
+    27 nodes integrate this noise essentially exactly, 27 samples do not.
+    """
+    if sigma <= 0.0:
+        return np.zeros((1, 6)), np.ones(1)
+
+    nodes, weights = np.polynomial.hermite.hermgauss(nodes_per_axis)
+    # Physicists' convention: ``int f(t) exp(-t^2) dt = sum_i w_i f(t_i)``. The
+    # substitution ``t = v / (sqrt(2) sigma)`` turns it into ``E_{v~N(0,sigma^2)}``.
+    axis_nodes = np.sqrt(2.0) * sigma * nodes
+    axis_weights = weights / np.sqrt(np.pi)
+
+    if not gaussian:
+        # The heavy-tailed branch of ``_sample_noise`` draws N(0, sigma) or
+        # N(0, 2 sigma) with equal probability, per axis. A mixture integrates as
+        # the mixture of the component rules.
+        axis_nodes = np.concatenate([axis_nodes, 2.0 * axis_nodes])
+        axis_weights = 0.5 * np.concatenate([axis_weights, axis_weights])
+
+    node_grid = np.meshgrid(*(3 * [axis_nodes]), indexing="ij")
+    weight_grid = np.meshgrid(*(3 * [axis_weights]), indexing="ij")
+
+    offsets = np.zeros((axis_nodes.size**3, 6))
+    offsets[:, [1, 3, 5]] = np.stack([g.reshape(-1) for g in node_grid], axis=-1)
+    return offsets, np.prod(np.stack([g.reshape(-1) for g in weight_grid]), axis=0)
+
 
 def expected_q(
     env: UAV3D,
@@ -123,17 +167,32 @@ def expected_q(
     actions: torch.Tensor,
     critic: ValueNetwork,
     gamma: float,
+    nodes_per_axis: int = _NOISE_NODES_PER_AXIS,
 ) -> torch.Tensor:
-    """One-step action value ``r(s, a) + gamma * V(s')``, batched over ``actions``.
+    """One-step action value ``r(x, a) + gamma * E_w[V(x')]``, batched over ``actions``.
 
     Two calling conventions:
 
       * ``true_state`` ``(6,)`` with ``actions`` ``(..., 3)`` -> ``(...)``. The
         attack path: one state, many candidate actions.
       * ``true_state`` ``(n, 6)`` with ``actions`` ``(n, k, 3)`` -> ``(n, k)``.
-        The screening path in ``find_bimodal_state.py``: many states at once.
+        Many states at once.
 
     Fully differentiable in ``actions``.
+
+    The expectation is over the additive process noise of ``UAV3D.step``:
+    ``x' = A x + B a + w`` with ``w`` perturbing the three velocity components.
+    It is taken by the deterministic quadrature above, not by sampling, and it
+    does not commute with ``V`` -- dropping it and evaluating ``V(A x + B a)``
+    instead is a plug-in approximation off by the Jensen gap
+    ``0.5 * sigma^2 * tr(D^2 V)`` over the velocity block. Small at the noise
+    levels used here, but it is a bias, and it is one the *executed* controller
+    is actually exposed to.
+
+    Positions are noise-free at this horizon: ``w`` enters only the velocities,
+    and the double integrator advances position by the *pre-step* velocity, so
+    ``x'_pos = x_pos + x_vel + 0.5 a`` regardless of ``w``. The progress reward
+    is therefore exact, and the expectation falls entirely on ``V``.
 
     Only the *dense* reward branch is used: ``0.5 * progress - 0.01``. The
     terminal branches of ``UAV3D.step`` (-5 corridor exit, -5 obstacle entry,
@@ -142,9 +201,9 @@ def expected_q(
     contain them. Dropping them is precisely what makes this objective
     differentiable.
 
-    Side-effect free: reads only ``env.A``/``env.B``/``env.goal_center`` and the
-    action bounds, never ``env.step``, which is stateful and consumes the global
-    ``np.random`` stream shared with the live rollout.
+    Side-effect free: reads only ``env.A``/``env.B``/``env.goal_center``, the
+    action bounds and the noise parameters, never ``env.step``, which is stateful
+    and consumes the global ``np.random`` stream shared with the live rollout.
     """
     device, dtype = actions.device, actions.dtype
     A = torch.as_tensor(env.A, device=device, dtype=dtype)
@@ -162,15 +221,28 @@ def expected_q(
         next_state = (state @ A.T).unsqueeze(1) + clipped @ B.T   # (n, k, 6)
         old_position = state[:, position_index].unsqueeze(1)      # (n, 1, 3)
 
-    clip = _STATE_CLIP.to(device=device, dtype=dtype)
-    next_state = next_state.clamp(-clip, clip)
     new_position = next_state[..., position_index]
-
     previous_distance = torch.linalg.norm(old_position - goal, dim=-1)
     new_distance = torch.linalg.norm(new_position - goal, dim=-1)
     reward = 0.5 * (previous_distance - new_distance) - 0.01
 
-    value = critic(next_state / _NORMALIZER.to(device=device, dtype=dtype))
+    offsets, quadrature_weights = _process_noise_quadrature(
+        bool(env.gaussian_noise), float(env.noise_std), int(nodes_per_axis)
+    )
+    # (..., 1, 6) + (Q, 6) -> (..., Q, 6). The velocity clip is applied *after*
+    # the noise, matching the order in ``UAV3D.step``.
+    noisy_next_state = next_state.unsqueeze(-2) + torch.as_tensor(
+        offsets, device=device, dtype=dtype
+    )
+    clip = _STATE_CLIP.to(device=device, dtype=dtype)
+    noisy_next_state = noisy_next_state.clamp(-clip, clip)
+
+    normalizer = _NORMALIZER.to(device=device, dtype=dtype)
+    weights = torch.as_tensor(quadrature_weights, device=device, dtype=dtype)
+    value = torch.cat([
+        (critic(chunk / normalizer) * weights).sum(-1)
+        for chunk in noisy_next_state.reshape(-1, weights.shape[0], 6).split(_ACTION_CHUNK)
+    ]).view(reward.shape)
     return reward + gamma * value
 
 
@@ -320,7 +392,7 @@ def make_raw_objective(
     eot_samples: int,
     generator: torch.Generator | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """``x -> E_{a ~ pi(.|x)}[ r + gamma V ]`` for the raw policy."""
+    """``x -> E_{a ~ pi(.|x), w}[ r + gamma V(x') ]`` for the raw policy."""
     device = next(policy.parameters()).device
     component_noise = torch.randn(
         (eot_samples, policy.num_components, policy.action_dim),
@@ -346,7 +418,7 @@ def make_smoothed_objective(
     eot_samples: int,
     generator: torch.Generator | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """``x -> E_{a ~ smoothed(.|x)}[ r + gamma V ]`` for one smoothed branch.
+    """``x -> E_{a ~ smoothed(.|x), w}[ r + gamma V(x') ]`` for one smoothed branch.
 
     ``eot_samples`` independent realizations of the smoothing draw are averaged.
     The old search scored each candidate on **6** samples and took an argmax over

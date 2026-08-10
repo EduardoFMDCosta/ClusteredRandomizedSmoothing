@@ -12,9 +12,9 @@ at the obstacle the two routes go around. Clustered smoothing keeps one atom per
 mode, so every emitted action is one a mode actually endorses.
 
 That "valley" is usually asserted. Here it is drawn: the background is the
-critic's own action value ``Q(s, a) = r(s, a) + gamma * V(s')`` over the action
-plane, so the reader can see the low-value ridge the averaged atom sits on and
-read off how much value the averaging costs.
+critic's own action value ``Q(x, a) = r(x, a) + gamma * E_w[V(x')]`` over the
+action plane, so the reader can see the low-value ridge the averaged atom sits on
+and read off how much value the averaging costs.
 
 Layout: two columns (clean input / worst-case input at ``eps = sigma``), with the
 raw action cloud, the k=1 atom, and the k>1 atoms overlaid on the Q field.
@@ -279,7 +279,9 @@ def main() -> None:
     axes[0].legend(handles=handles, loc="upper left", frameon=True, fontsize=8)
 
     colorbar = fig.colorbar(mesh, ax=axes, fraction=0.035, pad=0.02)
-    colorbar.set_label(r"Action value  $Q(s,a) = r(s,a) + \gamma V(s')$")
+    colorbar.set_label(
+        r"Action value  $Q(x,a) = r(x,a) + \gamma\,\mathbb{E}_w[V(x')]$"
+    )
 
     fig.suptitle(
         "Mode-averaging puts the single-atom defense in the low-value valley "
