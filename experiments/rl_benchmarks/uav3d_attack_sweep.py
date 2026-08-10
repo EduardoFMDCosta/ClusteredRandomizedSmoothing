@@ -1,41 +1,61 @@
 #!/usr/bin/env python3
-"""Expected discounted return under a PGD state attack, for the raw policy,
+"""Reach-avoid outcome under a PGD state attack, for the raw policy,
 single-cluster alpha-smoothing, and clustered robust smoothing.
 
-This is the whole adversarial experiment. One attack (PGD), one metric
-(discounted return), one start state (``BIMODAL_START_STATE``).
+This is the whole adversarial experiment. One attack (PGD), one metric (goal and
+collision rate), one start state (``BIMODAL_START_STATE``).
 
-**Why discounted return and not a distributional metric.** The previous version
-reported Wasserstein-2 between each branch's action distribution and a reference
-anchored on the *clean raw policy*. That metric cannot show a defense working:
-``W2(raw_clean, raw_clean) = 0``, so the undefended baseline wins at eps=0 by
-construction, and clustered smoothing -- whose entire purpose is to differ from
-the raw policy in a useful way -- is penalized for doing so. Discounted return is
-task-absolute: no branch is privileged, nothing is free at eps=0, and it is
-*exactly what the attack minimizes*, so objective and metric coincide.
+**Why outcome rates and not discounted return.** Goal and collision rate *are*
+the specification: the task is reach-avoid, and the return is a shaped training
+signal towards it, not the objective itself. Its dense ``0.5 * progress - 0.01``
+term additionally rewards short paths, which no part of the specification asks
+for -- a controller that reaches the goal slowly but never collides is a success,
+and return would rank it below a faster one. Return is still recorded, and shown
+in the console summary as a diagnostic: PGD minimizes it, so a flat return curve
+is evidence the attack is not biting.
 
-It is also far higher-powered than the goal/collision rates it replaces. Those
-are a coarse categorical readout that saturates: past ~2 sigma every branch is at
-~100% collision and the curves are indistinguishable, which is how a five-point
-radius sweep ended up with three uninformative points.
+Reporting something other than the attacked quantity is also the more
+defensible choice, since it forecloses "you measured exactly what you optimized".
+
+Two arguments once made for return no longer apply. Rates were said to saturate
+-- true on the old 0-to-8-sigma grid where every branch sat at ~100% collision
+past 2 sigma, but the grid now stops at 1 sigma precisely to avoid that. And
+rates were said to be low-powered -- at n=2000 the binomial standard error at
+p=0.5 is 0.011, which is not a power problem.
+
+**Why not a distributional metric.** An earlier version reported Wasserstein-2
+between each branch's action distribution and a reference anchored on the *clean
+raw policy*. That metric cannot show a defense working: ``W2(raw_clean,
+raw_clean) = 0``, so the undefended baseline wins at eps=0 by construction, and
+clustered smoothing -- whose entire purpose is to differ from the raw policy in a
+useful way -- is penalized for doing so.
 
 **Fairness.** The branches differ only in ``max_num_clusters`` (1 vs
 ``--max-clusters``). Every other smoothing parameter, the attack budget, the PGD
-schedule, the trajectory count and the seeds are shared. Each branch is attacked
+schedule, the trajectory count and the seed are shared. Each branch is attacked
 white-box against *itself*, since the smoothing guarantee only holds for the
 smoothed predictor; the critic supplying the task value is shared, so no branch
 faces an easier objective.
+
+**Replication.** ``--num-trajectories`` is the only sample-size knob, because the
+trajectory is the only replicate unit there is: the policy, env, start state,
+defense parameters and radius are all fixed, so every trajectory is an i.i.d.
+draw from one distribution and the CI is computed over the whole set. 
+
+``--seed`` is reset before every (branch, radius) pair, which fixes the stream
+all three branches start from at a radius and gives the sweep common random
+numbers along the x-axis.
 
 **Radius grid.** Expressed and plotted in units of sigma. The certificate is
 already vacuous beyond ~2 sigma and every branch has collapsed there, so the grid
 is concentrated below sigma where the defense is meant to do something.
 
-**Sharding.** The run is embarrassingly parallel over (radius, seed): one shard
-per combination, written to ``--analysis-dir`` as ``shard_r*_s*.json``. Launch
-them independently on a cluster, then merge and plot with ``--plot``.
+**Sharding.** The run is embarrassingly parallel over radius: one shard per
+radius, written to ``--analysis-dir`` as ``shard_r*.json``. Launch them
+independently on a cluster, then merge and plot with ``--plot``.
 
-    # one HPC job per shard
-    python uav3d_attack_sweep.py --radius-values 0.025 --seeds 0
+    # one HPC job per radius
+    python uav3d_attack_sweep.py --radius-values 0.025
     ...
     # after all shards land
     python uav3d_attack_sweep.py --plot
@@ -51,6 +71,8 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from collect_uav3d_attacked_rollouts import (
     attacked_raw_action_fn,
     attacked_smoothed_action_fn,
@@ -139,12 +161,34 @@ def mean_and_ci(values: np.ndarray, confidence: float = 0.95) -> tuple[float, fl
     return float(values.mean()), float(z * values.std(ddof=1) / np.sqrt(n))
 
 
+def proportion_ci(
+    successes: int, total: int, confidence: float = 0.95
+) -> tuple[float, float, float]:
+    """``(rate, lo, hi)`` -- Wilson score interval for a binomial proportion.
+
+    Wilson rather than the normal approximation ``p +/- z*sqrt(p(1-p)/n)``
+    because the interesting radii drive these rates towards 0 and 1, where the
+    normal interval is both too narrow and runs outside [0, 1] -- it would claim
+    a negative collision rate at eps=0. Wilson stays inside the unit interval and
+    is asymmetric near the ends, which is the honest shape.
+    """
+    if total <= 0:
+        return float("nan"), float("nan"), float("nan")
+    z = {0.90: 1.645, 0.95: 1.960, 0.99: 2.576}[confidence]
+    rate = successes / total
+    denominator = 1.0 + z * z / total
+    center = (rate + z * z / (2 * total)) / denominator
+    half = (z / denominator) * np.sqrt(
+        rate * (1.0 - rate) / total + z * z / (4 * total * total)
+    )
+    return rate, float(max(0.0, center - half)), float(min(1.0, center + half))
+
+
 # ---------------------------------------------------------------------------
-# One shard: (radius, seed) x every branch
+# One shard: one radius x every branch
 # ---------------------------------------------------------------------------
 def run_shard(
     radius: float,
-    seed: int,
     args: argparse.Namespace,
     policy,
     critic,
@@ -157,13 +201,22 @@ def run_shard(
         "alpha": defense_parameters(1, args.alpha),
         "robust": defense_parameters(args.max_clusters, args.alpha),
     }
-    shard: dict[str, Any] = {"radius": float(radius), "seed": int(seed), "branches": {}}
+    shard: dict[str, Any] = {"radius": float(radius), "seed": int(args.seed), "branches": {}}
 
     for branch in BRANCHES:
-        # Reseed identically before each branch so all three see the same
-        # process-noise and policy-sampling stream at this radius.
-        np.random.seed(seed)
-        torch.manual_seed(seed)
+        # Reset to the same seed before every (branch, radius) pair. Two effects,
+        # both wanted:
+        #   * across branches at one radius, all three start from an identical
+        #     process-noise and policy-sampling stream;
+        #   * across radii for one branch, the sweep uses common random numbers,
+        #     so the *shape* of the curve is not confounded by fresh noise at
+        #     every point.
+        # The coupling is nominal rather than exact once the branches diverge --
+        # the smoothed branches draw thousands of samples per env step against
+        # the raw branch's handful, so the streams decorrelate after the first
+        # action. The CIs below are computed per branch and claim no pairing.
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
 
         if branch == "raw":
             action_fn = attacked_raw_action_fn(
@@ -182,26 +235,26 @@ def run_shard(
         _, _, counts, _, _, returns = _collect_trajectories(
             env=env, start_state=BIMODAL_START_STATE, horizon=args.horizon,
             num_trajectories=args.num_trajectories, action_fn=action_fn,
-            label=f"r={radius:.4f} {branch} seed={seed}", keep_traces=False, gamma=gamma,
+            label=f"r={radius:.4f} {branch}", keep_traces=False, gamma=gamma,
         )
         shard["branches"][branch] = {
             "returns": [float(r) for r in returns],
             "counts": dict(counts),
         }
         mean, half_width = mean_and_ci(returns)
-        print(f"  r={radius:.4f} seed={seed} {branch:>6}: "
+        print(f"  r={radius:.4f} {branch:>6}: "
               f"return {mean:+.3f} +/- {half_width:.3f} (95% CI)  {counts}")
 
     return shard
 
 
-def shard_path(analysis_dir: Path, radius: float, seed: int) -> Path:
-    return analysis_dir / f"shard_r{radius:.4f}_s{seed}.json"
+def shard_path(analysis_dir: Path, radius: float) -> Path:
+    return analysis_dir / f"shard_r{radius:.4f}.json"
 
 
 def load_shards(analysis_dir: Path) -> list[dict[str, Any]]:
     shards = []
-    for path in sorted(analysis_dir.glob("shard_r*_s*.json")):
+    for path in sorted(analysis_dir.glob("shard_r*.json")):
         with path.open(encoding="utf-8") as f:
             shards.append(json.load(f))
     if not shards:
@@ -212,11 +265,13 @@ def load_shards(analysis_dir: Path) -> list[dict[str, Any]]:
 
 
 def aggregate(shards: list[dict[str, Any]]) -> tuple[list[float], dict[str, Any]]:
-    """Pool trajectories across seeds, per (radius, branch).
+    """Pool trajectories per (radius, branch) across shards.
 
-    Trajectory counts are equal across seeds, so pooling and averaging the
-    per-seed means coincide; pooling is used because the CI is then computed on
-    the full sample rather than on a handful of seed means.
+    One shard per radius, so normally this is a straight read-through; the
+    concatenation matters only if a radius was run in several pieces. The CI is
+    computed on the full trajectory sample -- the trajectories *are* the
+    replicates, and there is no second level of variation to model, since
+    nothing about the experiment configuration varies between them.
     """
     radii = sorted({float(s["radius"]) for s in shards})
     pooled: dict[str, Any] = {}
@@ -234,11 +289,28 @@ def aggregate(shards: list[dict[str, Any]]) -> tuple[list[float], dict[str, Any]
                     for outcome, value in s["branches"][branch]["counts"].items():
                         counts[outcome] += value
             mean, half_width = mean_and_ci(returns)
-            rows.append({
-                "radius": radius, "mean": mean, "ci95": half_width,
-                "n": int(returns.size), "counts": counts,
-                "collision_rate": counts["collision"] / max(1, sum(counts.values())),
-            })
+            total = sum(counts.values())
+            row = {
+                "radius": radius, "n": int(returns.size), "counts": counts,
+                "total": total,
+                # Return is retained as a diagnostic -- it is what PGD minimizes,
+                # so a flat return curve means the attack is not biting -- but it
+                # is not the reported result. See the module docstring.
+                "return_mean": mean, "return_ci95": half_width,
+            }
+            for outcome in ("goal", "collision", "timeout"):
+                rate, lo, hi = proportion_ci(counts[outcome], total)
+                # Bernoulli s.d. of the per-trajectory indicator. Note this is a
+                # deterministic function of ``rate`` -- for a 0/1 outcome the mean
+                # fixes the variance -- so it restates the plotted curve rather
+                # than adding independent information. It is reported because it
+                # answers a different question from the CI: how much an individual
+                # trajectory varies, versus how well the rate itself is pinned down.
+                row[outcome] = {
+                    "rate": rate, "lo": lo, "hi": hi,
+                    "sd": float(np.sqrt(rate * (1.0 - rate))),
+                }
+            rows.append(row)
         pooled[branch] = rows
     return radii, pooled
 
@@ -246,66 +318,86 @@ def aggregate(shards: list[dict[str, Any]]) -> tuple[list[float], dict[str, Any]
 # ---------------------------------------------------------------------------
 # Figure 1: the headline
 # ---------------------------------------------------------------------------
-def plot_return_sweep(
+def plot_outcome_sweep(
     radii: list[float],
     pooled: dict[str, Any],
     sigma: float,
     output_path: Path,
 ) -> None:
-    """Discounted return vs. attack radius, absolute and relative to clean.
+    """Reach-avoid outcome rates vs. attack radius.
 
-    Panel (a) is the result. Panel (b) subtracts each branch's own clean return so
-    the *robustness* advantage is separated from the *clean-performance*
-    advantage -- without it a reader cannot tell whether a gap at eps>0 is the
-    defense resisting the attack or merely the head start it already had at
-    eps=0, and the honest answer is worth stating rather than hiding.
+    The two panels are the reach-avoid specification itself: reach the goal (a),
+    avoid the obstacles (b). They do not sum to one -- a trajectory that runs out
+    of horizon without either is a timeout, reported in the console table and the
+    JSON, and it is a distinct kind of failure from a collision.
 
-    A difference rather than a retained *fraction*: return is signed here (a
-    branch that mostly collides has a negative clean return), and a ratio against
-    a negative baseline inverts and is unreadable. The difference is well defined
-    either way and pins all three curves to 0 at eps=0 by construction, which is
-    what makes the panel legible as "degradation only".
+    Two bands, answering different questions:
+
+      * filled  -- Wilson 95% CI on the *rate*. How well the rate is pinned down;
+        shrinks as ``--num-trajectories`` grows. This is what decides whether two
+        branches differ. Asymmetric, and pinches near 0 and 1 rather than running
+        off the axis.
+      * dashed  -- ``rate +/- 1 s.d.`` of the per-trajectory 0/1 indicator,
+        ``sqrt(p(1-p))``. How much a single trajectory varies; does *not* shrink
+        with more data.
+
+    The s.d. is a deterministic function of the rate for a Bernoulli outcome, so
+    it carries no information the curve does not already -- it is drawn as a
+    reminder that individual trajectories are 0/1 events, and is widest exactly
+    where the rate is near 0.5. It is emphatically not an error bar: reading the
+    overlap of the dashed envelopes as "no difference" is the mistake that made
+    the previous figure set look null when the effects were overwhelming.
     """
     x = np.array(radii) / sigma
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.9), sharex=True)
 
     total_n = 0
-    for branch in BRANCHES:
-        style = BRANCH_STYLE[branch]
-        rows = pooled[branch]
-        mean = np.array([r["mean"] for r in rows])
-        ci = np.array([r["ci95"] for r in rows])
-        total_n = max(total_n, max(r["n"] for r in rows))
+    panels = ((axes[0], "goal", "Goal-reach rate", "(a) Reach: fraction arriving at the goal"),
+              (axes[1], "collision", "Collision rate", "(b) Avoid: fraction hitting an obstacle"))
 
-        axes[0].fill_between(x, mean - ci, mean + ci, alpha=0.2, color=style["color"], linewidth=0)
-        axes[0].plot(x, mean, marker=style["marker"], linewidth=1.5,
-                     color=style["color"], label=style["label"])
+    for ax, outcome, ylabel, title in panels:
+        for branch in BRANCHES:
+            style = BRANCH_STYLE[branch]
+            rows = pooled[branch]
+            rate = np.array([r[outcome]["rate"] for r in rows])
+            lo = np.array([r[outcome]["lo"] for r in rows])
+            hi = np.array([r[outcome]["hi"] for r in rows])
+            sd = np.array([r[outcome]["sd"] for r in rows])
+            total_n = max(total_n, max(r["total"] for r in rows))
 
-        lost = mean - mean[0]
-        axes[1].fill_between(x, lost - ci, lost + ci, alpha=0.2,
-                             color=style["color"], linewidth=0)
-        axes[1].plot(x, lost, marker=style["marker"], linewidth=1.5,
-                     color=style["color"], label=style["label"])
+            ax.fill_between(x, lo, hi, alpha=0.2, color=style["color"], linewidth=0)
+            # +/- 1 s.d. of the per-trajectory indicator, clipped to the unit
+            # interval since a rate cannot leave it.
+            for sign in (1.0, -1.0):
+                ax.plot(x, np.clip(rate + sign * sd, 0.0, 1.0), linestyle=(0, (4, 3)),
+                        linewidth=0.9, color=style["color"], alpha=0.55)
+            ax.plot(x, rate, marker=style["marker"], linewidth=1.5,
+                    color=style["color"], label=style["label"])
 
-    for ax in axes:
         ax.set_xlabel(r"Attack radius $\epsilon / \sigma$")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=9)
+        ax.set_ylim(-0.02, 1.02)
         ax.grid(True, linestyle=":", alpha=0.35)
         # The smoothing scale: to the right of it the attack is larger than the
         # noise the defense integrates over, and no guarantee survives.
         ax.axvline(1.0, color="0.45", linewidth=0.9, linestyle="--", alpha=0.8)
 
-    axes[0].set_ylabel("Expected discounted return")
-    axes[0].set_title("(a) Task performance under attack", fontsize=9)
-    axes[1].set_ylabel("Return lost vs. own clean run")
-    axes[1].set_title(r"(b) Degradation only (each branch zeroed at $\epsilon=0$)", fontsize=9)
-    axes[1].axhline(0.0, color="0.3", linewidth=0.8, linestyle=":")
+    # Band semantics belong in a legend, not a caption: two visually different
+    # envelopes that mean different things are exactly the thing a reader
+    # misreads. Proxy artists keep it independent of the branch entries.
+    band_handles = [
+        Patch(facecolor="0.45", alpha=0.25, label="95% CI on the rate"),
+        Line2D([0], [0], color="0.45", linestyle=(0, (4, 3)), linewidth=0.9,
+               label=r"$\pm 1$ s.d. of a single trajectory"),
+    ]
     axes[0].legend(loc="best", frameon=True, fontsize=8)
+    axes[1].legend(handles=band_handles, loc="best", frameon=True, fontsize=7)
 
     fig.suptitle(
-        f"Discounted return under white-box PGD state attack "
-        f"(n={total_n} trajectories/point, band = 95% CI on the mean; "
-        rf"dashed line = $\epsilon=\sigma$)",
+        f"Reach-avoid outcome under white-box PGD state attack "
+        rf"(n={total_n} trajectories/point; vertical dashed line = $\epsilon=\sigma$)",
         fontsize=10,
     )
     fig.tight_layout()
@@ -318,15 +410,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
     parser.add_argument("--radius-values", type=str,
-                        default="0.0,0.0125,0.025,0.0375,0.05,0.075,0.1",
-                        help="Attack radii in normalized state-space L2 units. The "
-                             "default grid is 0 to 2*sigma at sigma=0.05, concentrated "
-                             "below sigma where the defense can still act.")
-    parser.add_argument("--seeds", type=str, default="0,1,2,3,4")
+                        default="0.0,0.01,0.02,0.03,0.04,0.05",
+                        help="Attack radii in normalized state-space L2 units.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="RNG state, reset before every (branch, radius) pair.")
     parser.add_argument("--num-trajectories", type=int, default=400,
-                        help="Trajectories per (branch, radius, seed). With 5 seeds "
-                             "this is 2000 per plotted point.")
-    parser.add_argument("--horizon", type=int, default=1000)
+                        help="Trajectories per (branch, radius) -- the sample the "
+                             "plotted mean and its CI are computed from. The "
+                             "trajectories are the replicates: nothing about the "
+                             "experiment varies between them, so more trajectories "
+                             "is exactly what tightens the interval.")
+    parser.add_argument("--horizon", type=int, default=64)
     parser.add_argument("--sigma", type=float, default=0.05)
     parser.add_argument("--alpha", type=float, default=0.2,
                         help="Alpha-trim fraction, shared by both smoothed branches. "
@@ -348,7 +442,7 @@ def main() -> None:
                         default="experiments/uav_3d/analysis/adversarial")
     parser.add_argument("--figures-dir", type=str,
                         default="experiments/uav_3d/adversarial_figures")
-    parser.add_argument("--figure-name", type=str, default="uav3d_attack_return.png")
+    parser.add_argument("--figure-name", type=str, default="uav3d_attack_outcomes.png")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
@@ -357,7 +451,6 @@ def main() -> None:
 
     if not args.plot:
         radii = parse_radius_values(args.radius_values)
-        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
         device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
         checkpoint_path = Path(args.checkpoint)
@@ -372,16 +465,15 @@ def main() -> None:
 
         analysis_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        for index, (radius, seed) in enumerate(
-            [(r, s) for r in radii for s in seeds], start=1
-        ):
+        for index, radius in enumerate(radii, start=1):
             shard = run_shard(
-                radius=radius, seed=seed, args=args, policy=policy, critic=critic,
+                radius=radius, args=args, policy=policy, critic=critic,
                 gamma=gamma, stochastic_fn=stochastic_fn, env=env, device=device,
             )
             shard["config"] = {
                 "checkpoint": str(checkpoint_path),
                 "num_trajectories": int(args.num_trajectories),
+                "seed": int(args.seed),
                 "horizon": int(args.horizon),
                 "sigma": float(args.sigma),
                 "alpha": float(args.alpha),
@@ -398,19 +490,18 @@ def main() -> None:
                 "dbscan_min_samples": DBSCAN_MIN_SAMPLES,
                 "start_state": BIMODAL_START_STATE.tolist(),
             }
-            path = shard_path(analysis_dir, radius, seed)
+            path = shard_path(analysis_dir, radius)
             with path.open("w", encoding="utf-8") as f:
                 json.dump(shard, f, indent=2)
 
             elapsed = time.perf_counter() - started
-            total = len(radii) * len(seeds)
-            print(f"[{index}/{total}] wrote {path} | elapsed {format_duration(elapsed)} "
-                  f"| ETA {format_duration(elapsed / index * (total - index))}")
+            print(f"[{index}/{len(radii)}] wrote {path} | elapsed {format_duration(elapsed)} "
+                  f"| ETA {format_duration(elapsed / index * (len(radii) - index))}")
 
     shards = load_shards(analysis_dir)
     radii, pooled = aggregate(shards)
     sigma = float(shards[0].get("config", {}).get("sigma", args.sigma))
-    plot_return_sweep(radii, pooled, sigma, figure_path)
+    plot_outcome_sweep(radii, pooled, sigma, figure_path)
 
     summary_path = analysis_dir / "uav3d_attack_sweep.json"
     with summary_path.open("w", encoding="utf-8") as f:
@@ -423,14 +514,32 @@ def main() -> None:
         )
     print(f"saved: {summary_path}")
 
-    print("\n=== UAV3D attack sweep: discounted return (mean +/- 95% CI) ===")
+    for outcome, title in (("goal", "goal-reach rate"), ("collision", "collision rate")):
+        print(f"\n=== UAV3D attack sweep: {title} (95% Wilson CI) ===")
+        print("  eps/sigma  " + "".join(f"{BRANCH_STYLE[b]['plain']:>26}" for b in BRANCHES))
+        for i, radius in enumerate(radii):
+            cells = "".join(
+                f"{pooled[b][i][outcome]['rate']:8.3f} "
+                f"[{pooled[b][i][outcome]['lo']:.2f},{pooled[b][i][outcome]['hi']:.2f}] "
+                f"sd{pooled[b][i][outcome]['sd']:.2f}"
+                for b in BRANCHES
+            )
+            print(f"  {radius / sigma:9.2f}  {cells}")
+
+    timeouts = {b: sum(r["counts"]["timeout"] for r in pooled[b]) for b in BRANCHES}
+    if any(timeouts.values()):
+        print(f"\n  timeouts (neither goal nor collision within --horizon): {timeouts}")
+
+    print("\n  discounted return, diagnostic only -- this is what PGD minimizes, so a")
+    print("  flat curve here means the attack is not biting:")
     print("  eps/sigma  " + "".join(f"{BRANCH_STYLE[b]['plain']:>26}" for b in BRANCHES))
     for i, radius in enumerate(radii):
         cells = "".join(
-            f"{pooled[b][i]['mean']:+13.3f} +/-{pooled[b][i]['ci95']:8.3f}" for b in BRANCHES
+            f"{pooled[b][i]['return_mean']:+13.3f} +/-{pooled[b][i]['return_ci95']:8.3f}"
+            for b in BRANCHES
         )
         print(f"  {radius / sigma:9.2f}  {cells}")
-    print(f"  (n={max(pooled[BRANCHES[0]][0]['n'], 1)} trajectories per point)")
+    print(f"\n  (n={max(pooled[BRANCHES[0]][0]['total'], 1)} trajectories per point)")
 
 
 if __name__ == "__main__":

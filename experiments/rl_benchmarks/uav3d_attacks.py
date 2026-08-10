@@ -421,9 +421,6 @@ def make_smoothed_objective(
     """``x -> E_{a ~ smoothed(.|x), w}[ r + gamma V(x') ]`` for one smoothed branch.
 
     ``eot_samples`` independent realizations of the smoothing draw are averaged.
-    The old search scored each candidate on **6** samples and took an argmax over
-    24 candidates, which selects the luckiest estimate rather than the worst
-    perturbation; averaging a few dozen fixed realizations removes that bias.
     """
     device = next(policy.parameters()).device
     num_samples = smoother.parameters.smoothing.N
