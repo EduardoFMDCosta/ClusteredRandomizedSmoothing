@@ -81,7 +81,8 @@ from collect_uav3d_rollouts import _collect_trajectories, _load_uav3d_policy
 from dynamics import UAV3D
 from rollout_io import BIMODAL_START_STATE
 from stochastic_functions import UAV3DPolicyStochasticFunction
-from uav3d_attacks import load_critic
+from train_rl import normalize_state
+from uav3d_attacks import _GATE_TEMPERATURE, load_critic
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -110,6 +111,21 @@ CONFIDENCE_N = 4000
 COVERAGE = 0.9
 DBSCAN_EPS = 0.45
 DBSCAN_MIN_SAMPLES = 50
+
+# Radii and sigma live in normalized (Phi-space) units, which is what makes
+# eps/sigma an exact like-for-like ratio on every axis. Phi divides each axis by
+# its natural scale -- corridor half-extent 15/9/7 m for x/y/z position, the
+# +/-7 m/s speed limit for the velocities -- so a normalized radius is a
+# *fraction of that axis's scale*, and quoting it in metres needs a nominated
+# axis. x-position is the reference here; other axes scale by their own divisor.
+# Derived from ``normalize_state`` rather than restated, so the two cannot drift.
+REFERENCE_AXIS = "x-position"
+REFERENCE_AXIS_SCALE = float(1.0 / normalize_state(np.ones(6, dtype=np.float32))[0])
+
+
+def in_reference_units(normalized: float) -> float:
+    """A normalized radius as metres along the reference axis."""
+    return normalized * REFERENCE_AXIS_SCALE
 
 
 def defense_parameters(max_clusters: int, alpha: float) -> Parameters:
@@ -230,6 +246,8 @@ def run_shard(
                 gamma=gamma, parameters=parameters[branch], sigma=args.sigma,
                 radius=radius, pgd_steps=args.pgd_steps, pgd_restarts=args.pgd_restarts,
                 eot_samples=args.eot_samples, device=device,
+                gate_temperature=args.gate_temperature,
+                partition_temperature=args.rho_temperature,
             )
 
         _, _, counts, _, _, returns = _collect_trajectories(
@@ -397,8 +415,12 @@ def plot_outcome_sweep(
 
     fig.suptitle(
         f"Reach-avoid outcome under white-box PGD state attack "
-        rf"(n={total_n} trajectories/point; vertical dashed line = $\epsilon=\sigma$)",
-        fontsize=10,
+        rf"(n={total_n} trajectories/point; vertical dashed line = $\epsilon=\sigma$)"
+        "\n"
+        rf"$\epsilon$ and $\sigma$ are normalized; $\sigma={sigma:.4g}$ is "
+        rf"{in_reference_units(sigma):.3g} m of {REFERENCE_AXIS}, "
+        "other axes scale by their own divisor",
+        fontsize=9,
     )
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
@@ -410,11 +432,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=str, default="experiments/uav_3d/policy.pt")
     parser.add_argument("--radius-values", type=str,
-                        default="0.0,0.01,0.02,0.03,0.04,0.05",
+                        default="0.0,0.005,0.01,0.015,0.02,0.025,0.03,0.035,0.04,0.045,0.05",
                         help="Attack radii in normalized state-space L2 units.")
     parser.add_argument("--seed", type=int, default=42,
                         help="RNG state, reset before every (branch, radius) pair.")
-    parser.add_argument("--num-trajectories", type=int, default=400,
+    parser.add_argument("--num-trajectories", type=int, default=1000,
                         help="Trajectories per (branch, radius) -- the sample the "
                              "plotted mean and its CI are computed from. The "
                              "trajectories are the replicates: nothing about the "
@@ -435,6 +457,16 @@ def main() -> None:
     parser.add_argument("--pgd-steps", type=int, default=40)
     parser.add_argument("--pgd-restarts", type=int, default=3)
     parser.add_argument("--eot-samples", type=int, default=64)
+    parser.add_argument("--gate-temperature", type=float, default=_GATE_TEMPERATURE,
+                        help="Gumbel-softmax temperature for the policy gate in the "
+                             "smoothed branches' attack objective. Straight-through, "
+                             "so it leaves the objective's value untouched and only "
+                             "shapes the gradient.")
+    parser.add_argument("--rho-temperature", type=float, default=None,
+                        help="Softmax temperature for the region-occupancy mixture "
+                             "weights; also straight-through and value-neutral. "
+                             "Default derives it from the clean anchor's own region "
+                             "distances.")
     parser.add_argument("--plot", action="store_true",
                         help="Skip simulation: merge every shard in --analysis-dir "
                              "and render the figure.")
@@ -482,6 +514,9 @@ def main() -> None:
                 "pgd_steps": int(args.pgd_steps),
                 "pgd_restarts": int(args.pgd_restarts),
                 "eot_samples": int(args.eot_samples),
+                "gate_temperature": float(args.gate_temperature),
+                "rho_temperature": (None if args.rho_temperature is None
+                                    else float(args.rho_temperature)),
                 "gamma": float(gamma),
                 "smoothing_N": SMOOTHING_N,
                 "confidence_N": CONFIDENCE_N,
@@ -489,6 +524,10 @@ def main() -> None:
                 "dbscan_eps": DBSCAN_EPS,
                 "dbscan_min_samples": DBSCAN_MIN_SAMPLES,
                 "start_state": BIMODAL_START_STATE.tolist(),
+                "reference_axis": REFERENCE_AXIS,
+                "reference_axis_scale": REFERENCE_AXIS_SCALE,
+                "radius_metres": in_reference_units(radius),
+                "sigma_metres": in_reference_units(float(args.sigma)),
             }
             path = shard_path(analysis_dir, radius)
             with path.open("w", encoding="utf-8") as f:
@@ -516,6 +555,8 @@ def main() -> None:
 
     for outcome, title in (("goal", "goal-reach rate"), ("collision", "collision rate")):
         print(f"\n=== UAV3D attack sweep: {title} (95% Wilson CI) ===")
+        print(f"  (sigma = {sigma:.4g} normalized = {in_reference_units(sigma):.3g} m "
+              f"of {REFERENCE_AXIS}; other axes scale by their own divisor)")
         print("  eps/sigma  " + "".join(f"{BRANCH_STYLE[b]['plain']:>26}" for b in BRANCHES))
         for i, radius in enumerate(radii):
             cells = "".join(

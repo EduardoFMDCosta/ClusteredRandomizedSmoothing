@@ -42,7 +42,13 @@ from dynamics import UAV3D
 from rollout_io import BIMODAL_START_STATE, PolicyRolloutData, RolloutBundle, save_rollouts
 from stochastic_functions import UAV3DPolicyStochasticFunction
 from train_rl import ValueNetwork, VariationalPolicy, normalize_state
-from uav3d_attacks import load_critic, make_raw_objective, make_smoothed_objective, pgd_attack
+from uav3d_attacks import (
+    _GATE_TEMPERATURE,
+    load_critic,
+    make_raw_objective,
+    make_smoothed_objective,
+    pgd_attack,
+)
 
 from randomized_smoothing.dataclasses import (
     ClusteringParameters,
@@ -98,18 +104,26 @@ def attacked_smoothed_action_fn(
     pgd_restarts: int,
     eot_samples: int,
     device: torch.device,
+    gate_temperature: float = _GATE_TEMPERATURE,
+    partition_temperature: float | None = None,
 ):
     """Per-step PGD-attacked smoothed controller (alpha ``k=1`` or clustered ``k>1``).
 
     Two smoothers are built per step, deliberately:
 
-      * the **search** smoother, anchored at the clean ``x``, whose cluster the
-        attack differentiates through. Its partition is frozen, which is what
-        makes the attack tractable and is the strongest thing an attacker can
-        compute without re-clustering inside every PGD step.
+      * the **search** smoother, anchored at the clean ``x``, supplying the
+        cluster *geometry* the attack differentiates against. Only the regions
+        and centroids are frozen -- the emitted atoms and mixture weights both
+        respond to the perturbation -- which is what keeps the attack tractable
+        without a DBSCAN fit inside every PGD step.
       * the **execution** smoother, anchored at ``x + delta``. A deployed
         controller only ever sees the attacked reading, never the clean one, so
         it re-clusters at the perturbed input.
+
+    The temperatures are gradient knobs only; both relaxations are
+    straight-through, so neither changes the value PGD compares.
+    ``partition_temperature=None`` derives it from the clean anchor's own region
+    distances.
     """
     def f(state: np.ndarray) -> np.ndarray:
         x = torch.tensor(normalize_state(state), dtype=torch.float32, device=device).unsqueeze(0)
@@ -119,6 +133,8 @@ def attacked_smoothed_action_fn(
         objective = make_smoothed_objective(
             policy=policy, smoother=search_smoother, env=env, true_state=state,
             critic=critic, gamma=gamma, eot_samples=eot_samples,
+            gate_temperature=gate_temperature,
+            partition_temperature=partition_temperature,
         )
         delta = pgd_attack(objective, x, radius=radius, steps=pgd_steps, restarts=pgd_restarts)
         return _robustified_action_from_x(stochastic_fn, x + delta, parameters, sigma)
@@ -162,6 +178,16 @@ def main() -> None:
                              "(expectation-over-transformation with common random "
                              "numbers). Held constant across PGD steps so the "
                              "objective is deterministic and the descent is real.")
+    parser.add_argument("--gate-temperature", type=float, default=_GATE_TEMPERATURE,
+                        help="Gumbel-softmax temperature for the policy gate in the "
+                             "smoothed branches. Straight-through, so it does not "
+                             "change the objective's value at all -- only how the "
+                             "gradient sees the gate re-weighting.")
+    parser.add_argument("--rho-temperature", type=float, default=None,
+                        help="Softmax temperature for the region-occupancy mixture "
+                             "weights. Also straight-through, hence value-neutral. "
+                             "Default derives it from the clean anchor's own region "
+                             "distances, which is scale-correct if action_scale changes.")
     parser.add_argument("--no-raw", action="store_true",
                         help="Skip rolling out the attacked raw policy.")
     parser.add_argument("--no-alpha", action="store_true",
@@ -251,6 +277,8 @@ def main() -> None:
                     sigma=args.sigma, radius=args.attack_radius,
                     pgd_steps=args.pgd_steps, pgd_restarts=args.pgd_restarts,
                     eot_samples=args.eot_samples, device=device,
+                    gate_temperature=args.gate_temperature,
+                    partition_temperature=args.rho_temperature,
                 ),
                 label="attacked-alpha", keep_traces=is_primary, gamma=gamma,
             )
@@ -270,6 +298,8 @@ def main() -> None:
                 sigma=args.sigma, radius=args.attack_radius,
                 pgd_steps=args.pgd_steps, pgd_restarts=args.pgd_restarts,
                 eot_samples=args.eot_samples, device=device,
+                gate_temperature=args.gate_temperature,
+                partition_temperature=args.rho_temperature,
             ),
             label="attacked-robust", keep_traces=is_primary, gamma=gamma,
         )
@@ -335,6 +365,8 @@ def main() -> None:
             "pgd_steps": args.pgd_steps,
             "pgd_restarts": args.pgd_restarts,
             "eot_samples": args.eot_samples,
+            "gate_temperature": args.gate_temperature,
+            "rho_temperature": args.rho_temperature,
             "gamma": gamma,
             "seed": args.seed,
             "num_seeds": num_seeds,

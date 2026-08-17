@@ -15,6 +15,24 @@ evaluated at the *true* state ``x``. This is the quantity the task is scored on,
 so the attack and the reported metric are the same object -- no objective/metric
 mismatch to argue about.
 
+**Two distinct objects, both of which must respond to delta.** They are easy to
+conflate and are kept under separate names throughout:
+
+  * the **policy gate** ``omega_k(x)``, ``k = 1..K`` -- the *policy's* own mixture
+    over behavioral modes, ``log_softmax(gate_head(features(x)))`` in
+    ``VariationalPolicy.distribution_params``. A property of the trained network;
+    it exists with or without any defense.
+  * the **mixture weights** ``rho_j(x)``, ``j = 1..num_clusters`` -- the weights of
+    the *smoothed controller's emitted* ``MixtureDirac``, i.e.
+    ``Cluster.probs_partition``: the counted fraction of sampled actions landing in
+    region ``j``. A property of the defense, recomputed at run time.
+
+``rho`` is downstream of ``omega``, over a different index set: the smoother draws
+N noisy inputs, each of which draws a component from ``omega``, and ``rho`` counts
+where the resulting actions landed. The two are numbered independently -- DBSCAN
+does not order clusters by policy component -- so they generally disagree even in
+ordering.
+
 **Differentiability.** The full path ``delta -> action -> x' -> V(x')`` is
 differentiable:
 
@@ -22,15 +40,38 @@ differentiable:
     Gauss-Hermite rule over the three noisy velocity axes, not a Monte-Carlo
     average, so it adds no variance and leaves the objective an exact function
     of ``delta`` -- which is what lets PGD compare iterates and restarts.
-  * ``VariationalPolicy.sample`` reparameterizes (``rsample``), and
-    ``distribution_params`` exposes the mixture gate in closed form, so the raw
-    branch is handled analytically over its K components -- the gradient sees both
-    the component means moving *and* the gate re-weighting, which is the mechanism
-    a random search could never target.
-  * The smoother's alpha-trimming is a sort plus a mask, both of which pass
-    gradients in torch. The DBSCAN cluster assignment and the trim mask are
-    recomputed each forward and treated as constants in the backward pass -- the
-    standard BPDA treatment of a combinatorial component.
+  * ``distribution_params`` exposes the gate in closed form, so the **raw** branch
+    is handled analytically over its K components -- the gradient sees both the
+    component means moving *and* the gate re-weighting.
+  * The **smoothed** branches cannot do that: the alpha-trimmed mean is a
+    non-linear function of the *joint* set of N samples, so the expectation over
+    the gate does not push inside it (K**N combinations). Instead ``omega`` is
+    sampled by a straight-through **Gumbel-max** draw with fixed noise. Because
+    ``argmax_k(log omega_k + G_k)`` *is* an exact categorical draw from ``omega``,
+    and dividing logits by a temperature does not move an argmax, the forward
+    value is an exact sample from the true gate at ``x + delta`` for any
+    temperature -- the temperature shapes only the gradient.
+  * ``rho`` is likewise straight-through: forward it is the hard region occupancy
+    (the same count ``Cluster._compute_probs_partition`` performs), backward it is
+    a softmax over the negated region distances, which ``regions.distance`` makes
+    differentiable in the sampled actions.
+  * The alpha-trimming itself is differentiated and always has been: ``sort``
+    propagates gradient through its permutation, and the trimmed mean is
+    piecewise linear in its inputs, so autograd's gradient is correct almost
+    everywhere -- it fails only where two entries tie.
+
+**What is still frozen (BPDA).** The region geometry -- centroids, boxes, the
+DBSCAN fit, ``num_clusters`` -- comes from a search smoother built once at the
+clean anchor and is constant for the whole PGD run, whereas the executed
+controller re-clusters at the perturbed input. Cluster *membership* and the
+integer trim counts ``left = floor(alpha * n_j)``, ``right = n_j - left`` are also
+constants in the backward pass.
+
+**The objective is therefore discontinuous in delta** -- the hard gate index and
+the hard region assignment flip -- so the gradient is a relaxation and PGD is a
+heuristic on it. The forward value it compares across steps and restarts is the
+real quantity, which is what makes the ``delta = 0`` incumbent in ``pgd_attack``
+mean something.
 
 **One value oracle for all branches, by design.** ``V`` is ``V^{pi_raw}``, not a
 per-branch value function. This is deliberate: a single task-value yardstick means
@@ -45,6 +86,7 @@ from typing import Callable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from dynamics import UAV3D
 from train_rl import ValueNetwork, VariationalPolicy, normalize_state
 
@@ -56,6 +98,27 @@ from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 # escape a poor initialization, small enough that the projection is not doing all
 # the work.
 _STEP_SIZE_FACTOR = 2.5
+
+# Gumbel-softmax temperature for the policy gate. Dimensionless: the logits it
+# divides are log-probabilities. Only the *gradient* depends on it -- the
+# straight-through forward value is an exact categorical draw at any temperature
+# -- so this trades gradient magnitude against how local the relaxation is.
+#
+# Swept over {0.1, 0.3, 1.0, 3.0} at BIMODAL_START_STATE, eps=0.05: the attained
+# objective varies by under 1% across 0.1--1.0 for both smoothed branches and
+# degrades ~10% at 3.0. 0.3 is the compromise -- within 0.1% of the best cell for
+# each branch, where 1.0 costs the clustered branch ~1%.
+_GATE_TEMPERATURE = 0.3
+
+# Softmax temperature for the region-occupancy weights, as a fraction of the
+# median positive region distance at the clean anchor. Derived rather than
+# hardcoded because the distances live in action units, so a constant here would
+# silently change meaning if ``action_scale`` did.
+#
+# The derived value beat both a 5x-smaller and a 5x-larger setting in every row of
+# the gate sweep, so the scale this picks is the right one, not merely a safe one.
+# Irrelevant at k=1, where a single region leaves the weights identically [1.0].
+_PARTITION_TEMPERATURE_FACTOR = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +328,12 @@ def raw_action_atoms(
     gradient then flows into ``log_mix_weights``, so PGD can search for the
     perturbation that shifts probability mass *between* modes, not merely the one
     that drags both modes somewhere bad.
+
+    This is already the objective exactly -- no relaxation, no frozen quantity --
+    because the raw policy emits a K-atom mixture and K is small enough to sum
+    over. The smoothed branches below need Gumbel-max precisely because their
+    alpha-trimmed mean does not let the gate expectation push inside. Do not
+    "fix" this function to match them.
     """
     means, log_stds, log_mix_weights = policy.distribution_params(x)
     stds = log_stds.exp()
@@ -274,30 +343,113 @@ def raw_action_atoms(
     return atoms.permute(1, 0, 2), log_mix_weights.exp()[0]
 
 
+def _straight_through(soft: torch.Tensor, hard: torch.Tensor) -> torch.Tensor:
+    """``hard`` in the forward pass, ``soft``'s gradient in the backward pass.
+
+    The forward value is bit-identical to ``hard``, which is what lets the
+    smoothed objective claim it evaluates the real emitted distribution rather
+    than a smoothed stand-in for it.
+
+    The parenthesization is load-bearing. ``hard + soft - soft.detach()``
+    associates as ``(hard + soft) - soft`` and rounds, so the forward value picks
+    up an error that varies with the temperature -- small, but enough to make the
+    objective temperature-dependent, which is exactly the property this idiom is
+    supposed to deliver. Grouping the difference first makes it exactly zero.
+    """
+    return hard + (soft - soft.detach())
+
+
+def _gumbel_softmax_components(
+    log_mix_weights: torch.Tensor,
+    gumbel_noise: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Straight-through Gumbel-max draw from the policy gate, ``(B, K) -> (B, K)``.
+
+    ``gumbel_noise`` is a fixed ``(B, K)`` standard-Gumbel draw (common random
+    numbers), so the result is a deterministic function of ``log_mix_weights``
+    and hence of ``delta``.
+
+    Forward this returns a one-hot at ``argmax_k(log omega_k + G_k)``, which is
+    *exactly* a categorical draw from ``omega`` (the Gumbel-max trick), and
+    dividing the logits by ``temperature > 0`` cannot move an argmax -- so the
+    forward value is exact at any temperature. Backward it is the softmax, which
+    is what carries ``d omega / d x`` into the objective.
+    """
+    logits = (log_mix_weights + gumbel_noise) / temperature
+    soft = logits.softmax(dim=-1)
+    hard = F.one_hot(logits.argmax(dim=-1), logits.shape[-1]).to(soft.dtype)
+    return _straight_through(soft, hard)
+
+
+def _soft_partition_weights(
+    distances: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Straight-through region occupancy, ``(M, N, k) -> (M, k)``.
+
+    ``distances`` is ``regions.distance(outputs)``. Forward, this is the hard
+    fraction of the N samples nearest to each region -- the same count
+    ``Cluster._compute_probs_partition`` performs, and therefore the same
+    ``probs_partition`` the executed controller emits as its mixture weights.
+    Backward, the softmax over negated distances carries ``d rho / d outputs``,
+    which ``AxisAlignedHyperRectangle.distance`` (a clamp and a norm) makes
+    differentiable.
+
+    At ``k = 1`` the softmax over a single logit is identically 1 with zero
+    gradient, matching the degenerate one-atom ``MixtureDirac`` that a
+    single-cluster smoother emits.
+    """
+    soft = (-distances / temperature).softmax(dim=-1)
+    hard = F.one_hot(distances.argmin(dim=-1), distances.shape[-1]).to(soft.dtype)
+    return _straight_through(soft, hard).mean(dim=1)
+
+
+def _derive_partition_temperature(
+    outputs: torch.Tensor,
+    cluster: Cluster,
+    factor: float = _PARTITION_TEMPERATURE_FACTOR,
+) -> float:
+    """Occupancy temperature as ``factor`` x the median positive region distance.
+
+    Distances are in action units, so the scale has to come from the data rather
+    than a constant. Only distances to regions a sample is *outside* of enter the
+    median -- a sample inside its own box is at distance zero, which carries no
+    scale information.
+    """
+    if cluster.num_clusters <= 1:
+        return 1.0
+    with torch.no_grad():
+        flat = outputs.reshape(1, -1, outputs.shape[-1])
+        distances = cluster.regions.distance(flat)
+        positive = distances[distances > 0]
+    if positive.numel() == 0:
+        return 1.0
+    return float(factor * positive.median())
+
+
 def _alpha_trimmed_atoms(
     outputs: torch.Tensor,
     cluster: Cluster,
     alpha: float,
+    assignments: torch.Tensor,
 ) -> torch.Tensor:
     """Per-cluster alpha-trimmed means of ``outputs``, shape ``(M, N, A) -> (M, k, A)``.
 
     A batched transcription of ``AlphaTrimmingSmoothing.smooth`` (see
     ``src/randomized_smoothing/smoothing.py``) over ``M`` independent realizations,
-    using a cluster frozen at the clean anchor.
+    using a cluster frozen at the clean anchor. ``assignments`` is the hard
+    ``(M, N)`` region assignment, passed in so the caller can share one
+    ``regions.distance`` evaluation with ``_soft_partition_weights``.
 
     ``sort`` and ``torch.where`` both propagate gradients to the selected entries,
-    so this is differentiable in ``outputs``. The partition assignment (an
-    ``argmin`` over regions) and the resulting trim mask are integer/boolean and
-    are treated as constants in the backward pass -- BPDA.
+    so the trimming *is* differentiated in ``outputs``: the trimmed mean is
+    piecewise linear in its inputs and autograd's gradient is correct except on
+    the measure-zero set where two entries tie. What is BPDA here is membership --
+    ``assignments`` -- and the integer trim counts derived from it.
     """
     num_realizations, num_samples, output_dim = outputs.shape
     num_clusters = cluster.num_clusters
-
-    with torch.no_grad():
-        flat = outputs.reshape(1, num_realizations * num_samples, output_dim)
-        assignments = cluster._compute_partition_assignments(flat).view(
-            num_realizations, num_samples
-        )
 
     positions = torch.arange(num_samples, device=outputs.device).view(1, num_samples, 1)
     infinity = torch.tensor(torch.inf, device=outputs.device, dtype=outputs.dtype)
@@ -333,51 +485,88 @@ def _alpha_trimmed_atoms(
     return atoms
 
 
+def policy_outputs_under_smoothing(
+    policy: VariationalPolicy,
+    x: torch.Tensor,
+    smoothing_noise: torch.Tensor,
+    gumbel_noise: torch.Tensor,
+    component_noise: torch.Tensor,
+    gate_temperature: float = _GATE_TEMPERATURE,
+) -> torch.Tensor:
+    """The ``(M, N, A)`` actions the policy emits on the smoother's noisy inputs.
+
+    ``smoothing_noise`` is ``(M, N, d)``, ``gumbel_noise`` is ``(M, N, K)`` and
+    ``component_noise`` is ``(M, N, A)`` -- all fixed across the PGD run (common
+    random numbers), so the result is a deterministic function of ``x``.
+
+    The gate draw is straight-through Gumbel-max, so forward these are exactly
+    samples from ``pi(.|x + eta)`` while the backward pass carries the gate's
+    response to ``x``. ``K = 1`` short-circuits: the gate is degenerate there and
+    ``log_mix_weights`` is identically zero.
+    """
+    num_realizations, num_samples, _ = smoothing_noise.shape
+    flat = num_realizations * num_samples
+    noisy = (x + smoothing_noise).reshape(flat, -1)
+
+    means, log_stds, log_mix_weights = policy.distribution_params(noisy)
+    stds = log_stds.exp()
+    if policy.num_components == 1:
+        selected_mean, selected_std = means[:, 0], stds[:, 0]
+    else:
+        one_hot = _gumbel_softmax_components(
+            log_mix_weights, gumbel_noise.reshape(flat, -1), gate_temperature
+        )
+        selected_mean = (one_hot.unsqueeze(-1) * means).sum(dim=1)
+        selected_std = (one_hot.unsqueeze(-1) * stds).sum(dim=1)
+
+    raw = selected_mean + selected_std * component_noise.reshape(flat, -1)
+    return (torch.tanh(raw) * policy.action_scale).view(
+        num_realizations, num_samples, -1
+    )
+
+
 def smoothed_action_atoms(
     policy: VariationalPolicy,
     smoother: GaussianAlphaTrimmingSmoothing,
     x: torch.Tensor,
     smoothing_noise: torch.Tensor,
-    component_index: torch.Tensor,
+    gumbel_noise: torch.Tensor,
     component_noise: torch.Tensor,
+    gate_temperature: float = _GATE_TEMPERATURE,
+    partition_temperature: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """The smoothed controller's action distribution at ``x``.
+    """The smoothed controller's emitted distribution at ``x``.
 
-    ``smoothing_noise`` is ``(M, N, d)``, ``component_index`` is ``(M, N)`` and
-    ``component_noise`` is ``(M, N, A)`` -- all fixed across the PGD run (common
-    random numbers), so the objective is a deterministic, differentiable function
-    of ``x`` and the ``M`` realizations can be compared across steps.
+    Returns ``atoms`` ``(M, k, A)`` and ``weights`` ``(M, k)`` -- the ``locs`` and
+    ``probs`` of the ``MixtureDirac`` that ``AlphaTrimmingSmoothing.smooth``
+    returns, for each of ``M`` realizations of the smoothing draw. Both respond to
+    ``x``: the atoms through the policy's actions, the weights through region
+    occupancy.
 
-    Returns ``atoms`` of shape ``(M, k, A)`` and ``weights`` of shape ``(k,)``.
+    Only the cluster *geometry* is frozen at the smoother's clean anchor --
+    centroids and regions. The executed controller re-clusters at the perturbed
+    input; carrying that inside every PGD step would mean a DBSCAN fit per step.
 
-    The cluster is the smoother's own, frozen at its clean anchor: centroids,
-    regions and ``probs_partition`` all come from construction. This mirrors what
-    the attack can actually compute, and the executed controller separately
-    re-clusters at the perturbed input.
-
-    Unlike the raw branch, the mixture component index here is frozen rather than
-    handled analytically. That is a much weaker approximation than it looks: the
-    emitted action is chosen by the frozen ``probs_partition``, so gate
-    re-weighting reaches the output only second-hand, via cluster occupancy. The
-    first-order path -- the component means moving under the perturbation -- is
-    fully differentiated.
+    One ``regions.distance`` evaluation is shared between the hard assignment the
+    alpha-trimming needs and the soft occupancy the weights need.
     """
-    num_realizations, num_samples, _ = smoothing_noise.shape
-    noisy = (x + smoothing_noise).reshape(num_realizations * num_samples, -1)
-
-    means, log_stds, _ = policy.distribution_params(noisy)
-    flat_index = component_index.reshape(-1)
-    rows = torch.arange(flat_index.shape[0], device=noisy.device)
-    selected_mean = means[rows, flat_index]
-    selected_std = log_stds.exp()[rows, flat_index]
-
-    raw = selected_mean + selected_std * component_noise.reshape(flat_index.shape[0], -1)
-    outputs = (torch.tanh(raw) * policy.action_scale).view(
-        num_realizations, num_samples, -1
+    outputs = policy_outputs_under_smoothing(
+        policy, x, smoothing_noise, gumbel_noise, component_noise, gate_temperature
     )
+    num_realizations, num_samples, output_dim = outputs.shape
 
-    atoms = _alpha_trimmed_atoms(outputs, smoother.cluster, smoother.parameters.smoothing.alpha)
-    return atoms, smoother.cluster.probs_partition[0]
+    cluster = smoother.cluster
+    distances = cluster.regions.distance(
+        outputs.reshape(1, num_realizations * num_samples, output_dim)
+    ).view(num_realizations, num_samples, cluster.num_clusters)
+
+    atoms = _alpha_trimmed_atoms(
+        outputs,
+        cluster,
+        smoother.parameters.smoothing.alpha,
+        distances.detach().argmin(dim=-1),
+    )
+    return atoms, _soft_partition_weights(distances, partition_temperature)
 
 
 # ---------------------------------------------------------------------------
@@ -417,10 +606,26 @@ def make_smoothed_objective(
     gamma: float,
     eot_samples: int,
     generator: torch.Generator | None = None,
+    gate_temperature: float = _GATE_TEMPERATURE,
+    partition_temperature: float | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """``x -> E_{a ~ smoothed(.|x), w}[ r + gamma V(x') ]`` for one smoothed branch.
 
-    ``eot_samples`` independent realizations of the smoothing draw are averaged.
+    This is the emitted distribution itself, not a stand-in for it: ``a`` is drawn
+    from the same ``MixtureDirac`` -- alpha-trimmed atoms, region-occupancy
+    weights -- that ``AlphaTrimmingSmoothing.smooth`` returns, and both parts
+    respond to ``x``. ``eot_samples`` realizations of the smoothing draw are
+    averaged, all of them fixed across the PGD run.
+
+    ``partition_temperature`` defaults to a scale derived from the clean anchor's
+    own region distances; see ``_derive_partition_temperature``. Neither
+    temperature changes the forward value -- both relaxations are
+    straight-through -- so they are gradient knobs only.
+
+    The occupancy weights are estimated from the same N draws as the atoms, while
+    the executed controller estimates them from its (much larger)
+    ``confidence.num_samples`` draw. Same estimand, coarser estimate, and the two
+    are correlated here where deployment's are independent.
     """
     device = next(policy.parameters()).device
     num_samples = smoother.parameters.smoothing.N
@@ -430,24 +635,38 @@ def make_smoothed_objective(
         size=(eot_samples, num_samples)
     ).to(device).view(eot_samples, num_samples, state_dim)
 
-    # Freeze the mixture-component draw at the gate of the *clean* noisy inputs,
-    # matching the smoothing pushforward the smoother's own cluster was built from.
-    with torch.no_grad():
-        anchor_noisy = (smoother.x + smoothing_noise).reshape(-1, state_dim)
-        _, _, log_mix_weights = policy.distribution_params(anchor_noisy)
-    component_index = torch.multinomial(
-        log_mix_weights.exp(), num_samples=1, replacement=True, generator=generator
-    ).view(eot_samples, num_samples)
+    # Standard Gumbel by inverse CDF, fixed for the whole run alongside the other
+    # noise: the gate draw has to be common random numbers like everything else,
+    # or the objective stops being a deterministic function of delta.
+    uniforms = torch.rand(
+        (eot_samples, num_samples, policy.num_components),
+        device=device,
+        generator=generator,
+    )
+    tiny = torch.finfo(uniforms.dtype).tiny
+    # Clamp *after* each negation: -log(u) is the positive quantity the outer log
+    # needs, and clamping the negative log(u) instead sends it through log(<0).
+    exponential = (-torch.log(uniforms.clamp_min(tiny))).clamp_min(tiny)
+    gumbel_noise = -torch.log(exponential)
     component_noise = torch.randn(
         (eot_samples, num_samples, policy.action_dim), device=device, generator=generator
     )
 
+    if partition_temperature is None:
+        with torch.no_grad():
+            anchor_outputs = policy_outputs_under_smoothing(
+                policy, smoother.x, smoothing_noise, gumbel_noise,
+                component_noise, gate_temperature,
+            )
+        partition_temperature = _derive_partition_temperature(anchor_outputs, smoother.cluster)
+
     def objective(x: torch.Tensor) -> torch.Tensor:
         atoms, weights = smoothed_action_atoms(
-            policy, smoother, x, smoothing_noise, component_index, component_noise
+            policy, smoother, x, smoothing_noise, gumbel_noise, component_noise,
+            gate_temperature, partition_temperature,
         )
         q = expected_q(env, true_state, atoms, critic, gamma)   # (M, k)
-        return (weights.unsqueeze(0) * q).sum(dim=1).mean()
+        return (weights * q).sum(dim=1).mean()
 
     return objective
 
@@ -490,10 +709,16 @@ def pgd_attack(
     ``delta = 0`` is both the first restart's initialization and the incumbent
     best, so the returned perturbation can never score worse than the clean input
     under the attacker's own objective -- at ``radius = 0`` the function is exactly
-    a no-op.
+    a no-op. That guarantee is only worth as much as the objective's fidelity: it
+    binds the returned ``delta`` to the quantity being scored here, not to
+    whatever the deployed controller does, so the two had better agree.
 
     ``objective`` must be deterministic (built over fixed noise), otherwise the
     across-restart comparison and the ``best`` bookkeeping are noise-dominated.
+    It need not be continuous, and for the smoothed branches it is not -- the
+    straight-through gate index and region assignment flip as ``delta`` moves. The
+    gradient is a relaxation across those flips, so the descent is a heuristic;
+    the values compared here are the real ones.
     """
     zero = torch.zeros_like(x)
     if radius <= 0.0 or steps <= 0:
