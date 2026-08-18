@@ -71,9 +71,9 @@ def _draw_region(ax, lower: np.ndarray, upper: np.ndarray, color, label: str | N
 def _new_3d_fig():
     fig = plt.figure(figsize=(8, 8), constrained_layout=True)
     ax = fig.add_subplot(111, projection="3d")
-    ax.set_xlim(-AXIS_LIM, AXIS_LIM)
+    ax.set_xlim(3.5, AXIS_LIM)
     ax.set_ylim(-AXIS_LIM, AXIS_LIM)
-    ax.set_zlim(-AXIS_LIM, AXIS_LIM)
+    ax.set_zlim(0, AXIS_LIM)
     ax.set_xlabel("x", fontsize=18, labelpad=8)
     ax.set_ylabel("y", fontsize=18, labelpad=8)
     ax.set_zlabel("z", fontsize=18, labelpad=8)
@@ -231,7 +231,7 @@ def main() -> None:
                         help="Number of noisy state samples per smoothing call.")
     parser.add_argument("--confidence-N", type=int, default=4000,
                         help="Number of Monte Carlo samples for confidence estimation.")
-    parser.add_argument("--alpha", type=float, default=0.4,
+    parser.add_argument("--alpha", type=float, default=0.2,
                         help="Alpha-trimming fraction (0 <= alpha < 0.5).")
     parser.add_argument("--coverage", type=float, default=0.9)
     parser.add_argument("--max-clusters", type=int, default=3)
