@@ -318,15 +318,8 @@ def aggregate(shards: list[dict[str, Any]]) -> tuple[list[float], dict[str, Any]
             }
             for outcome in ("goal", "collision", "timeout"):
                 rate, lo, hi = proportion_ci(counts[outcome], total)
-                # Bernoulli s.d. of the per-trajectory indicator. Note this is a
-                # deterministic function of ``rate`` -- for a 0/1 outcome the mean
-                # fixes the variance -- so it restates the plotted curve rather
-                # than adding independent information. It is reported because it
-                # answers a different question from the CI: how much an individual
-                # trajectory varies, versus how well the rate itself is pinned down.
                 row[outcome] = {
                     "rate": rate, "lo": lo, "hi": hi,
-                    "sd": float(np.sqrt(rate * (1.0 - rate))),
                 }
             rows.append(row)
         pooled[branch] = rows
@@ -381,15 +374,9 @@ def plot_outcome_sweep(
             rate = np.array([r[outcome]["rate"] for r in rows])
             lo = np.array([r[outcome]["lo"] for r in rows])
             hi = np.array([r[outcome]["hi"] for r in rows])
-            sd = np.array([r[outcome]["sd"] for r in rows])
             total_n = max(total_n, max(r["total"] for r in rows))
 
             ax.fill_between(x, lo, hi, alpha=0.2, color=style["color"], linewidth=0)
-            # +/- 1 s.d. of the per-trajectory indicator, clipped to the unit
-            # interval since a rate cannot leave it.
-            for sign in (1.0, -1.0):
-                ax.plot(x, np.clip(rate + sign * sd, 0.0, 1.0), linestyle=(0, (4, 3)),
-                        linewidth=0.9, color=style["color"], alpha=0.55)
             ax.plot(x, rate, marker=style["marker"], linewidth=1.5,
                     color=style["color"], label=style["label"])
 
@@ -398,24 +385,19 @@ def plot_outcome_sweep(
         ax.set_title(title, fontsize=9)
         ax.set_ylim(-0.02, 1.02)
         ax.grid(True, linestyle=":", alpha=0.35)
-        # The smoothing scale: to the right of it the attack is larger than the
-        # noise the defense integrates over, and no guarantee survives.
-        ax.axvline(1.0, color="0.45", linewidth=0.9, linestyle="--", alpha=0.8)
 
     # Band semantics belong in a legend, not a caption: two visually different
     # envelopes that mean different things are exactly the thing a reader
     # misreads. Proxy artists keep it independent of the branch entries.
     band_handles = [
         Patch(facecolor="0.45", alpha=0.25, label="95% CI on the rate"),
-        Line2D([0], [0], color="0.45", linestyle=(0, (4, 3)), linewidth=0.9,
-               label=r"$\pm 1$ s.d. of a single trajectory"),
     ]
     axes[0].legend(loc="best", frameon=True, fontsize=8)
     axes[1].legend(handles=band_handles, loc="best", frameon=True, fontsize=7)
 
     fig.suptitle(
         f"Reach-avoid outcome under white-box PGD state attack "
-        rf"(n={total_n} trajectories/point; vertical dashed line = $\epsilon=\sigma$)"
+        rf"(n={total_n} trajectories/point)"
         "\n"
         rf"$\epsilon$ and $\sigma$ are normalized; $\sigma={sigma:.4g}$ is "
         rf"{in_reference_units(sigma):.3g} m of {REFERENCE_AXIS}, "
@@ -561,8 +543,7 @@ def main() -> None:
         for i, radius in enumerate(radii):
             cells = "".join(
                 f"{pooled[b][i][outcome]['rate']:8.3f} "
-                f"[{pooled[b][i][outcome]['lo']:.2f},{pooled[b][i][outcome]['hi']:.2f}] "
-                f"sd{pooled[b][i][outcome]['sd']:.2f}"
+                f"[{pooled[b][i][outcome]['lo']:.2f},{pooled[b][i][outcome]['hi']:.2f}]"
                 for b in BRANCHES
             )
             print(f"  {radius / sigma:9.2f}  {cells}")
