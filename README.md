@@ -134,6 +134,7 @@ numbering is known.
 | Fig. 6 (TrajFlow robustness gap, $\alpha = 0.4$) | (same script as above) | `experiments/data/figures/trajflow_robustness_gaps_alpha0p4.pdf` | Same script run; both PDFs are produced in a single call by default. |
 | Fig. 7 (UAV3D bimodal policy: raw / smoothed / $\alpha$-only action distributions) | [experiments/rl_benchmarks/visualize_bimodal_robustified.py](experiments/rl_benchmarks/visualize_bimodal_robustified.py) | `experiments/uav_3d/bimodal_plots/bimodal_raw.png`, `bimodal_smoothed.png`, `bimodal_alpha.png` | Reads the pre-trained checkpoint at `experiments/uav_3d/policy.pt`. |
 | Fig. 7 (UAV3D 3-D rollouts: environment + raw / $\alpha$ / robust trajectories) | [experiments/rl_benchmarks/visualize_uav3d_robustified_pyvista.py](experiments/rl_benchmarks/visualize_uav3d_robustified_pyvista.py) | `experiments/uav_3d/bimodal_figures/environment.png`, `raw_trajectories.png`, `alpha_trajectories.png`, `robust_trajectories.png` | Headless PyVista renderer; needs the OS libraries already installed in the Docker image. |
+| Fig. 8 (UAV3D action-space Wasserstein histograms, clean and attacked) | [experiments/rl_benchmarks/uav3d_wasserstein.py](experiments/rl_benchmarks/uav3d_wasserstein.py) | `experiments/uav_3d/wasserstein_figures/uav3d_wasserstein_clean.png`, `uav3d_wasserstein_attacked.png` (+ `experiments/uav_3d/analysis/wasserstein/uav3d_wasserstein.json`) | $W_2$ from the raw policy's $h_w(x)$ to each branch, one histogram sample per controller input; both figures share bins. Re-render from the cached JSON with `--plot`. |
 | Fig. 9 (point-to-set distance + generalised Voronoi partition) | [experiments/paper/generalized_voronoi_illustration.py](experiments/paper/generalized_voronoi_illustration.py) | `experiments/data/figures/generalized_voronoi_illustration.pdf` | Pure illustration, no model required. |
 | Fig. 10 (quantisation artefact of single-cluster $\alpha$-trimming) | [experiments/paper/quantization_illustration.py](experiments/paper/quantization_illustration.py) | `experiments/data/figures/quantization_illustration.pdf` | Appendix illustration on a 2-mode GMM. |
 
@@ -156,6 +157,8 @@ uv run python experiments/paper/trajflow_robustness.py --no-regenerate || \
 # UAV3D RL figures (use the supplied policy.pt checkpoint)
 uv run python experiments/rl_benchmarks/visualize_bimodal_robustified.py
 uv run python experiments/rl_benchmarks/visualize_uav3d_robustified_pyvista.py
+uv run python experiments/rl_benchmarks/uav3d_wasserstein.py --plot || \
+    uv run python experiments/rl_benchmarks/uav3d_wasserstein.py
 ```
 
 The `--no-regenerate` flag on the TrajFlow scripts re-uses the cached

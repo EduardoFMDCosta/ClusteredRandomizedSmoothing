@@ -11,8 +11,9 @@ signal towards it, not the objective itself. Its dense ``0.5 * progress - 0.01``
 term additionally rewards short paths, which no part of the specification asks
 for -- a controller that reaches the goal slowly but never collides is a success,
 and return would rank it below a faster one. Return is still recorded, and shown
-in the console summary as a diagnostic: PGD minimizes it, so a flat return curve
-is evidence the attack is not biting.
+in the console summary and in a second figure (``--return-figure-name``) as a
+diagnostic: PGD minimizes it, so a flat return curve is evidence the attack is
+not biting.
 
 Reporting something other than the attacked quantity is also the more
 defensible choice, since it forecloses "you measured exactly what you optimized".
@@ -71,8 +72,8 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from scipy.stats import norm
 from collect_uav3d_attacked_rollouts import (
     attacked_raw_action_fn,
     attacked_smoothed_action_fn,
@@ -158,7 +159,25 @@ def parse_radius_values(text: str) -> list[float]:
 # ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
-def mean_and_ci(values: np.ndarray, confidence: float = 0.95) -> tuple[float, float]:
+# Interval level for every reported CI -- the return mean and the outcome rates
+# alike, so the two figures and the console tables cannot quote different levels.
+# Named ``CI_LEVEL`` and not ``CONFIDENCE`` to keep it clear of ``CONFIDENCE_N``
+# above, which is a smoothing sample count and unrelated. ``CI_LABEL`` is derived
+# rather than restated so a change here propagates to every axis label and header.
+CI_LEVEL = 0.99
+CI_LABEL = f"{CI_LEVEL:.0%}"
+
+
+def normal_quantile(confidence: float) -> float:
+    """Two-sided normal critical value ``z`` for a ``confidence``-level interval."""
+    if not 0.0 < confidence < 1.0:
+        raise ValueError(f"confidence must be in (0, 1), got {confidence}")
+    return float(norm.ppf(1.0 - (1.0 - confidence) / 2.0))
+
+
+def mean_and_ci(
+    values: np.ndarray, confidence: float = CI_LEVEL
+) -> tuple[float, float]:
     """Mean and half-width of a normal-approximation CI **on the mean**.
 
     Deliberately not the ``+/- 1 s.d.`` band the previous figures used. That band
@@ -173,12 +192,12 @@ def mean_and_ci(values: np.ndarray, confidence: float = 0.95) -> tuple[float, fl
         return float("nan"), float("nan")
     if n == 1:
         return float(values[0]), 0.0
-    z = {0.90: 1.645, 0.95: 1.960, 0.99: 2.576}[confidence]
+    z = normal_quantile(confidence)
     return float(values.mean()), float(z * values.std(ddof=1) / np.sqrt(n))
 
 
 def proportion_ci(
-    successes: int, total: int, confidence: float = 0.95
+    successes: int, total: int, confidence: float = CI_LEVEL
 ) -> tuple[float, float, float]:
     """``(rate, lo, hi)`` -- Wilson score interval for a binomial proportion.
 
@@ -190,7 +209,7 @@ def proportion_ci(
     """
     if total <= 0:
         return float("nan"), float("nan"), float("nan")
-    z = {0.90: 1.645, 0.95: 1.960, 0.99: 2.576}[confidence]
+    z = normal_quantile(confidence)
     rate = successes / total
     denominator = 1.0 + z * z / total
     center = (rate + z * z / (2 * total)) / denominator
@@ -261,7 +280,7 @@ def run_shard(
         }
         mean, half_width = mean_and_ci(returns)
         print(f"  r={radius:.4f} {branch:>6}: "
-              f"return {mean:+.3f} +/- {half_width:.3f} (95% CI)  {counts}")
+              f"return {mean:+.3f} +/- {half_width:.3f} ({CI_LABEL} CI)  {counts}")
 
     return shard
 
@@ -313,8 +332,16 @@ def aggregate(shards: list[dict[str, Any]]) -> tuple[list[float], dict[str, Any]
                 "total": total,
                 # Return is retained as a diagnostic -- it is what PGD minimizes,
                 # so a flat return curve means the attack is not biting -- but it
-                # is not the reported result. See the module docstring.
-                "return_mean": mean, "return_ci95": half_width,
+                # is not the reported result. See the module docstring. The s.d.
+                # is the spread *across trajectories*, a property of the branch;
+                # the CI is the uncertainty on the mean. Both are kept because
+                # they answer different questions and the figure draws both.
+                # Key is level-agnostic: the level lives in ``CI_LEVEL`` and is
+                # recorded once in the shard config, so a name like ``ci95``
+                # cannot go stale against the number it holds.
+                "return_mean": mean, "return_ci": half_width,
+                "return_sd": (float(returns.std(ddof=1)) if returns.size > 1
+                              else 0.0 if returns.size == 1 else float("nan")),
             }
             for outcome in ("goal", "collision", "timeout"):
                 rate, lo, hi = proportion_ci(counts[outcome], total)
@@ -342,22 +369,16 @@ def plot_outcome_sweep(
     of horizon without either is a timeout, reported in the console table and the
     JSON, and it is a distinct kind of failure from a collision.
 
-    Two bands, answering different questions:
+    One band: the Wilson CI on the *rate*, at ``CI_LEVEL``. How well the rate is
+    pinned down; shrinks as ``--num-trajectories`` grows, and is what decides
+    whether two branches differ. Asymmetric, and pinches near 0 and 1 rather than
+    running off the axis.
 
-      * filled  -- Wilson 95% CI on the *rate*. How well the rate is pinned down;
-        shrinks as ``--num-trajectories`` grows. This is what decides whether two
-        branches differ. Asymmetric, and pinches near 0 and 1 rather than running
-        off the axis.
-      * dashed  -- ``rate +/- 1 s.d.`` of the per-trajectory 0/1 indicator,
-        ``sqrt(p(1-p))``. How much a single trajectory varies; does *not* shrink
-        with more data.
-
-    The s.d. is a deterministic function of the rate for a Bernoulli outcome, so
-    it carries no information the curve does not already -- it is drawn as a
-    reminder that individual trajectories are 0/1 events, and is widest exactly
-    where the rate is near 0.5. It is emphatically not an error bar: reading the
-    overlap of the dashed envelopes as "no difference" is the mistake that made
-    the previous figure set look null when the effects were overwhelming.
+    The across-trajectory s.d. is not drawn here, matching ``plot_return_sweep``.
+    For a Bernoulli outcome it is ``sqrt(p(1-p))``, a deterministic function of
+    the rate, so it carries nothing the curve does not already show -- it would
+    only add an envelope wide enough to overlap everywhere and invite being read
+    as "no difference".
     """
     x = np.array(radii) / sigma
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,14 +407,15 @@ def plot_outcome_sweep(
         ax.set_ylim(-0.02, 1.02)
         ax.grid(True, linestyle=":", alpha=0.35)
 
-    # Band semantics belong in a legend, not a caption: two visually different
-    # envelopes that mean different things are exactly the thing a reader
-    # misreads. Proxy artists keep it independent of the branch entries.
-    band_handles = [
-        Patch(facecolor="0.45", alpha=0.25, label="95% CI on the rate"),
-    ]
-    axes[0].legend(loc="best", frameon=True, fontsize=8)
-    axes[1].legend(handles=band_handles, loc="best", frameon=True, fontsize=7)
+    # One legend for the whole figure, on panel (a): both panels draw the same
+    # three branches, so a per-panel legend would just repeat itself, and the
+    # band belongs with the curves it describes rather than stranded in (b).
+    # The proxy patch keeps that entry independent of the branch colours.
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles.append(Patch(facecolor="0.45", alpha=0.25))
+    labels.append(f"band: {CI_LABEL} CI on the rate")
+    axes[0].legend(handles, labels, loc="lower left", frameon=True, fontsize=8,
+                   framealpha=0.95)
 
     fig.suptitle(
         f"Reach-avoid outcome under white-box PGD state attack "
@@ -402,6 +424,79 @@ def plot_outcome_sweep(
         rf"$\epsilon$ and $\sigma$ are normalized; $\sigma={sigma:.4g}$ is "
         rf"{in_reference_units(sigma):.3g} m of {REFERENCE_AXIS}, "
         "other axes scale by their own divisor",
+        fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    print(f"saved: {output_path}")
+
+
+# ---------------------------------------------------------------------------
+# Figure 2: the diagnostic
+# ---------------------------------------------------------------------------
+def plot_return_sweep(
+    radii: list[float],
+    pooled: dict[str, Any],
+    sigma: float,
+    output_path: Path,
+) -> None:
+    """Mean discounted return vs. attack radius, with a CI on the mean.
+
+    This is the diagnostic, not the result -- see the module docstring for why
+    the reach-avoid rates are what gets reported. Its job here is to show that
+    PGD is biting: return is exactly what the attack minimizes, so a branch whose
+    return does not move under attack is a branch the attack failed to find a
+    descent direction for.
+
+    One band: the CI on the mean at ``CI_LEVEL``, ``+/- z * s.d. / sqrt(n)``. It
+    shrinks with ``--num-trajectories`` and is what decides whether two branches
+    differ.
+
+    The across-trajectory s.d. is deliberately *not* drawn. It answers a
+    different question -- how much a single rollout varies -- and at ``sqrt(n)/z``
+    times the CI half-width (~12x here) its envelopes overlap almost everywhere,
+    including at radii where the branch means are separated by many standard
+    errors. On the page that reads as "no significant difference", which is the
+    opposite of what the data says. It stays in ``return_sd`` in the summary JSON
+    and in the console table, where it cannot be mistaken for an error bar.
+    """
+    x = np.array(radii) / sigma
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6.6, 4.2))
+
+    total_n = 0
+    for branch in BRANCHES:
+        style = BRANCH_STYLE[branch]
+        rows = pooled[branch]
+        mean = np.array([r["return_mean"] for r in rows])
+        half = np.array([r["return_ci"] for r in rows])
+        total_n = max(total_n, max(r["n"] for r in rows))
+
+        ax.fill_between(x, mean - half, mean + half, alpha=0.35,
+                        color=style["color"], linewidth=0)
+        ax.plot(x, mean, marker=style["marker"], linewidth=1.5,
+                color=style["color"], label=style["label"])
+
+    ax.set_xlabel(r"Attack radius $\epsilon / \sigma$")
+    ax.set_ylabel("Discounted return")
+    ax.grid(True, linestyle=":", alpha=0.35)
+    ax.axhline(0.0, color="0.6", linewidth=0.8, zorder=0)
+
+    # One band now, so it goes in the branch legend rather than a second one.
+    # The proxy patch keeps the entry independent of the branch colours.
+    handles, labels = ax.get_legend_handles_labels()
+    handles.append(Patch(facecolor="0.45", alpha=0.35))
+    labels.append(f"band: {CI_LABEL} CI on the mean")
+    ax.legend(handles, labels, loc="lower left", frameon=True, fontsize=8,
+              framealpha=0.95)
+
+    ax.set_title(
+        "Discounted return under white-box PGD state attack "
+        rf"(n={total_n} trajectories/point)"
+        "\n"
+        "diagnostic only: return is what PGD minimizes, so a flat curve means "
+        "the attack is not biting",
         fontsize=9,
     )
     fig.tight_layout()
@@ -457,11 +552,16 @@ def main() -> None:
     parser.add_argument("--figures-dir", type=str,
                         default="experiments/uav_3d/adversarial_figures")
     parser.add_argument("--figure-name", type=str, default="uav3d_attack_outcomes.png")
+    parser.add_argument("--return-figure-name", type=str,
+                        default="uav3d_attack_return.png",
+                        help="Diagnostic figure: mean return with its CI and the "
+                             "across-trajectory s.d.")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
     analysis_dir = Path(args.analysis_dir)
     figure_path = Path(args.figures_dir) / args.figure_name
+    return_figure_path = Path(args.figures_dir) / args.return_figure_name
 
     if not args.plot:
         radii = parse_radius_values(args.radius_values)
@@ -500,6 +600,7 @@ def main() -> None:
                 "rho_temperature": (None if args.rho_temperature is None
                                     else float(args.rho_temperature)),
                 "gamma": float(gamma),
+                "ci_level": CI_LEVEL,
                 "smoothing_N": SMOOTHING_N,
                 "confidence_N": CONFIDENCE_N,
                 "coverage": COVERAGE,
@@ -523,11 +624,17 @@ def main() -> None:
     radii, pooled = aggregate(shards)
     sigma = float(shards[0].get("config", {}).get("sigma", args.sigma))
     plot_outcome_sweep(radii, pooled, sigma, figure_path)
+    plot_return_sweep(radii, pooled, sigma, return_figure_path)
 
     summary_path = analysis_dir / "uav3d_attack_sweep.json"
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(
+            # ``ci_level`` again at the top level, not only inside the shard
+            # config: the intervals are computed here at plot time, so a re-plot
+            # of shards written under an older level must report the level that
+            # actually produced the numbers below it.
             {"config": shards[0].get("config", {}),
+             "ci_level": CI_LEVEL,
              "num_shards": len(shards),
              "radii": radii,
              "per_branch": pooled},
@@ -536,7 +643,7 @@ def main() -> None:
     print(f"saved: {summary_path}")
 
     for outcome, title in (("goal", "goal-reach rate"), ("collision", "collision rate")):
-        print(f"\n=== UAV3D attack sweep: {title} (95% Wilson CI) ===")
+        print(f"\n=== UAV3D attack sweep: {title} ({CI_LABEL} Wilson CI) ===")
         print(f"  (sigma = {sigma:.4g} normalized = {in_reference_units(sigma):.3g} m "
               f"of {REFERENCE_AXIS}; other axes scale by their own divisor)")
         print("  eps/sigma  " + "".join(f"{BRANCH_STYLE[b]['plain']:>26}" for b in BRANCHES))
@@ -553,11 +660,13 @@ def main() -> None:
         print(f"\n  timeouts (neither goal nor collision within --horizon): {timeouts}")
 
     print("\n  discounted return, diagnostic only -- this is what PGD minimizes, so a")
-    print("  flat curve here means the attack is not biting:")
-    print("  eps/sigma  " + "".join(f"{BRANCH_STYLE[b]['plain']:>26}" for b in BRANCHES))
+    print(f"  flat curve here means the attack is not biting. '+/-' is the {CI_LABEL} CI on")
+    print("  the mean; 'sd' is the spread across trajectories and is not an error bar:")
+    print("  eps/sigma  " + "".join(f"{BRANCH_STYLE[b]['plain']:>30}" for b in BRANCHES))
     for i, radius in enumerate(radii):
         cells = "".join(
-            f"{pooled[b][i]['return_mean']:+13.3f} +/-{pooled[b][i]['return_ci95']:8.3f}"
+            f"{pooled[b][i]['return_mean']:+11.3f} +/-{pooled[b][i]['return_ci']:6.3f}"
+            f"  sd {pooled[b][i]['return_sd']:6.2f}"
             for b in BRANCHES
         )
         print(f"  {radius / sigma:9.2f}  {cells}")
