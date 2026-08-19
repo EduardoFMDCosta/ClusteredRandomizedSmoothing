@@ -40,6 +40,13 @@ from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
 
 AXIS_LIM = 4.2
 
+# ``(xlim, ylim, zlim)`` every figure here is drawn in. Tight around the action
+# box on purpose -- the clean action cloud saturates near the tanh bound -- but
+# exposed as an override because a *perturbed* cloud need not stay inside it, and
+# a companion figure drawn in a different window is not comparable to this one.
+# See ``visualize_bimodal_attacked.py``, which reuses these helpers verbatim.
+AXIS_WINDOW = ((3.5, AXIS_LIM), (-AXIS_LIM, AXIS_LIM), (0.0, AXIS_LIM))
+
 
 def _assign_to_centroids(actions: np.ndarray, centroids: np.ndarray) -> np.ndarray:
     diff = actions[:, None, :] - centroids[None, :, :]
@@ -68,12 +75,13 @@ def _draw_region(ax, lower: np.ndarray, upper: np.ndarray, color, label: str | N
                 label=label if i == 0 else None)
 
 
-def _new_3d_fig():
+def _new_3d_fig(window=AXIS_WINDOW):
+    xlim, ylim, zlim = window
     fig = plt.figure(figsize=(8, 8), constrained_layout=True)
     ax = fig.add_subplot(111, projection="3d")
-    ax.set_xlim(3.5, AXIS_LIM)
-    ax.set_ylim(-AXIS_LIM, AXIS_LIM)
-    ax.set_zlim(0, AXIS_LIM)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_zlim(*zlim)
     ax.set_xlabel("x", fontsize=18, labelpad=8)
     ax.set_ylabel("y", fontsize=18, labelpad=8)
     ax.set_zlabel("z", fontsize=18, labelpad=8)
@@ -82,8 +90,9 @@ def _new_3d_fig():
     return fig, ax
 
 
-def _plot_raw(actions: np.ndarray, out_path: Path, base_state: np.ndarray) -> None:
-    fig, ax = _new_3d_fig()
+def _plot_raw(actions: np.ndarray, out_path: Path, base_state: np.ndarray,
+              window=AXIS_WINDOW) -> None:
+    fig, ax = _new_3d_fig(window)
     ax.scatter(actions[:, 0], actions[:, 1], actions[:, 2],
                s=5, alpha=0.35, color="steelblue")
     legend_handles = [
@@ -115,17 +124,35 @@ def _plot_smoothed(
     smoother: GaussianAlphaTrimmingSmoothing,
     mc_samples: np.ndarray,
     out_path: Path,
-    radii: np.ndarray,
+    radii: np.ndarray | None = None,
+    window=AXIS_WINDOW,
+    regions_from: GaussianAlphaTrimmingSmoothing | None = None,
 ) -> None:
-    centroids = smoother.cluster.centroids[0].detach().cpu().numpy()
-    k_used = int(smoother.cluster.k_per_row[0].item())
-    region_lower = smoother.regions.lower[0].detach().cpu().numpy()
-    region_upper = smoother.regions.upper[0].detach().cpu().numpy()
+    """Scatter ``mc_samples`` against a set of certified output regions.
+
+    ``regions_from`` chooses which smoother supplies the drawn *geometry* --
+    centroids, cluster count, output boxes, and the inset's certificate -- while
+    the plotted samples always come from ``smoother``. It defaults to
+    ``smoother``, i.e. draw the boxes the samples were actually produced under.
+
+    The attacked companion (``visualize_bimodal_attacked.py``) passes the *clean*
+    smoother here on purpose: the point of that figure is where the perturbed
+    action cloud sits relative to the certification boxes the defense committed
+    to before the attack, which only reads if both figures show the same boxes.
+    Samples are then coloured by nearest *clean* centroid.
+
+    ``radii=None`` drops the certified-probability inset.
+    """
+    geometry = smoother if regions_from is None else regions_from
+    centroids = geometry.cluster.centroids[0].detach().cpu().numpy()
+    k_used = int(geometry.cluster.k_per_row[0].item())
+    region_lower = geometry.regions.lower[0].detach().cpu().numpy()
+    region_upper = geometry.regions.upper[0].detach().cpu().numpy()
 
     assign = _assign_to_centroids(mc_samples, centroids)
     cluster_colors = plt.get_cmap("tab10")(np.arange(max(3, k_used)))
 
-    fig, ax = _new_3d_fig()
+    fig, ax = _new_3d_fig(window)
     ax.xaxis.set_major_formatter(
         FuncFormatter(lambda v, _: "" if abs(v + 4) < 1e-6 else f"{v:g}")
     )
@@ -147,17 +174,18 @@ def _plot_smoothed(
     ]
     ax.legend(handles=legend_handles, loc="upper left", fontsize=18)
 
-    totals, per_cluster = _certificate_curve(smoother, radii)
-    inset = fig.add_axes([0.095, 0.07, 0.40, 0.3])
-    for j in range(k_used):
-        inset.plot(radii, per_cluster[:, j], color=cluster_colors[j],
-                   linewidth=1.2, alpha=0.85)
-    inset.plot(radii, totals, color="black", linewidth=1.6, label="total")
-    inset.set_xlim(float(radii[0]), float(radii[-1]))
-    inset.set_ylim(0.0, 1.0)
-    inset.set_xlabel("radius", fontsize=17)
-    inset.set_ylabel("certified prob.", fontsize=17)
-    inset.tick_params(labelsize=15)
+    if radii is not None:
+        totals, per_cluster = _certificate_curve(geometry, radii)
+        inset = fig.add_axes([0.095, 0.07, 0.40, 0.3])
+        for j in range(k_used):
+            inset.plot(radii, per_cluster[:, j], color=cluster_colors[j],
+                       linewidth=1.2, alpha=0.85)
+        inset.plot(radii, totals, color="black", linewidth=1.6, label="total")
+        inset.set_xlim(float(radii[0]), float(radii[-1]))
+        inset.set_ylim(0.0, 1.0)
+        inset.set_xlabel("radius", fontsize=17)
+        inset.set_ylabel("certified prob.", fontsize=17)
+        inset.tick_params(labelsize=15)
 
     fig.savefig(out_path, dpi=150)
     plt.close(fig)

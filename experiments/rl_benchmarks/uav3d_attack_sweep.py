@@ -11,9 +11,8 @@ signal towards it, not the objective itself. Its dense ``0.5 * progress - 0.01``
 term additionally rewards short paths, which no part of the specification asks
 for -- a controller that reaches the goal slowly but never collides is a success,
 and return would rank it below a faster one. Return is still recorded, and shown
-in the console summary and in a second figure (``--return-figure-name``) as a
-diagnostic: PGD minimizes it, so a flat return curve is evidence the attack is
-not biting.
+in the console summary and in panel (c) of the figure as a diagnostic: PGD
+minimizes it, so a flat return curve is evidence the attack is not biting.
 
 Reporting something other than the attacked quantity is also the more
 defensible choice, since it forecloses "you measured exactly what you optimized".
@@ -92,14 +91,18 @@ from randomized_smoothing.dataclasses import (
     SmoothingParameters,
 )
 
-# ``label`` is LaTeX for figures; ``plain`` is for the console summary.
+# ``label`` is LaTeX for figures; ``plain`` is for the console summary. ``label``
+# is deliberately terse: the figures print at 0.33\textwidth a panel, where a
+# legend keyed on "Clustered robust smoothing" is wider than the axes it sits in.
+# The branches are named in full in the caption, which is where the reader is
+# when they need the distinction spelled out.
 BRANCH_STYLE = {
     "raw": {"color": "#CC3311", "marker": "o",
-            "label": "Raw policy", "plain": "raw"},
+            "label": "Raw", "plain": "raw"},
     "alpha": {"color": "#EE7733", "marker": "^",
-              "label": r"$\alpha$-smoothing ($k=1$)", "plain": "alpha (k=1)"},
+              "label": r"$\alpha$-smooth ($k{=}1$)", "plain": "alpha (k=1)"},
     "robust": {"color": "#0077BB", "marker": "s",
-               "label": "Clustered robust smoothing", "plain": "robust (clustered)"},
+               "label": "Clustered", "plain": "robust (clustered)"},
 }
 BRANCHES = ["raw", "alpha", "robust"]
 
@@ -154,6 +157,138 @@ def parse_radius_values(text: str) -> list[float]:
     if any(r < 0.0 for r in radii):
         raise ValueError("all radius values must be non-negative")
     return radii
+
+
+# ---------------------------------------------------------------------------
+# Figure geometry
+# ---------------------------------------------------------------------------
+# One figure, three panels, authored at the size it is *printed* at, so LaTeX
+# includes it at scale 1.0 and a point set here is a point on the page:
+#
+#     \begin{figure}
+#       \includegraphics[width=\textwidth]{uav3d_attack_sweep}
+#       \caption{...}
+#     \end{figure}
+#
+# It was two files -- a 0.66\textwidth pair of outcome panels beside a
+# 0.33\textwidth return panel -- which meant the spacing between (b) and (c) was
+# whatever ``\hfill`` and the two files' own margins happened to add up to, and
+# was not adjustable without re-deriving both. One figure puts every gap in
+# PANEL_GAP below.
+#
+# Authoring at print size is what keeps the text legible, and is separate from
+# any of that. The original 10in-wide figure was scaled to 0.363 going onto the
+# page, so its 10pt labels printed at 3.6pt. Sizing to the target instead puts
+# the point sizes in ``PAPER_RC`` on the page as written.
+#
+# TEXTWIDTH_IN must match the document or the scheme silently unwinds: LaTeX
+# rescales to fit and the point sizes stop being point sizes. NeurIPS sets
+# ``\textwidth`` to 5.5in; confirm against the live document with
+# ``\the\textwidth`` and divide by 72.27. A wrong value here is invisible in the
+# PNG and shows up only as mis-sized text on the page.
+TEXTWIDTH_IN = 5.5
+FIGURE_WIDTH = TEXTWIDTH_IN
+N_PANELS = 3
+
+# Axes height as a fraction of axes width. Applies to all three panels, so they
+# are the same box by construction rather than by three figsizes agreeing.
+PANEL_ASPECT = 0.85
+
+# Point sizes on a figure that is not rescaled, so these are what lands on the
+# page. Below the 10pt body text, as figure text conventionally is, and small
+# enough that three panels fit across ``\textwidth`` without the labels
+# colliding. Set through rc rather than per-call ``fontsize=`` arguments so a
+# panel cannot pick up a different size depending on which figure drew it.
+PAPER_RC = {
+    "font.size": 7.0,
+    "axes.labelsize": 8.0,
+    "axes.titlesize": 8.0,
+    "figure.titlesize": 8.0,
+    "legend.fontsize": 6.0,
+    "xtick.labelsize": 7.0,
+    "ytick.labelsize": 7.0,
+    # Strokes shrink with the canvas too. At 1.8in a panel the defaults
+    # (1.5pt curves, 6pt markers, 0.8pt spines) read as a sketch rather than a
+    # plot, and the markers merge into each other at the closely spaced radii.
+    "lines.linewidth": 1.0,
+    "lines.markersize": 2.8,
+    "axes.linewidth": 0.6,
+    "grid.linewidth": 0.4,
+    "xtick.major.width": 0.6,
+    "ytick.major.width": 0.6,
+    "xtick.major.size": 2.5,
+    "ytick.major.size": 2.5,
+    "legend.handlelength": 1.6,
+    "legend.borderpad": 0.4,
+    "legend.labelspacing": 0.3,
+    "legend.handletextpad": 0.5,
+}
+
+# Opacity of every CI band, shared so the legend's proxy patch is the same grey
+# weight as the bands it stands for.
+BAND_ALPHA = 0.25
+
+# The figure title is off: in a paper the ``\caption`` says this directly below
+# the figure, at body size, and the in-artwork copy only repeats it smaller.
+# Kept switchable because a figure pulled into slides or a README has no caption
+# to lean on. ``SUPTITLE_HEIGHT`` follows the flag so the reserved strip does not
+# become a band of white space when the title is off.
+SHOW_SUPTITLE = False
+
+# Strips of figure height above the panels, in inches, derived from the point
+# size of the text they hold so they track a change to ``PAPER_RC`` instead of
+# going stale as raw inch counts.
+SUPTITLE_HEIGHT = 2.0 * PAPER_RC["figure.titlesize"] / 72.0 if SHOW_SUPTITLE else 0.0
+LEGEND_HEIGHT = 2.6 * PAPER_RC["legend.fontsize"] / 72.0
+
+# Axes go on an explicit inch grid rather than through ``tight_layout`` or
+# ``subplots_adjust``. Both of those express spacing as a fraction of a figure
+# width that is itself derived from the spacing, so nudging the gap between two
+# panels changes the panel size as a side effect. Here every distance below is
+# an inch on the page, independent of the others, and PANEL_GAP is the one knob
+# for panel spacing. ``tight_layout`` also shrinks the axes to fit whatever is
+# added, which would let the legend eat panel area instead of taking its strip.
+#
+# The margins are what the decorations need at the ``PAPER_RC`` point sizes.
+# PANEL_GAP has to hold the *next* panel's y tick labels and y axis label, so it
+# is about MARGIN_LEFT wide and not a decorative amount of air -- the three
+# panels carry three different y scales (two rates, one return) and none of them
+# can drop its labels.
+MARGIN_LEFT = 0.46    # y tick labels + y axis label
+MARGIN_RIGHT = 0.04
+MARGIN_TOP = 0.19     # panel title
+MARGIN_BOTTOM = 0.42  # x tick labels + x axis label
+PANEL_GAP = 0.50      # between adjacent axes
+
+AXES_WIDTH = (
+    FIGURE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT - (N_PANELS - 1) * PANEL_GAP
+) / N_PANELS
+AXES_HEIGHT = PANEL_ASPECT * AXES_WIDTH
+FIGURE_HEIGHT = (
+    MARGIN_BOTTOM + AXES_HEIGHT + MARGIN_TOP + LEGEND_HEIGHT + SUPTITLE_HEIGHT
+)
+
+# The figure is raster at a small physical size, so the file needs enough pixels
+# to survive print: 600dpi over 5.5in is ~3300px. At the previous 200dpi the
+# panels would be ~360px wide on the page and visibly soft.
+FIGURE_DPI = 600
+
+
+def place_panels(fig, axes) -> None:
+    """Lay ``axes`` out left to right on the inch grid above.
+
+    Panels are anchored to the bottom of the figure; the suptitle and legend
+    strips come off the top, so changing either leaves the panels where they
+    are.
+    """
+    width, height = fig.get_size_inches()
+    for index, ax in enumerate(axes):
+        ax.set_position([
+            (MARGIN_LEFT + index * (AXES_WIDTH + PANEL_GAP)) / width,
+            MARGIN_BOTTOM / height,
+            AXES_WIDTH / width,
+            AXES_HEIGHT / height,
+        ])
 
 
 # ---------------------------------------------------------------------------
@@ -354,154 +489,114 @@ def aggregate(shards: list[dict[str, Any]]) -> tuple[list[float], dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Figure 1: the headline
+# The figure
 # ---------------------------------------------------------------------------
-def plot_outcome_sweep(
+def plot_sweep(
     radii: list[float],
     pooled: dict[str, Any],
     sigma: float,
     output_path: Path,
 ) -> None:
-    """Reach-avoid outcome rates vs. attack radius.
+    """Every branch against attack radius, in one three-panel figure.
 
-    The two panels are the reach-avoid specification itself: reach the goal (a),
-    avoid the obstacles (b). They do not sum to one -- a trajectory that runs out
-    of horizon without either is a timeout, reported in the console table and the
-    JSON, and it is a distinct kind of failure from a collision.
+    **(a) and (b) are the result.** They are the reach-avoid specification
+    itself: reach the goal, avoid the obstacles. They do not sum to one -- a
+    trajectory that runs out of horizon without either is a timeout, reported in
+    the console table and the JSON, and a distinct kind of failure from a
+    collision. Their band is the Wilson CI on the *rate* at ``CI_LEVEL``:
+    asymmetric, and pinching near 0 and 1 rather than running off the axis.
 
-    One band: the Wilson CI on the *rate*, at ``CI_LEVEL``. How well the rate is
-    pinned down; shrinks as ``--num-trajectories`` grows, and is what decides
-    whether two branches differ. Asymmetric, and pinches near 0 and 1 rather than
-    running off the axis.
+    **(c) is the diagnostic**, not the result -- see the module docstring for why
+    the reach-avoid rates are what gets reported. Its job is to show that PGD is
+    biting: return is exactly what the attack minimizes, so a branch whose return
+    does not move under attack is one the attack failed to find a descent
+    direction for. Its band is the CI on the mean, ``+/- z * s.d. / sqrt(n)``.
 
-    The across-trajectory s.d. is not drawn here, matching ``plot_return_sweep``.
-    For a Bernoulli outcome it is ``sqrt(p(1-p))``, a deterministic function of
-    the rate, so it carries nothing the curve does not already show -- it would
-    only add an envelope wide enough to overlap everywhere and invite being read
-    as "no difference".
+    Both bands are at ``CI_LEVEL`` and both answer "how well is this number
+    pinned down", which is what lets one legend entry cover all three panels
+    even though the estimator differs.
+
+    The across-trajectory s.d. is drawn in none of them. In (c) it is ~12x the
+    CI half-width, so its envelopes would overlap almost everywhere, including
+    at radii where the branch means are separated by many standard errors -- on
+    the page that reads as "no significant difference", the opposite of what the
+    data says. In (a) and (b) it is ``sqrt(p(1-p))``, a deterministic function of
+    the rate, carrying nothing the curve does not already show. It stays in
+    ``return_sd`` in the summary JSON and in the console table, where it cannot
+    be mistaken for an error bar.
     """
     x = np.array(radii) / sigma
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.9), sharex=True)
+    with plt.rc_context(PAPER_RC):
+        fig, axes = plt.subplots(
+            1, N_PANELS, figsize=(FIGURE_WIDTH, FIGURE_HEIGHT), sharex=True,
+        )
+        place_panels(fig, axes)
 
-    total_n = 0
-    panels = ((axes[0], "goal", "Goal-reach rate", "(a) Reach: fraction arriving at the goal"),
-              (axes[1], "collision", "Collision rate", "(b) Avoid: fraction hitting an obstacle"))
+        # Titles are the short form: a panel is ~1.4in wide, which is a couple of
+        # words above the axes and no more. The sentence each one used to carry
+        # belongs in the ``\caption``, where it sets at body size instead of
+        # being shrunk into the artwork.
+        rate_panels = ((axes[0], "goal", "Goal-reach rate", "(a) Reach"),
+                       (axes[1], "collision", "Collision rate", "(b) Avoid"))
 
-    for ax, outcome, ylabel, title in panels:
+        for ax, outcome, ylabel, title in rate_panels:
+            for branch in BRANCHES:
+                style = BRANCH_STYLE[branch]
+                rows = pooled[branch]
+                rate = np.array([r[outcome]["rate"] for r in rows])
+                lo = np.array([r[outcome]["lo"] for r in rows])
+                hi = np.array([r[outcome]["hi"] for r in rows])
+
+                ax.fill_between(x, lo, hi, alpha=BAND_ALPHA, color=style["color"],
+                                linewidth=0)
+                ax.plot(x, rate, marker=style["marker"],
+                        color=style["color"], label=style["label"])
+
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.set_ylim(-0.02, 1.02)
+
+        ax = axes[2]
         for branch in BRANCHES:
             style = BRANCH_STYLE[branch]
             rows = pooled[branch]
-            rate = np.array([r[outcome]["rate"] for r in rows])
-            lo = np.array([r[outcome]["lo"] for r in rows])
-            hi = np.array([r[outcome]["hi"] for r in rows])
-            total_n = max(total_n, max(r["total"] for r in rows))
+            mean = np.array([r["return_mean"] for r in rows])
+            half = np.array([r["return_ci"] for r in rows])
 
-            ax.fill_between(x, lo, hi, alpha=0.2, color=style["color"], linewidth=0)
-            ax.plot(x, rate, marker=style["marker"], linewidth=1.5,
-                    color=style["color"], label=style["label"])
+            ax.fill_between(x, mean - half, mean + half, alpha=BAND_ALPHA,
+                            color=style["color"], linewidth=0)
+            ax.plot(x, mean, marker=style["marker"], color=style["color"])
 
-        ax.set_xlabel(r"Attack radius $\epsilon / \sigma$")
-        ax.set_ylabel(ylabel)
-        ax.set_title(title, fontsize=9)
-        ax.set_ylim(-0.02, 1.02)
-        ax.grid(True, linestyle=":", alpha=0.35)
+        ax.set_ylabel("Discounted return")
+        ax.set_title("(c) Discounted return")
+        ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=0)
 
-    # One legend for the whole figure, on panel (a): both panels draw the same
-    # three branches, so a per-panel legend would just repeat itself, and the
-    # band belongs with the curves it describes rather than stranded in (b).
-    # The proxy patch keeps that entry independent of the branch colours.
-    handles, labels = axes[0].get_legend_handles_labels()
-    handles.append(Patch(facecolor="0.45", alpha=0.25))
-    labels.append(f"band: {CI_LABEL} CI on the rate")
-    axes[0].legend(handles, labels, loc="lower left", frameon=True, fontsize=8,
-                   framealpha=0.95)
+        for ax in axes:
+            ax.set_xlabel(r"Attack radius $\delta / \sigma$")
+            ax.grid(True, linestyle=":", alpha=0.35)
 
-    fig.suptitle(
-        f"Reach-avoid outcome under white-box PGD state attack "
-        rf"(n={total_n} trajectories/point)"
-        "\n"
-        rf"$\epsilon$ and $\sigma$ are normalized; $\sigma={sigma:.4g}$ is "
-        rf"{in_reference_units(sigma):.3g} m of {REFERENCE_AXIS}, "
-        "other axes scale by their own divisor",
-        fontsize=9,
-    )
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-    print(f"saved: {output_path}")
+        # One legend for all three panels, in its own strip above them rather
+        # than inside an axes: at this size no panel has a free corner -- in (a)
+        # the three curves fan across the whole box -- and every in-axes
+        # placement covered the alpha-smoothing curve. Handles come from (a), so
+        # only that panel labels its curves; (c) draws the same three branches
+        # from the same ``BRANCH_STYLE`` and would only duplicate the entries.
+        # The proxy patch keeps the band entry independent of the branch colours.
+        handles, labels = axes[0].get_legend_handles_labels()
+        handles.append(Patch(facecolor="0.45", alpha=BAND_ALPHA))
+        labels.append(f"band: {CI_LABEL} CI")
+        fig.legend(
+            handles, labels, loc="upper center", ncol=len(labels), frameon=False,
+            bbox_to_anchor=(0.5, 1.0 - SUPTITLE_HEIGHT / FIGURE_HEIGHT),
+            columnspacing=1.2,
+        )
 
-
-# ---------------------------------------------------------------------------
-# Figure 2: the diagnostic
-# ---------------------------------------------------------------------------
-def plot_return_sweep(
-    radii: list[float],
-    pooled: dict[str, Any],
-    sigma: float,
-    output_path: Path,
-) -> None:
-    """Mean discounted return vs. attack radius, with a CI on the mean.
-
-    This is the diagnostic, not the result -- see the module docstring for why
-    the reach-avoid rates are what gets reported. Its job here is to show that
-    PGD is biting: return is exactly what the attack minimizes, so a branch whose
-    return does not move under attack is a branch the attack failed to find a
-    descent direction for.
-
-    One band: the CI on the mean at ``CI_LEVEL``, ``+/- z * s.d. / sqrt(n)``. It
-    shrinks with ``--num-trajectories`` and is what decides whether two branches
-    differ.
-
-    The across-trajectory s.d. is deliberately *not* drawn. It answers a
-    different question -- how much a single rollout varies -- and at ``sqrt(n)/z``
-    times the CI half-width (~12x here) its envelopes overlap almost everywhere,
-    including at radii where the branch means are separated by many standard
-    errors. On the page that reads as "no significant difference", which is the
-    opposite of what the data says. It stays in ``return_sd`` in the summary JSON
-    and in the console table, where it cannot be mistaken for an error bar.
-    """
-    x = np.array(radii) / sigma
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(6.6, 4.2))
-
-    total_n = 0
-    for branch in BRANCHES:
-        style = BRANCH_STYLE[branch]
-        rows = pooled[branch]
-        mean = np.array([r["return_mean"] for r in rows])
-        half = np.array([r["return_ci"] for r in rows])
-        total_n = max(total_n, max(r["n"] for r in rows))
-
-        ax.fill_between(x, mean - half, mean + half, alpha=0.35,
-                        color=style["color"], linewidth=0)
-        ax.plot(x, mean, marker=style["marker"], linewidth=1.5,
-                color=style["color"], label=style["label"])
-
-    ax.set_xlabel(r"Attack radius $\epsilon / \sigma$")
-    ax.set_ylabel("Discounted return")
-    ax.grid(True, linestyle=":", alpha=0.35)
-    ax.axhline(0.0, color="0.6", linewidth=0.8, zorder=0)
-
-    # One band now, so it goes in the branch legend rather than a second one.
-    # The proxy patch keeps the entry independent of the branch colours.
-    handles, labels = ax.get_legend_handles_labels()
-    handles.append(Patch(facecolor="0.45", alpha=0.35))
-    labels.append(f"band: {CI_LABEL} CI on the mean")
-    ax.legend(handles, labels, loc="lower left", frameon=True, fontsize=8,
-              framealpha=0.95)
-
-    ax.set_title(
-        "Discounted return under white-box PGD state attack "
-        rf"(n={total_n} trajectories/point)"
-        "\n"
-        "diagnostic only: return is what PGD minimizes, so a flat curve means "
-        "the attack is not biting",
-        fontsize=9,
-    )
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
+        if SHOW_SUPTITLE:
+            fig.suptitle("Reach-avoid outcome under white-box PGD attack",
+                         y=0.99, va="top")
+        fig.savefig(output_path, dpi=FIGURE_DPI)
+        plt.close(fig)
     print(f"saved: {output_path}")
 
 
@@ -551,17 +646,14 @@ def main() -> None:
                         default="experiments/uav_3d/analysis/adversarial")
     parser.add_argument("--figures-dir", type=str,
                         default="experiments/uav_3d/adversarial_figures")
-    parser.add_argument("--figure-name", type=str, default="uav3d_attack_outcomes.png")
-    parser.add_argument("--return-figure-name", type=str,
-                        default="uav3d_attack_return.png",
-                        help="Diagnostic figure: mean return with its CI and the "
-                             "across-trajectory s.d.")
+    # One figure now, so one name. ``--return-figure-name`` is gone: the return
+    # panel is (c) of this figure rather than a file of its own.
+    parser.add_argument("--figure-name", type=str, default="uav3d_attack_sweep.png")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
     analysis_dir = Path(args.analysis_dir)
     figure_path = Path(args.figures_dir) / args.figure_name
-    return_figure_path = Path(args.figures_dir) / args.return_figure_name
 
     if not args.plot:
         radii = parse_radius_values(args.radius_values)
@@ -623,8 +715,7 @@ def main() -> None:
     shards = load_shards(analysis_dir)
     radii, pooled = aggregate(shards)
     sigma = float(shards[0].get("config", {}).get("sigma", args.sigma))
-    plot_outcome_sweep(radii, pooled, sigma, figure_path)
-    plot_return_sweep(radii, pooled, sigma, return_figure_path)
+    plot_sweep(radii, pooled, sigma, figure_path)
 
     summary_path = analysis_dir / "uav3d_attack_sweep.json"
     with summary_path.open("w", encoding="utf-8") as f:
