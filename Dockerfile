@@ -1,12 +1,13 @@
 #
 # Reproducible environment for "Clustered Randomized Smoothing for Stochastic
-# Prediction Functions" (NeurIPS submission 34554).
+# Prediction Functions" (NeurIPS 2026).
 #
 # Build:    docker build -t clustered-rs .
 # Run:      docker run --rm -it -v "$PWD/experiments/data:/app/experiments/data" \
 #                  -v "$PWD/experiments/uav_3d:/app/experiments/uav_3d" clustered-rs
-# (mount the experiments/data folder so generated figures and analysis files
-# land back on your host.)
+# (mount the experiments/data and experiments/uav_3d folders so generated
+# figures and analysis files land back on your host; they also supply the
+# cached results, which .dockerignore keeps out of the image.)
 
 ARG PYTHON_VERSION=3.12
 ARG UV_VERSION=0.9.6

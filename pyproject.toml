@@ -5,9 +5,19 @@ build-backend = "uv_build"
 [project]
 name = "randomized-smoothing"
 version = "0.1.0"
-description = "Scientific prototype for stochastic smoothing with alpha trimming"
+description = "Clustered alpha-smoothing: randomized smoothing with robustness certificates for stochastic, multi-modal prediction functions"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Eduardo Figueiredo" },
+    { name = "Frederik Mathiesen" },
+    { name = "Julian Schumann" },
+    { name = "Jens Kober" },
+    { name = "Arkady Zgonnikov" },
+    { name = "Luca Laurenti" },
+]
 dependencies = [
     "cvxpy>=1.5",
     "numpy>=2.0",
@@ -15,12 +25,22 @@ dependencies = [
     "torch>=2.2",
     "scikit-learn>=1.7.2",
     "scipy>=1.15.3",
+    # Needed by the TrajFlow experiments (experiments/TrajFlowExperiment). The
+    # pickled TrajFlow checkpoints reference PyG 2.4 internals
+    # (torch_geometric.nn.conv.utils.inspector), so newer releases cannot load them.
+    "torch-geometric>=2.4,<2.5",
+    "pillow>=10.0",
 ]
 
 [project.optional-dependencies]
 plots = [
     "matplotlib>=3.10.8",
     "pyvista>=0.47.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
 ]
 
 [tool.setuptools]

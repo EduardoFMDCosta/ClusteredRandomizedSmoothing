@@ -17,10 +17,39 @@ if str(TRAJFLOW) not in sys.path:
 from TrajFlow.flowModels import TrajFlow, Future_Encoder, Future_Decoder, Future_Seq2Seq, Scene_Encoder, Future_Decoder_Control, Future_Seq2Seq_Control
 
 
+def _scatter_fallback(src, index, dim=-1, out=None, dim_size=None, reduce='sum'):
+    """Pure-PyTorch stand-in for ``torch_scatter.scatter`` (sum aggregation only).
+
+    The pickled TrajFlow GNN layers (``SocialEncodingModule.MPNNLayer``) hold a reference
+    to ``torch_scatter.scatter``. torch-scatter ships no PyPI wheels for recent PyTorch
+    versions, so without this stand-in loading the checkpoints would require compiling it.
+    """
+    if reduce not in ('sum', 'add'):
+        raise NotImplementedError(f"scatter fallback only supports sum/add, got reduce={reduce!r}")
+    dim = dim % src.dim()
+    if index.dim() == 1:
+        view = [1] * src.dim()
+        view[dim] = -1
+        index = index.view(view)
+    index = index.expand_as(src)
+    if dim_size is None:
+        dim_size = int(index.max().item()) + 1 if index.numel() > 0 else 0
+    if out is None:
+        shape = list(src.shape)
+        shape[dim] = dim_size
+        out = src.new_zeros(shape)
+    return out.scatter_add_(dim, index, src)
+
+
 class _CPU_Unpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == 'torch.storage' and name == '_load_from_bytes':
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        if (module == 'torch_scatter' or module.startswith('torch_scatter.')) and name == 'scatter':
+            try:
+                return super().find_class(module, name)
+            except ImportError:
+                return _scatter_fallback
         return super().find_class(module, name)
 
 class trajflow_meszaros():
