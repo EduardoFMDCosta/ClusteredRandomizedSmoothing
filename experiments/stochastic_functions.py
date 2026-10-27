@@ -205,3 +205,33 @@ class TrajFlowMeszarosStochasticFunction(StochasticFunction):
         if y.shape[-1] < 2:
             raise ValueError("Expected output dimension >= 2 for TrajFlowMeszarosStochasticFunction")
         return y[..., -2:]
+
+
+class TrajFlowMeszarosFullTrajectoryStochasticFunction(StochasticFunction):
+    """Wrapper returning the full predicted trajectory from TrajFlow outputs.
+
+    Output shape: ``(..., num_timesteps_out * 2)`` where the flat layout is
+    ``[x1, y1, x2, y2, ..., xT, yT]``.  Clustering in this full trajectory
+    space (without dimensionality reduction) directly separates *stay* and
+    *go* behaviours by their global trajectory shape, providing a
+    reviewer-facing baseline showing that our two-mode structure is not an
+    artefact of projecting to the 2-D endpoint.
+    """
+
+    def __init__(self, model=None) -> None:
+        self.base = TrajFlowMeszaros(model=model)
+
+    @property
+    def model(self):
+        return self.base.model
+
+    def pos_to_ctrl(self, x: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        return self.base.pos_to_ctrl(x)
+
+    def ctrl_to_pos(self, u: torch.Tensor, start: list[torch.Tensor]) -> torch.Tensor:
+        return self.base.ctrl_to_pos(u, start=start)
+
+    def __call__(self, x: torch.Tensor, h: list[torch.Tensor] = []) -> torch.Tensor:
+        y = self.base(x, h=h)
+        # y shape: (..., num_timesteps_out * 2) — all timesteps already flattened.
+        return y

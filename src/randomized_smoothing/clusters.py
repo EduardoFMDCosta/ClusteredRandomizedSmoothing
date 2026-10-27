@@ -72,7 +72,24 @@ class Cluster:
                     hdbscan_cluster_selection_epsilon=self.parameters.hdbscan_cluster_selection_epsilon,
                     hdbscan_cluster_selection_method=self.parameters.hdbscan_cluster_selection_method,
                 )
+            elif self.parameters.strategy == "endpoint_dbscan":
+                # Cluster in the 2-D endpoint space (last 2 output dims) so
+                # that "stay" vs "go" separation is clear without suffering
+                # the curse of dimensionality in full trajectory space.
+                # Assignments are then projected back to the full trajectory
+                # space to compute centroids and bounding regions.
+                endpoint_data = outputs[i, :, -2:]  # (num_samples, 2)
+                _, a_i, k_i = _select_num_clusters(
+                    data=endpoint_data,
+                    max_num_clusters=self.parameters.max_num_clusters,
+                    dbscan_eps=self.parameters.dbscan_eps,
+                    dbscan_min_samples=self.parameters.dbscan_min_samples,
+                )
+                # Recompute centroids in the full trajectory space using the
+                # 2-D-derived cluster assignments.
+                c_i = _compute_centroids_from_assignments(outputs[i], a_i, k_i)
             else:
+                # "dbscan": run DBSCAN directly in the full output space.
                 c_i, a_i, k_i = _select_num_clusters(
                     data=outputs[i],
                     max_num_clusters=self.parameters.max_num_clusters,

@@ -228,74 +228,6 @@ def _draw_smoother_distribution_panel(
 		ax.set_ylim(*ylim)
 
 
-def plot_single_smoother_distribution(
-	x: torch.Tensor,
-	outputs: torch.Tensor,
-	smoother_mc_samples: torch.Tensor,
-	region,
-	output_path: Path,
-	smoother_label: str,
-	smoother_color: str,
-	raw_bins: np.ndarray | int = 60,
-	mc_bins: np.ndarray | int = 45,
-	xlim: tuple[float, float] | None = None,
-	ylim: tuple[float, float] | None = None,
-) -> Path:
-	"""Plot original-model histogram and one smoother's MC histogram.
-
-	When ``region`` has ``k >= 2`` regions, the original-model samples are
-	split by nearest-region (the same partition rule the smoother uses for
-	``smooth``, ``monte_carlo``, and the certificate) and plotted as one
-	step histogram per cluster, with vertical lines at the cluster splits.
-	In 1D each split sits at the midpoint between adjacent regions'
-	closest endpoints — exactly where the region-distance argmin flips.
-
-	Per-cluster histograms are normalised so that their sum across clusters
-	equals the full ``density=True`` histogram of the original outputs —
-	letting two plots with different cluster counts share the same y-axis.
-
-	``raw_bins``/``mc_bins`` may be either a bin count or precomputed bin
-	edges; pass shared edges to align across multiple plots. ``xlim`` and
-	``ylim`` override matplotlib's autoscaling.
-	"""
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-
-	outputs_np = _to_numpy(outputs[:, :, 0])
-	smoother_mc_np = _to_numpy(smoother_mc_samples[:, :, 0])
-	region_lower_np = _to_numpy(region.lower[:, :, 0])
-	region_upper_np = _to_numpy(region.upper[:, :, 0])
-
-	m = outputs_np.shape[0]
-
-	_w = 1.00 * TEXTWIDTH
-	fig, axes = plt.subplots(m, 1, figsize=(_w, 0.35 * _w * m), sharex=False)
-	if m == 1:
-		axes = [axes]
-
-	for i, ax in enumerate(axes):
-		_draw_smoother_distribution_panel(
-			ax,
-			i=i,
-			outputs=outputs,
-			outputs_np=outputs_np,
-			smoother_mc_np=smoother_mc_np,
-			region=region,
-			region_lower_np=region_lower_np,
-			region_upper_np=region_upper_np,
-			raw_bins=raw_bins,
-			mc_bins=mc_bins,
-			smoother_label=smoother_label,
-			smoother_color=smoother_color,
-			xlim=xlim,
-			ylim=ylim,
-		)
-
-	fig.tight_layout()
-	fig.savefig(output_path, dpi=180)
-	plt.close(fig)
-	return output_path
-
-
 def plot_combined_smoother_distributions(
 	x: torch.Tensor,
 	outputs: torch.Tensor,
@@ -377,92 +309,6 @@ def plot_combined_smoother_distributions(
 	return output_path
 
 
-def plot_experiment_results(
-	x: torch.Tensor,
-	outputs: torch.Tensor,
-	rekavandi_mc_samples: torch.Tensor,
-	clustered_mc_samples: torch.Tensor,
-	output_dir: Path,
-	region=None,
-	plot_region_shading: bool = False,
-) -> list[Path]:
-	"""Create and save charts for the smoothing experiment."""
-	output_dir.mkdir(parents=True, exist_ok=True)
-
-	outputs_np = _to_numpy(outputs[:, :, 0])
-	rekavandi_mc_np = _to_numpy(rekavandi_mc_samples[:, :, 0])
-	clustered_mc_np = _to_numpy(clustered_mc_samples[:, :, 0])
-	region_lower_np = _to_numpy(region.lower[:, :, 0]) if region is not None else None
-	region_upper_np = _to_numpy(region.upper[:, :, 0]) if region is not None else None
-
-	m = outputs_np.shape[0]
-	colors = {
-		"raw": "#111111",
-		"global_mc": "#E31A1C",
-		"cluster_mc": "#1F78B4",
-	}
-
-	# Figure 1: per-input distribution comparison.
-	_w = 0.80 * TEXTWIDTH
-	fig1, axes = plt.subplots(m, 1, figsize=(_w, 0.8 * _w * m), sharex=False)
-	if m == 1:
-		axes = [axes]
-
-	for i, ax in enumerate(axes):
-		ax.hist(
-			outputs_np[i],
-			bins=60,
-			density=True,
-			histtype="step",
-			linewidth=2.2,
-			color=colors["raw"],
-			label="Original model",
-		)
-		ax.hist(
-			rekavandi_mc_np[i],
-			bins=45,
-			density=True,
-			alpha=0.30,
-			color=colors["global_mc"],
-			edgecolor=colors["global_mc"],
-			linewidth=1.4,
-			label=r"$\alpha$-smoothing (Rekavandi et al, 2024)",
-		)
-		ax.hist(
-			clustered_mc_np[i],
-			bins=45,
-			density=True,
-			alpha=0.30,
-			color=colors["cluster_mc"],
-			edgecolor=colors["cluster_mc"],
-			linewidth=1.4,
-			label=r"Clustered $\alpha$-smoothing",
-		)
-
-		if plot_region_shading and region_lower_np is not None and region_upper_np is not None:
-			k = region_lower_np.shape[1]
-			region_color = "#7A7A7A"
-			for j in range(k):
-				left = region_lower_np[i, j]
-				right = region_upper_np[i, j]
-				ax.axvspan(left, right, color=region_color, alpha=0.14, lw=0)
-				ax.axvline(left, color=region_color, linestyle="--", linewidth=1.0, alpha=0.9)
-				ax.axvline(right, color=region_color, linestyle="--", linewidth=1.0, alpha=0.9)
-				ax.plot([], [], color=region_color, linewidth=3, alpha=0.7)
-
-		ax.set_xlabel("Output")
-		ax.set_ylabel("Frequency")
-		ax.grid(alpha=0.25, linestyle=":")
-		ax.legend(loc="upper left")
-
-	fig1.tight_layout()
-	fig1_path = output_dir / "distribution_comparison.pdf"
-	fig1.savefig(fig1_path, dpi=180)
-	plt.close(fig1)
-
-	return [fig1_path]
-
-
 def _reshape_trajectory_samples(samples: torch.Tensor) -> np.ndarray:
 	arr = _to_numpy(samples)
 	if arr.ndim != 3:
@@ -476,169 +322,6 @@ def _reshape_trajectory_samples(samples: torch.Tensor) -> np.ndarray:
 	num_timesteps = flat_dim // 2
 
 	return arr.reshape(nx, num_samples, num_timesteps, 2)
-
-
-def plot_final_timestep_density(
-	x: torch.Tensor,
-	original_mc_samples: torch.Tensor,
-	noisy_mc_samples: torch.Tensor,
-	single_cluster_mc_samples: torch.Tensor,
-	clustered_mc_samples: torch.Tensor,
-	single_cluster_centroids: torch.Tensor,
-	clustered_centroids: torch.Tensor,
-	output_dir: Path,
-	num_input_agents: int = 2,
-) -> list[Path]:
-	"""Plot final-step endpoint samples colored by smoother-induced clusters.
-
-	Columns are Original / Noisy / single-cluster smoother / clustered smoother.
-	Samples are colored by nearest smoother centroids (Voronoi attribution).
-
-	Args:
-		x: Tensor (nx, num_input_agents * num_input_timesteps * 2) – input
-		   trajectory context, used only for spatial reference markers.
-		original_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
-		noisy_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
-		single_cluster_mc_samples: same shape, single-cluster smoother.
-		clustered_mc_samples: same shape, multi-cluster smoother.
-		single_cluster_centroids: Tensor (nx, k1, 2) for single-cluster smoother.
-		clustered_centroids: Tensor (nx, k2, 2) for multi-cluster smoother.
-		output_dir: Directory to save the chart.
-		num_input_agents: Number of agents encoded in x.
-	"""
-
-	output_dir.mkdir(parents=True, exist_ok=True)
-
-	original = _reshape_trajectory_samples(original_mc_samples)
-	noisy = _reshape_trajectory_samples(noisy_mc_samples)
-	single = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clust = _reshape_trajectory_samples(clustered_mc_samples)
-	x_np = _to_numpy(x)
-	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
-	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
-
-	# Last-timestep endpoints: (nx, N, 2)
-	original_end = original[:, :, -1, :]
-	noisy_end = noisy[:, :, -1, :]
-	single_end = single[:, :, -1, :]
-	clust_end = clust[:, :, -1, :]
-
-	nx = original.shape[0]
-
-	# Shared axis limits derived from all endpoints and input trajectories.
-	all_x_coords = np.concatenate([
-		original_end[..., 0].reshape(-1),
-		noisy_end[..., 0].reshape(-1),
-		single_end[..., 0].reshape(-1),
-		clust_end[..., 0].reshape(-1),
-		x_traj[..., 0].reshape(-1),
-	])
-	all_y_coords = np.concatenate([
-		original_end[..., 1].reshape(-1),
-		noisy_end[..., 1].reshape(-1),
-		single_end[..., 1].reshape(-1),
-		clust_end[..., 1].reshape(-1),
-		x_traj[..., 1].reshape(-1),
-	])
-	x_pad = max((float(all_x_coords.max()) - float(all_x_coords.min())) * 0.12, 0.5)
-	y_pad = max((float(all_y_coords.max()) - float(all_y_coords.min())) * 0.12, 0.5)
-	x_lim = (float(all_x_coords.min()) - x_pad, float(all_x_coords.max()) + x_pad)
-	y_lim = (float(all_y_coords.min()) - y_pad, float(all_y_coords.max()) + y_pad)
-	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
-	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
-
-	col_titles = (r"$h_{w}(x)$", r"$h_{w}(x+\varepsilon)$", r"$\alpha$-smoothing [2]", r"Clustered $\alpha$-smoothing")
-	agent_colors = ("#000000", "#0B3C5D")
-	agent_labels = ("Agent", "Ego agent")
-
-	def _assign_to_centroids(points_np: np.ndarray, centroids_np: np.ndarray) -> np.ndarray:
-		diff = points_np[:, None, :] - centroids_np[None, :, :]
-		d2 = np.sum(diff * diff, axis=-1)
-		return np.argmin(d2, axis=1)
-
-	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 4, figsize=(_w, 0.25 * _w * nx), sharex=True, sharey=True, constrained_layout=True)
-	if nx == 1:
-		axes = np.array([axes])
-
-	for i in range(nx):
-		single_centroids_i = _to_numpy(single_cluster_centroids[i])
-		clust_centroids_i = _to_numpy(clustered_centroids[i])
-
-		column_data = (
-			(original_end[i], None),
-			(noisy_end[i], None),
-			(single_end[i], single_centroids_i),
-			(clust_end[i], clust_centroids_i),
-		)
-
-		for col_idx, (endpoints, centroids_ref) in enumerate(column_data):
-			ax = axes[i, col_idx]
-			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
-
-			if centroids_ref is None:
-				labels_np = np.zeros(endpoints.shape[0], dtype=np.int64)
-				num_cls = 1
-			else:
-				labels_np = _assign_to_centroids(endpoints, centroids_ref)
-				num_cls = int(centroids_ref.shape[0])
-
-			for j in range(num_cls):
-				mask_j = labels_np == j
-				if not np.any(mask_j):
-					continue
-				color_j = CLUSTER_PALETTE[j % len(CLUSTER_PALETTE)]
-				ax.scatter(
-					endpoints[mask_j, 0],
-					endpoints[mask_j, 1],
-					s=8,
-					alpha=0.45,
-					color=color_j,
-					linewidths=0,
-					zorder=2,
-				)
-
-			# Input-trajectory markers for spatial context.
-			for agent_idx in range(num_input_agents):
-				agent_traj = x_traj[i, agent_idx]
-				color = agent_colors[agent_idx % len(agent_colors)]
-				label = None
-				if i == 0 and col_idx == 0 and agent_idx < len(agent_labels):
-					label = agent_labels[agent_idx]
-				ax.plot(
-					agent_traj[:, 0],
-					agent_traj[:, 1],
-					color=color,
-					linestyle="None",
-					marker="o",
-					markersize=2.0,
-					markerfacecolor=color,
-					markeredgecolor=color,
-					markeredgewidth=0.2,
-					zorder=6,
-					label=label,
-				)
-
-			ax.set_xlim(*x_lim)
-			ax.set_ylim(*y_lim)
-			ax.set_aspect("equal", adjustable="box")
-
-		for y_col in (1, 2, 3):
-			axes[i, y_col].tick_params(axis="y", which="both", left=False, labelleft=False)
-
-		if i == 0:
-			for col_idx in range(4):
-				axes[i, col_idx].set_title(col_titles[col_idx], fontsize=8)
-
-	handles, labels = axes[0, 0].get_legend_handles_labels()
-	fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=True, fontsize=8)
-	fig.supxlabel("x (m)", fontsize=8, y=-0.02)
-	fig.supylabel("y (m)", fontsize=8)
-	fig_path = output_dir / "final_timestep_density.pdf"
-	fig.savefig(fig_path, dpi=180)
-	plt.close(fig)
-
-	return [fig_path]
 
 
 def plot_final_timestep_examples(
@@ -909,460 +592,6 @@ def _plot_car_icon(
 	ax.add_patch(rect)
 
 
-def plot_trajectory_samples(
-	x: torch.Tensor,
-	mc_samples: torch.Tensor,
-	single_cluster_mc_samples: torch.Tensor,
-	clustered_mc_samples: torch.Tensor,
-	output_dir: Path,
-	num_input_agents: int = 2,
-) -> list[Path]:
-	"""Plot trajectory samples for each x point.
-
-	Args:
-		x: Tensor (nx, num_input_agents * num_input_timesteps * 2) containing
-		   flattened input trajectories used for dashed overlays.
-		mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
-		single_cluster_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps)
-		   from a smoother with max_num_clusters=1.
-		clustered_mc_samples: Tensor (nx, num_samples, 2 * num_timesteps).
-		output_dir: Folder to save charts.
-		num_input_agents: Number of agents encoded in x.
-	"""
-	output_dir.mkdir(parents=True, exist_ok=True)
-
-	raw = _reshape_trajectory_samples(mc_samples)
-	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clustered = _reshape_trajectory_samples(clustered_mc_samples)
-	x_np = _to_numpy(x)
-	if num_input_agents < 1:
-		raise ValueError("num_input_agents must be >= 1")
-	if x_np.ndim != 2 or x_np.shape[1] % (2 * num_input_agents) != 0:
-		raise ValueError(
-			"x must have shape (nx, num_input_agents * num_input_timesteps * 2)"
-		)
-	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
-	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
-
-	if raw.shape != clustered.shape:
-		raise ValueError("mc_samples and clustered_mc_samples must have identical shapes")
-	if raw.shape[0] != x_traj.shape[0]:
-		raise ValueError("x and trajectory samples must have the same first dimension")
-
-	nx, num_samples, _, _ = raw.shape
-	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 3, figsize=(_w, 0.30 * _w * nx), sharex=True, sharey=True)
-	if nx == 1:
-		axes = np.array([axes])
-
-	all_x = np.concatenate(
-		(
-			raw[:, :, :, 0].reshape(-1),
-			single_cluster[:, :, :, 0].reshape(-1),
-			clustered[:, :, :, 0].reshape(-1),
-			x_traj[:, :, :, 0].reshape(-1),
-		)
-	)
-	all_y = np.concatenate(
-		(
-			raw[:, :, :, 1].reshape(-1),
-			single_cluster[:, :, :, 1].reshape(-1),
-			clustered[:, :, :, 1].reshape(-1),
-			x_traj[:, :, :, 1].reshape(-1),
-		)
-	)
-	x_min, x_max = np.min(all_x), np.max(all_x)
-	y_min, y_max = np.min(all_y), np.max(all_y)
-	x_pad = max((x_max - x_min) * 0.05, 1e-6)
-	y_pad = max((y_max - y_min) * 0.05, 1e-6)
-	x_lim = (x_min - x_pad, x_max + x_pad)
-	y_lim = (y_min - y_pad - 5.0, y_max + y_pad + 5.0)
-
-	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
-	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
-	car_size = 0.022 * max(x_lim[1] - x_lim[0], y_lim[1] - y_lim[0])
-	car_size = max(car_size, 0.25)
-
-	for i in range(nx):
-		ax_raw = axes[i, 0]
-		ax_single = axes[i, 1]
-		ax_cluster = axes[i, 2]
-
-		_plot_street_marks(ax_raw, x_extent=x_extent, y_extent=y_extent)
-		_plot_street_marks(ax_single, x_extent=x_extent, y_extent=y_extent)
-		_plot_street_marks(ax_cluster, x_extent=x_extent, y_extent=y_extent)
-
-		for j in range(num_samples):
-			traj = raw[i, j]
-			ax_raw.plot(
-				traj[:, 0],
-				traj[:, 1],
-				color="#1B2A4A",
-				alpha=0.16,
-				linewidth=0.9,
-				zorder=1,
-				label=None,
-			)
-
-			traj_single = single_cluster[i, j]
-			ax_single.plot(
-				traj_single[:, 0],
-				traj_single[:, 1],
-				color="#D55E00",
-				alpha=0.35,
-				linewidth=1.0,
-				zorder=1,
-				label=None,
-			)
-
-			traj_cluster = clustered[i, j]
-			ax_cluster.plot(
-				traj_cluster[:, 0],
-				traj_cluster[:, 1],
-				color="#009E73",
-				alpha=0.35,
-				linewidth=1.0,
-				zorder=1,
-				label=None,
-			)
-
-		agent_colors = ("#000000", "#0B3C5D")
-		for agent_idx in range(num_input_agents):
-			agent_traj = x_traj[i, agent_idx]
-			color = agent_colors[agent_idx % len(agent_colors)]
-			label = "Target agent" if agent_idx == 0 else "Ego agent"
-			ax_raw.plot(
-				agent_traj[:, 0],
-				agent_traj[:, 1],
-				color=color,
-				linestyle="None",
-				marker="o",
-				markersize=2.1,
-				markerfacecolor=color,
-				markeredgecolor=color,
-				markeredgewidth=0.2,
-				zorder=6,
-				label=label,
-			)
-			for ax_mid in (ax_single, ax_cluster):
-				ax_mid.plot(
-					agent_traj[:, 0],
-					agent_traj[:, 1],
-					color=color,
-					linestyle="None",
-					marker="o",
-					markersize=2.0,
-					markerfacecolor=color,
-					markeredgecolor=color,
-					markeredgewidth=0.2,
-					zorder=5,
-				)
-
-			next_idx = 1 if agent_traj.shape[0] > 1 else 0
-			for ax_car in (ax_raw, ax_single, ax_cluster):
-				_plot_car_icon(
-					ax_car,
-					start=agent_traj[0],
-					next_point=agent_traj[next_idx],
-					color=color,
-					car_length=car_size,
-				)
-
-		for ax in (ax_raw, ax_single, ax_cluster):
-			ax.set_xlim(*x_lim)
-			ax.set_ylim(*y_lim)
-
-		ax_single.tick_params(axis="y", which="both", left=False, labelleft=False)
-		ax_cluster.tick_params(axis="y", which="both", left=False, labelleft=False)
-
-		if i == 0:
-			ax_raw.set_title("Original", fontsize=8)
-			ax_single.set_title("Rekavandi et al, 2024", fontsize=8)
-			ax_cluster.set_title("Ours", fontsize=8)
-
-	fig.supxlabel("x", fontsize=8)
-	fig.supylabel("y", fontsize=8)
-	fig.tight_layout()
-	fig_path = output_dir / "trajectory_samples_comparison.pdf"
-	fig.savefig(fig_path, dpi=180, bbox_inches="tight")
-	plt.close(fig)
-
-	return [fig_path]
-
-
-def plot_timestep_rectangles_visualization(
-	x: torch.Tensor,
-	original_mc_samples: torch.Tensor,
-	noisy_mc_samples: torch.Tensor,
-	single_cluster_mc_samples: torch.Tensor,
-	clustered_mc_samples: torch.Tensor,
-	region,
-	single_cluster_region,
-	output_dir: Path,
-	num_input_agents: int = 2,
-	timesteps: list[int] | None = None,
-) -> list[Path]:
-	"""Plot timestep-wise certified rectangles with one row per input trajectory.
-
-	Four columns are shown per row: Original, Noisy, single-cluster smoother,
-	and multi-cluster smoother. Certified rectangles are shown on smoother columns.
-	"""
-	output_dir.mkdir(parents=True, exist_ok=True)
-
-	original = _reshape_trajectory_samples(original_mc_samples)
-	noisy = _reshape_trajectory_samples(noisy_mc_samples)
-	single_cluster = _reshape_trajectory_samples(single_cluster_mc_samples)
-	clustered = _reshape_trajectory_samples(clustered_mc_samples)
-	x_np = _to_numpy(x)
-
-	if x_np.ndim != 2 or x_np.shape[1] % (2 * num_input_agents) != 0:
-		raise ValueError("x must have shape (nx, num_input_agents * num_input_timesteps * 2)")
-
-	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
-	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
-
-	if region.lower.shape[-1] % 2 != 0:
-		raise ValueError("Expected region output dimension arranged as [x1,y1,...,xT,yT]")
-	num_timesteps = region.lower.shape[-1] // 2
-
-	if timesteps is None:
-		timesteps_to_plot = list(range(num_timesteps))
-	else:
-		timesteps_to_plot = timesteps
-		for t in timesteps_to_plot:
-			if t < 0 or t >= num_timesteps:
-				raise ValueError(f"timestep {t} out of range [0, {num_timesteps - 1}]")
-
-	plt.rcParams.update({
-		"text.usetex": True,
-		"font.serif": ["Computer Modern Roman"],
-		"font.size": 10,
-		"axes.labelsize": 10,
-		"axes.titlesize": 10,
-		"xtick.labelsize": 9,
-		"ytick.labelsize": 9,
-		"legend.fontsize": 9,
-	})
-
-	nx = original.shape[0]
-	_w = TEXTWIDTH
-	fig, axes = plt.subplots(nx, 2, figsize=(_w, 0.25 * _w * nx), sharex=True, sharey=True, constrained_layout=True)
-	if nx == 1:
-		axes = np.array([axes])
-
-	# Compute limits using all data (not just x_index) to match trajectory_samples figure
-	all_x = np.concatenate((original[:, :, :, 0].reshape(-1), noisy[:, :, :, 0].reshape(-1), single_cluster[:, :, :, 0].reshape(-1), clustered[:, :, :, 0].reshape(-1), x_traj[:, :, :, 0].reshape(-1)))
-	all_y = np.concatenate((original[:, :, :, 1].reshape(-1), noisy[:, :, :, 1].reshape(-1), single_cluster[:, :, :, 1].reshape(-1), clustered[:, :, :, 1].reshape(-1), x_traj[:, :, :, 1].reshape(-1)))
-	x_min, x_max = np.min(all_x), np.max(all_x)
-	y_min, y_max = np.min(all_y), np.max(all_y)
-	x_pad = max((x_max - x_min) * 0.05, 1e-6)
-	y_pad = max((y_max - y_min) * 0.05, 1e-6)
-	x_lim = (x_min - x_pad, x_max + x_pad)
-	y_lim = (y_min - y_pad - 5.0, y_max + y_pad + 5.0)
-
-	x_extent = max(abs(x_lim[0]), abs(x_lim[1]))
-	y_extent = max(abs(y_lim[0]), abs(y_lim[1]))
-
-	for i in range(nx):
-		ax_single, ax_cluster = axes[i]
-
-		for ax in (ax_single, ax_cluster):
-			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
-
-		single_cluster_i = single_cluster[i]
-		clustered_i = clustered[i]
-		x_traj_i = x_traj[i]
-
-		lower = _to_numpy(region.lower[i]).reshape(region.lower.shape[1], -1, 2)
-		upper = _to_numpy(region.upper[i]).reshape(region.upper.shape[1], -1, 2)
-		num_clusters = lower.shape[0]
-
-		sc_lower = _to_numpy(single_cluster_region.lower[i]).reshape(single_cluster_region.lower.shape[1], -1, 2)
-		sc_upper = _to_numpy(single_cluster_region.upper[i]).reshape(single_cluster_region.upper.shape[1], -1, 2)
-		sc_num_clusters = sc_lower.shape[0]
-
-		for j in range(single_cluster_i.shape[0]):
-			traj_single = single_cluster_i[j]
-			ax_single.plot(traj_single[:, 0], traj_single[:, 1], color="#D55E00", alpha=0.20, linewidth=0.9, zorder=1)
-			traj_cluster = clustered_i[j]
-			ax_cluster.plot(traj_cluster[:, 0], traj_cluster[:, 1], color="#009E73", alpha=0.20, linewidth=0.9, zorder=1)
-
-		# Draw multi-cluster rectangles on right panel only.
-		for c in range(num_clusters):
-			color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
-			for t in timesteps_to_plot:
-				x_lo, y_lo = lower[c, t]
-				x_hi, y_hi = upper[c, t]
-				w, h = x_hi - x_lo, y_hi - y_lo
-				face = to_rgba(color, alpha=0.10)
-				lw = 0.8 if len(timesteps_to_plot) <= 2 else 0.5
-				rect = mpatches.Rectangle(
-					(x_lo, y_lo), w, h,
-					edgecolor=color, facecolor=face,
-					linewidth=lw, linestyle="-", zorder=2,
-				)
-				ax_cluster.add_patch(rect)
-
-		# Draw single-cluster rectangles on middle panel.
-		for c in range(sc_num_clusters):
-			color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
-			for t in timesteps_to_plot:
-				x_lo, y_lo = sc_lower[c, t]
-				x_hi, y_hi = sc_upper[c, t]
-				w, h = x_hi - x_lo, y_hi - y_lo
-				face = to_rgba(color, alpha=0.10)
-				lw = 0.8 if len(timesteps_to_plot) <= 2 else 0.5
-				rect = mpatches.Rectangle(
-					(x_lo, y_lo), w, h,
-					edgecolor=color, facecolor=face,
-					linewidth=lw, linestyle="-", zorder=2,
-				)
-				ax_single.add_patch(rect)
-
-		agent_colors = ("#000000", "#0B3C5D")
-		agent_labels = ("Agent", "Ego agent")
-		for agent_idx in range(num_input_agents):
-			agent_traj = x_traj_i[agent_idx]
-			color = agent_colors[agent_idx % len(agent_colors)]
-			label = agent_labels[agent_idx] if (i == 0 and agent_idx < len(agent_labels)) else None
-			for ax in (ax_single, ax_cluster):
-				ax.plot(agent_traj[:, 0], agent_traj[:, 1], linestyle="None", marker="o", markersize=2.2, color=color, zorder=6, label=label if ax is ax_single else None)
-
-		for ax in (ax_single, ax_cluster):
-			ax.set_xlim(*x_lim)
-			ax.set_ylim(*y_lim)
-
-		axes[i, 1].tick_params(axis="y", which="both", left=False, labelleft=False)
-
-		if i == 0:
-			ax_single.set_title("Rekavandi et al, 2024", fontsize=8)
-			ax_cluster.set_title("Ours", fontsize=8)
-
-	handles, labels = axes[0, 0].get_legend_handles_labels()
-	fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=True, fontsize=8)
-	fig.supxlabel("x", fontsize=8, y=-0.02)
-	fig.supylabel("y", fontsize=8)
-
-	suffix = "" if timesteps is None else "_t" + "_".join(str(t) for t in timesteps_to_plot)
-	fig_path = output_dir / f"timestep_rectangles_visualization{suffix}.pdf"
-	fig.savefig(fig_path, dpi=180)
-	plt.close(fig)
-
-	return [fig_path]
-
-
-def _add_region_patch(ax: plt.Axes, cluster: Cluster, cluster_index: int, color: str) -> None:
-	region = cluster.regions
-	centroid = cluster.centroids[0, cluster_index].detach().cpu().numpy()
-
-	if hasattr(region, "radius"):
-		radius = float(region.radius[0, cluster_index].detach().cpu().item())
-		patch = mpatches.Circle(
-			centroid,
-			radius=radius,
-			fill=False,
-			edgecolor=color,
-			linewidth=1.4,
-			linestyle="-",
-		)
-	else:
-		lower = region.lower[0, cluster_index].detach().cpu().numpy()
-		upper = region.upper[0, cluster_index].detach().cpu().numpy()
-		patch = mpatches.Rectangle(
-			lower,
-			*(upper - lower),
-			fill=False,
-			edgecolor=color,
-			linewidth=1.4,
-			linestyle="-",
-		)
-
-	ax.add_patch(patch)
-
-
-def plot_comparison(
-	outputs: torch.Tensor,
-	clusters_by_key: dict[tuple[str, float], Cluster],
-	set_types: list[str],
-	coverages: list[float],
-	output_dir: Path,
-) -> list[Path]:
-	output_dir.mkdir(parents=True, exist_ok=True)
-	samples_np = outputs[0].detach().cpu().numpy()
-	x_pad = 0.8
-	y_pad = 0.8
-
-	all_x = samples_np[:, 0]
-	all_y = samples_np[:, 1]
-	x_lim = (float(all_x.min() - x_pad), float(all_x.max() + x_pad))
-	y_lim = (float(all_y.min() - y_pad), float(all_y.max() + y_pad))
-
-	plt.rcParams.update({
-		"text.usetex": True,
-		"font.serif": ["Computer Modern Roman"],
-		"font.size": 8,
-		"axes.labelsize": 8,
-		"axes.titlesize": 8,
-		"xtick.labelsize": 7,
-		"ytick.labelsize": 7,
-		"legend.fontsize": 7,
-	})
-
-	colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
-	paths: list[Path] = []
-
-	for coverage in coverages:
-		_w = HALFWIDTH
-		fig, axes = plt.subplots(
-			1, len(set_types),
-			figsize=(_w, 0.55 * _w),
-			sharex=True,
-			sharey=True,
-		)
-
-		if len(set_types) == 1:
-			axes = [axes]
-
-		for col, set_type in enumerate(set_types):
-			ax = axes[col]
-			cluster = clusters_by_key[(set_type, coverage)]
-			assignments = cluster.assignments[0].detach().cpu().numpy()
-			active_k = int(cluster.k_per_row[0].item())
-
-			for j in range(active_k):
-				cluster_points = samples_np[assignments == j]
-				ax.scatter(
-					cluster_points[:, 0],
-					cluster_points[:, 1],
-					s=8,
-					alpha=0.05,
-					color=colors[j % len(colors)],
-				)
-				centroid = cluster.centroids[0, j].detach().cpu().numpy()
-				ax.scatter(
-					centroid[0],
-					centroid[1],
-					marker="x",
-					s=12,
-					linewidths=1.2,
-					color=colors[j % len(colors)],
-				)
-				_add_region_patch(ax=ax, cluster=cluster, cluster_index=j, color=colors[j % len(colors)])
-
-			ax.set_xlim(*x_lim)
-			ax.set_ylim(*y_lim)
-			ax.set_aspect("equal", adjustable="box")
-			ax.grid(alpha=0.25, linestyle=":")
-
-		fig.subplots_adjust(wspace=0.05)
-		output_path = output_dir / f"axis_aligned_hyperrectangle_cov{coverage:.2f}.pdf"
-		fig.savefig(output_path, dpi=180, bbox_inches="tight")
-		plt.close(fig)
-		paths.append(output_path)
-
-	return paths
-
-
 def plot_bound_clustered_grid(
 	ratio_values: np.ndarray,
 	alphas: list[float],
@@ -1581,15 +810,26 @@ def plot_trajflow_wasserstein_histograms(
 	w_noisy_vs_k2: np.ndarray,
 	output_path: Path,
 	bins: int = 24,
+	w_noisy_vs_rsreg: np.ndarray | None = None,
 ) -> Path:
-	"""Plot side-by-side Wasserstein histograms for k1 and k2 smoothers."""
+	"""Plot Wasserstein histograms for RS-Reg (optional), k=1 and k=2 smoothers.
+
+	When ``w_noisy_vs_rsreg`` is supplied the figure shows three side-by-side
+	panels in the order RS-Reg → alpha-smoothing → clustered alpha-smoothing,
+	sharing a common x-axis range across all three distributions.  When it is
+	omitted the classic two-panel layout is produced.
+	"""
 	if bins <= 0:
 		raise ValueError("bins must be positive")
 	if len(w_noisy_vs_k1) == 0 or len(w_noisy_vs_k2) == 0:
 		raise ValueError("Wasserstein arrays must be non-empty")
 
 	output_path.parent.mkdir(parents=True, exist_ok=True)
-	combined = np.concatenate([w_noisy_vs_k1, w_noisy_vs_k2]).astype(float)
+
+	arrays_for_range = [w_noisy_vs_k1, w_noisy_vs_k2]
+	if w_noisy_vs_rsreg is not None:
+		arrays_for_range.append(w_noisy_vs_rsreg)
+	combined = np.concatenate(arrays_for_range).astype(float)
 	min_v = float(np.min(combined))
 	max_v = float(np.max(combined))
 	if np.isclose(min_v, max_v):
@@ -1611,23 +851,46 @@ def plot_trajflow_wasserstein_histograms(
 			"legend.fontsize": 9,
 		}
 	):
-		fig, axes = plt.subplots(1, 2, figsize=(9.2, 2.4), sharey=True)
-		fig.subplots_adjust(left=0.09, right=0.985, top=0.82, bottom=0.28, wspace=0.14)
-
-		panels = (
-			(
-				axes[0],
-				w_noisy_vs_k1.astype(float),
-				r"$\alpha$-smoothing",
-				"#4C78A8",
-			),
-			(
-				axes[1],
-				w_noisy_vs_k2.astype(float),
-				r"Clustered $\alpha$-smoothing",
-				"#2A9D8F",
-			),
-		)
+		if w_noisy_vs_rsreg is not None:
+			fig, axes = plt.subplots(1, 3, figsize=(13.5, 2.4), sharey=True)
+			fig.subplots_adjust(left=0.07, right=0.99, top=0.82, bottom=0.28, wspace=0.14)
+			panels = (
+				(
+					axes[0],
+					w_noisy_vs_rsreg.astype(float),
+					r"RS-Reg",
+					"#E76F51",
+				),
+				(
+					axes[1],
+					w_noisy_vs_k1.astype(float),
+					r"$\alpha$-smoothing",
+					"#4C78A8",
+				),
+				(
+					axes[2],
+					w_noisy_vs_k2.astype(float),
+					r"Clustered $\alpha$-smoothing",
+					"#2A9D8F",
+				),
+			)
+		else:
+			fig, axes = plt.subplots(1, 2, figsize=(9.2, 2.4), sharey=True)
+			fig.subplots_adjust(left=0.09, right=0.985, top=0.82, bottom=0.28, wspace=0.14)
+			panels = (
+				(
+					axes[0],
+					w_noisy_vs_k1.astype(float),
+					r"$\alpha$-smoothing",
+					"#4C78A8",
+				),
+				(
+					axes[1],
+					w_noisy_vs_k2.astype(float),
+					r"Clustered $\alpha$-smoothing",
+					"#2A9D8F",
+				),
+			)
 		for ax, values, subtitle, color in panels:
 			ax.set_title(subtitle, pad=8)
 			ax.hist(
@@ -1658,117 +921,558 @@ def plot_trajflow_wasserstein_histograms(
 	return output_path
 
 
-def _select_rows(payload: dict[str, Any], top_k: int) -> tuple[list[dict[str, Any]], list[float]]:
-	rows = payload.get("per_input", [])
-	target_displacements = _load_trajflow_target_displacements()
-	scored: list[tuple[float, dict[str, Any]]] = []
-	for row in rows:
-		dataset_index = int(row["dataset_index"])
-		if dataset_index < 0 or dataset_index >= len(target_displacements):
-			raise ValueError(f"dataset_index {dataset_index} is out of range for TrajFlow data")
-		score = float(target_displacements[dataset_index])
-		scored.append((score, row))
+def plot_trajectory_examples_clustered(
+	x: torch.Tensor,
+	original_mc_samples: torch.Tensor,
+	noisy_mc_samples: torch.Tensor,
+	single_cluster_mc_samples: torch.Tensor,
+	clustered_mc_samples: torch.Tensor,
+	single_cluster_centroids: torch.Tensor,
+	clustered_centroids: torch.Tensor,
+	region,
+	single_cluster_region,
+	output_dir: Path,
+	num_input_agents: int = 2,
+) -> list[Path]:
+	"""Plot full-trajectory samples with cluster-colouring for the clustered smoother.
 
-	scored.sort(key=lambda x: x[0], reverse=True)
-	if top_k > 0:
-		scored = scored[:top_k]
+	Like ``plot_final_timestep_examples`` but uses trajectory lines instead of
+	endpoint scatter plots.  Trajectories in columns 3-4 (smoothers) are coloured
+	by their nearest centroid in the full output space, so the stay / go separation
+	is visible even in high dimensions without relying on endpoint-only projection.
 
-	selected_rows = [row for _, row in scored]
-	scores = [score for score, _ in scored]
-	return selected_rows, scores
+	Certified final-step rectangles are overlaid on the smoother columns.
+	"""
+	output_dir.mkdir(parents=True, exist_ok=True)
 
+	original = _reshape_trajectory_samples(original_mc_samples)
+	noisy = _reshape_trajectory_samples(noisy_mc_samples)
+	single = _reshape_trajectory_samples(single_cluster_mc_samples)
+	clust = _reshape_trajectory_samples(clustered_mc_samples)
+	x_np = _to_numpy(x)
+	num_input_timesteps = x_np.shape[1] // (2 * num_input_agents)
+	x_traj = x_np.reshape(x_np.shape[0], num_input_agents, num_input_timesteps, 2)
 
-def _values_from_rows(rows: list[dict[str, Any]], field: str) -> dict[str, np.ndarray]:
-	return {
-		"original": np.array([float(r["original"][field]) for r in rows], dtype=float),
-		"noisy_input": np.array([float(r["noisy_input"][field]) for r in rows], dtype=float),
-		"smoothed_k1": np.array([float(r["smoothed_k1"][field]) for r in rows], dtype=float),
-		"smoothed_k2": np.array([float(r["smoothed_k2"][field]) for r in rows], dtype=float),
-	}
+	if region.lower.shape[-1] % 2 != 0 or single_cluster_region.lower.shape[-1] % 2 != 0:
+		raise ValueError("Expected region output dimension arranged as [x1,y1,...,xT,yT]")
 
+	region_lower_final = _to_numpy(region.lower[..., -2:])
+	region_upper_final = _to_numpy(region.upper[..., -2:])
+	sc_lower_final = _to_numpy(single_cluster_region.lower[..., -2:])
+	sc_upper_final = _to_numpy(single_cluster_region.upper[..., -2:])
 
-def _save_json_payload(path: Path, payload: dict[str, Any]) -> None:
-	path.parent.mkdir(parents=True, exist_ok=True)
-	with path.open("w", encoding="utf-8") as f:
-		json.dump(payload, f, indent=2)
+	nx, num_samples, num_timesteps, _ = original.shape
 
+	def _assign_by_centroid_flat(
+		samples_flat: np.ndarray,
+		centroids_flat: np.ndarray,
+	) -> np.ndarray:
+		"""Nearest-centroid assignment in the full output space (L2)."""
+		diff = samples_flat[:, None, :] - centroids_flat[None, :, :]
+		d2 = np.sum(diff * diff, axis=-1)
+		return np.argmin(d2, axis=1)
 
-def plot_trajflow_selected_from_json(
-	metrics_json: str,
-	top_k: int,
-	tail_quantile: float,
-	output_dir: str | None,
-	name_prefix: str,
-	adversarial_titles: bool,
-) -> tuple[Path, Path, Path]:
-	metrics_path = Path(metrics_json)
-	with metrics_path.open("r", encoding="utf-8") as f:
-		payload = json.load(f)
+	x_lim = (-10.0, 10.0)
+	y_lim = (-10.0, 10.0)
+	x_extent = 10.0
+	y_extent = 10.0
 
-	selected_rows, scores = _select_rows(payload, top_k)
-	if not selected_rows:
-		raise ValueError("No input rows found in metrics JSON.")
-
-	out_dir = Path(output_dir) if output_dir else (metrics_path.parent / "plots_selected")
-	mean_plot = out_dir / f"{name_prefix}_average_distance.pdf"
-	std_plot = out_dir / f"{name_prefix}_std_distance.pdf"
-
-	mean_values = _values_from_rows(selected_rows, "mean_distance")
-	std_values = _values_from_rows(selected_rows, "std_distance")
-
-	_plot_trajflow_metric_histogram(
-		values=mean_values,
-		xlabel="Average error",
-		output_path=mean_plot,
-		tail_quantile=tail_quantile,
-		adversarial_titles=adversarial_titles,
+	col_titles = (
+		r"$h_{w}(x)$",
+		r"$h_{w}(x+\varepsilon)$",
+		r"$\alpha$-smoothing",
+		r"Clustered $\alpha$-smoothing",
 	)
-	_plot_trajflow_metric_histogram(
-		values=std_values,
-		xlabel="Average error std deviation",
-		output_path=std_plot,
-		tail_quantile=tail_quantile,
-		adversarial_titles=adversarial_titles,
-	)
+	title_fontsize = 16
+	axis_label_fontsize = 15
+	tick_label_fontsize = 14
+	major_ticks = np.arange(-10.0, 10.1, 5.0)
+	agent_colors = ("#008A2E",)
+	agent_labels = ("Agent",)
+	_fig_w = 16.0
+	_fig_h = 4.5
+	chart_paths: list[Path] = []
 
-	summary = {
-		"source_metrics_json": str(metrics_path),
-		"top_k": top_k,
-		"selection_criterion": "target_initial_to_gt_final_distance_descending",
-		"selected_count": len(selected_rows),
-		"selected_indices": [int(r["dataset_index"]) for r in selected_rows],
-		"selection_scores": scores,
-		"artifacts": {
-			"mean_plot": str(mean_plot),
-			"std_plot": str(std_plot),
-		},
-	}
-	summary_path = metrics_path.parent / f"{name_prefix}_selection_summary.json"
-	_save_json_payload(summary_path, summary)
+	for i in range(nx):
+		fig, axes = plt.subplots(
+			1, 4, figsize=(_fig_w, _fig_h), sharex=True, sharey=True,
+			constrained_layout=False,
+		)
+		fig.subplots_adjust(left=0.08, right=0.99, top=0.94, bottom=0.12, hspace=0.0, wspace=0.05)
+		fig.patch.set_facecolor("#FFFFFF")
 
-	print(f"selected_count: {len(selected_rows)}")
-	print(f"saved: {mean_plot}")
-	print(f"saved: {std_plot}")
-	print(f"saved: {summary_path}")
+		single_centroids_flat = _to_numpy(single_cluster_centroids[i])  # (k1, out_dim)
+		clust_centroids_flat = _to_numpy(clustered_centroids[i])  # (k2, out_dim)
 
-	return mean_plot, std_plot, summary_path
+		single_labels = _assign_by_centroid_flat(
+			single[i].reshape(num_samples, -1), single_centroids_flat
+		)
+		clust_labels = _assign_by_centroid_flat(
+			clust[i].reshape(num_samples, -1), clust_centroids_flat
+		)
+
+		columns = (
+			(original[i], None),
+			(noisy[i], None),
+			(single[i], single_labels),
+			(clust[i], clust_labels),
+		)
+
+		for col_idx, (traj_data, labels) in enumerate(columns):
+			ax = axes[col_idx]
+			ax.set_facecolor("#FFFFFF")
+			_plot_street_marks(ax, x_extent=x_extent, y_extent=y_extent)
+			ax.set_aspect("equal", adjustable="box")
+
+			if labels is None:
+				for j in range(num_samples):
+					traj = traj_data[j]
+					ax.plot(
+						traj[:, 0], traj[:, 1],
+						color=CLUSTER_PALETTE[0], alpha=0.10, linewidth=0.7, zorder=1,
+					)
+			else:
+				for j in range(num_samples):
+					c = int(labels[j])
+					color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
+					traj = traj_data[j]
+					ax.plot(
+						traj[:, 0], traj[:, 1],
+						color=color, alpha=0.15, linewidth=0.8, zorder=1,
+					)
+
+			# Overlay certified final-step rectangles on smoother columns.
+			if col_idx == 2:
+				sc_k = sc_lower_final.shape[1]
+				for k_c in range(sc_k):
+					color = CLUSTER_PALETTE[k_c % len(CLUSTER_PALETTE)]
+					x_lo, y_lo = sc_lower_final[i, k_c]
+					x_hi, y_hi = sc_upper_final[i, k_c]
+					rect = mpatches.Rectangle(
+						(x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
+						edgecolor=color, facecolor=to_rgba(color, alpha=0.12),
+						linewidth=0.9, linestyle="-", zorder=3,
+					)
+					ax.add_patch(rect)
+			elif col_idx == 3:
+				k = region_lower_final.shape[1]
+				for k_c in range(k):
+					color = CLUSTER_PALETTE[k_c % len(CLUSTER_PALETTE)]
+					x_lo, y_lo = region_lower_final[i, k_c]
+					x_hi, y_hi = region_upper_final[i, k_c]
+					rect = mpatches.Rectangle(
+						(x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
+						edgecolor=color, facecolor=to_rgba(color, alpha=0.12),
+						linewidth=0.9, linestyle="-", zorder=3,
+					)
+					ax.add_patch(rect)
+
+			agent_traj = x_traj[i, 0]
+			color = agent_colors[0]
+			next_idx = 1 if agent_traj.shape[0] > 1 else 0
+			_plot_car_icon(
+				ax,
+				start=agent_traj[0],
+				next_point=agent_traj[next_idx],
+				color=color,
+				car_length=1.55,
+				alpha=0.3,
+				edge_width=2.2,
+				road_aligned=True,
+			)
+
+			ax.set_title(col_titles[col_idx], fontsize=title_fontsize)
+			ax.set_xlim(*x_lim)
+			ax.set_ylim(*y_lim)
+			ax.set_xticks(major_ticks)
+			ax.set_yticks(major_ticks)
+			ax.tick_params(axis="both", which="major", labelsize=tick_label_fontsize)
+
+		for c in range(1, 4):
+			axes[c].tick_params(axis="y", which="both", left=False, labelleft=False)
+		for c in range(4):
+			axes[c].set_xlabel(r"$x_1$", fontsize=axis_label_fontsize)
+		axes[0].set_ylabel(r"$x_2$", fontsize=axis_label_fontsize)
+
+		if i == 0:
+			handles = [
+				mpatches.Patch(
+					facecolor=to_rgba(agent_colors[0], alpha=0.3),
+					edgecolor=agent_colors[0],
+					label=agent_labels[0],
+				)
+			]
+			axes[0].legend(handles=handles, loc="best", frameon=True, fontsize=10)
+
+		fig_path = output_dir / f"trajectory_examples_clustered_{i}.pdf"
+		fig.savefig(fig_path, dpi=180)
+		plt.close(fig)
+		chart_paths.append(fig_path)
+
+	return chart_paths
 
 
-def plot_trajflow_adversarial_from_json(
-	metrics_json: str | None = None,
-	top_k: int = 100,
-	tail_quantile: float = 0.90,
-	output_dir: str | None = None,
-) -> tuple[Path, Path, Path]:
-	base = Path(__file__).resolve().parent.parent
-	metrics_path = metrics_json or str(base / "data" / "analysis" / "adversarial" / "adversarial_metrics.json")
-	out_dir = output_dir or str(base / "data" / "figures")
-	return plot_trajflow_selected_from_json(
-		metrics_json=metrics_path,
-		top_k=top_k,
-		tail_quantile=tail_quantile,
-		output_dir=out_dir,
-		name_prefix="trajflow_adversarial_selected",
-		adversarial_titles=True,
-	)
+# ---------------------------------------------------------------------------
+# Per-timestep Wasserstein plot
+# ---------------------------------------------------------------------------
+
+def plot_wasserstein_per_timestep(
+	w2_k1: np.ndarray,
+	w2_k2: np.ndarray,
+	output_path: Path,
+	timesteps: np.ndarray | None = None,
+	w2_rsreg: np.ndarray | None = None,
+) -> Path:
+	"""Plot per-timestep 2-Wasserstein distances with mean ± 1 std band.
+
+	Args:
+		w2_k1: Array of shape (num_inputs, num_eval_steps) – W2 per (input, step)
+		        for the alpha-smoothing (k=1) smoother versus h_w(x).
+		w2_k2: Same shape – W2 for clustered alpha-smoothing (k=2) versus h_w(x).
+		output_path: Where to save the figure.
+		timesteps: 1-D integer array of the actual 0-based prediction timestep
+		           indices corresponding to the columns of w2_k1/w2_k2.  When
+		           omitted, defaults to 0, 1, …, num_eval_steps-1.
+		w2_rsreg: Optional array of the same shape as w2_k1 – W2 for RS-Reg
+		          (alpha=0, k=1) versus h_w(x).  When supplied a third line is
+		          drawn as a baseline, plotted below the other two lines.
+	"""
+	if w2_k1.ndim != 2 or w2_k2.ndim != 2:
+		raise ValueError("w2_k1 and w2_k2 must be 2-D arrays (num_inputs, num_eval_steps)")
+	if w2_k1.shape != w2_k2.shape:
+		raise ValueError("w2_k1 and w2_k2 must have the same shape")
+	if w2_rsreg is not None and w2_rsreg.shape != w2_k1.shape:
+		raise ValueError("w2_rsreg must have the same shape as w2_k1 when provided")
+
+	num_timesteps = w2_k1.shape[1]
+	if timesteps is None:
+		timesteps = np.arange(num_timesteps)
+	timesteps = np.asarray(timesteps, dtype=int)
+	mean_k1 = w2_k1.mean(axis=0)
+	std_k1 = w2_k1.std(axis=0, ddof=0)
+	mean_k2 = w2_k2.mean(axis=0)
+	std_k2 = w2_k2.std(axis=0, ddof=0)
+	if w2_rsreg is not None:
+		mean_rsreg = w2_rsreg.mean(axis=0)
+		std_rsreg = w2_rsreg.std(axis=0, ddof=0)
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with plt.rc_context(
+		{
+			"text.usetex": True,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 10,
+			"axes.titlesize": 10,
+			"xtick.labelsize": 9,
+			"ytick.labelsize": 9,
+			"legend.fontsize": 9,
+		}
+	):
+		fig, ax = plt.subplots(figsize=(5.5, 3.2))
+
+		if w2_rsreg is not None:
+			ax.fill_between(
+				timesteps, mean_rsreg - std_rsreg, mean_rsreg + std_rsreg,
+				alpha=0.20, color="#E76F51",
+			)
+			ax.plot(
+				timesteps, mean_rsreg,
+				marker=".", linewidth=1.4, color="#E76F51",
+				label=r"RS-Reg",
+			)
+
+		ax.fill_between(
+			timesteps, mean_k1 - std_k1, mean_k1 + std_k1,
+			alpha=0.20, color="#4C78A8",
+		)
+		ax.plot(
+			timesteps, mean_k1,
+			marker=".", linewidth=1.4, color="#4C78A8",
+			label=r"$\alpha$-smoothing",
+		)
+
+		ax.fill_between(
+			timesteps, mean_k2 - std_k2, mean_k2 + std_k2,
+			alpha=0.20, color="#2A9D8F",
+		)
+		ax.plot(
+			timesteps, mean_k2,
+			marker=".", linewidth=1.4, color="#2A9D8F",
+			label=r"Clustered $\alpha$-smoothing",
+		)
+
+		ax.set_xlabel(r"Prediction timestep $t$")
+		ax.set_ylabel(r"Mean $W_2$ distance to $h_w(x)$")
+		ax.set_xticks(timesteps)
+		ax.grid(True, linestyle=":", alpha=0.35)
+		ax.legend(loc="best", frameon=True)
+		fig.tight_layout()
+		fig.savefig(output_path, dpi=200)
+		plt.close(fig)
+
+	return output_path
+
+
+def plot_wasserstein_trajectory_barchart(
+	w2_traj_k1: np.ndarray,
+	w2_traj_k2: np.ndarray,
+	output_path: Path,
+	w2_traj_rsreg: np.ndarray | None = None,
+) -> Path:
+	"""Bar chart of mean full-trajectory (R^d) 2-Wasserstein distances.
+
+	Each bar shows the mean W2 over all evaluated inputs; error bars span ±1
+	standard deviation.  The three smoothers are RS-Reg (optional),
+	alpha-smoothing (k=1) and clustered alpha-smoothing (k=2).
+	"""
+	if len(w2_traj_k1) == 0 or len(w2_traj_k2) == 0:
+		raise ValueError("Wasserstein arrays must be non-empty")
+
+	labels: list[str] = []
+	means: list[float] = []
+	stds: list[float] = []
+	colors_bar: list[str] = []
+
+	if w2_traj_rsreg is not None:
+		labels.append(r"RS-Reg")
+		means.append(float(np.mean(w2_traj_rsreg)))
+		stds.append(float(np.std(w2_traj_rsreg, ddof=0)))
+		colors_bar.append("#E76F51")
+	labels.append(r"$\alpha$-smoothing")
+	means.append(float(np.mean(w2_traj_k1)))
+	stds.append(float(np.std(w2_traj_k1, ddof=0)))
+	colors_bar.append("#4C78A8")
+	labels.append(r"Clustered $\alpha$-smoothing")
+	means.append(float(np.mean(w2_traj_k2)))
+	stds.append(float(np.std(w2_traj_k2, ddof=0)))
+	colors_bar.append("#2A9D8F")
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with plt.rc_context(
+		{
+			"text.usetex": True,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 10,
+			"axes.titlesize": 10,
+			"xtick.labelsize": 9,
+			"ytick.labelsize": 9,
+		}
+	):
+		fig, ax = plt.subplots(figsize=(5.0, 3.2))
+		x = np.arange(len(labels))
+		bars = ax.bar(
+			x, means, yerr=stds,
+			color=colors_bar, alpha=0.75, edgecolor="black", linewidth=0.8,
+			capsize=5, error_kw={"linewidth": 1.0},
+		)
+		ax.set_xticks(x)
+		ax.set_xticklabels(labels)
+		ax.set_ylabel(r"Mean $W_2$ distance to $h_w(x)$")
+		ax.set_title(r"Full-trajectory $W_2$ ($\mathbf{R}^d$, mean $\pm$ std)")
+		ax.grid(True, axis="y", linestyle=":", alpha=0.35)
+		fig.tight_layout()
+		fig.savefig(output_path, dpi=200)
+		plt.close(fig)
+
+	return output_path
+
+
+# ---------------------------------------------------------------------------
+# Bounds-only robustness plot
+# ---------------------------------------------------------------------------
+
+def plot_robustness_bounds_only(
+	bounds_by_alpha: "dict[float, list[dict]]",
+	output_path: Path,
+) -> Path:
+	"""Plot clustered alpha-smoothing certified bounds vs robustness radius.
+
+	A single chart with one line per alpha value. Each line shows the mean
+	per-input clustered certified lower bound (k=2) across all evaluated inputs;
+	the shaded band spans ±1 std dev.
+
+	Each row in the per-alpha list must have:
+	    ``{"radius": float, "cert_k2_mean": float, "cert_k2_std": float}``
+	"""
+	alpha_values = sorted(bounds_by_alpha.keys())
+	if not alpha_values:
+		raise ValueError("bounds_by_alpha must be non-empty")
+
+	colors  = ["#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E45756"]
+	markers = ["o", "s", "^", "D", "v"]
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with plt.rc_context(
+		{
+			"text.usetex": True,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 11,
+			"axes.titlesize": 11,
+			"xtick.labelsize": 10,
+			"ytick.labelsize": 10,
+			"legend.fontsize": 10,
+		}
+	):
+		fig, ax = plt.subplots(figsize=(5.0, 3.4))
+
+		for i, alpha in enumerate(alpha_values):
+			rows = sorted(bounds_by_alpha[alpha], key=lambda r: float(r["radius"]))
+			radii = np.array([float(r["radius"]) for r in rows])
+			cert_k2_mean = np.array([float(r["cert_k2_mean"]) for r in rows])
+			cert_k2_std = np.array([float(r.get("cert_k2_std", 0.0)) for r in rows])
+			color  = colors[i % len(colors)]
+			marker = markers[i % len(markers)]
+
+			ax.fill_between(
+				radii,
+				cert_k2_mean - cert_k2_std,
+				cert_k2_mean + cert_k2_std,
+				alpha=0.15, color=color,
+			)
+			ax.plot(
+				radii, cert_k2_mean,
+				marker=marker, linewidth=1.4, color=color,
+				label=rf"$\alpha = {alpha:g}$",
+			)
+
+		ax.set_xlabel(r"Robustness radius $r$")
+		ax.set_ylabel("Certified lower-bound")
+		ax.grid(True, linestyle=":", alpha=0.35)
+		ax.legend(loc="best", frameon=True)
+		fig.tight_layout()
+		fig.savefig(output_path, dpi=200)
+		plt.close(fig)
+
+	return output_path
+
+
+# ---------------------------------------------------------------------------
+# Safety analysis plot
+# ---------------------------------------------------------------------------
+
+def plot_safety_analysis(
+	p_stay_k1: np.ndarray,
+	p_stay_k2: np.ndarray,
+	gt_stays: np.ndarray,
+	threshold: float,
+	output_path: Path,
+	p_stay_rsreg: np.ndarray | None = None,
+) -> Path:
+	"""Plot decision-making safety analysis comparing smoothers.
+
+	When ``p_stay_rsreg`` is supplied the figure shows four panels:
+	[RS-Reg strip, alpha-smoothing strip, clustered alpha-smoothing strip, bar chart].
+	Otherwise the classic three-panel layout is produced.
+
+	For each scenario the ego vehicle decides to *go* when its predicted
+	P(other stays) >= ``threshold``.  Risk occurs when the ego goes AND the
+	other vehicle also goes in the ground truth.
+
+	Args:
+		p_stay_k1: P(other stays) predicted by alpha-smoothing (k=1).
+		p_stay_k2: P(other stays) predicted by clustered smoothing (k=2).
+		gt_stays: Boolean array, True when the other vehicle actually stays.
+		threshold: Decision threshold; ego goes if predicted P(stays) >= threshold.
+		output_path: Where to save the figure.
+		p_stay_rsreg: Optional P(other stays) from RS-Reg (alpha=0, k=1).  When
+		    supplied it is plotted as the leftmost strip panel.
+	"""
+	gt_stays = np.asarray(gt_stays, dtype=bool)
+	gt_goes = ~gt_stays
+	ego_go_k1 = p_stay_k1 >= threshold
+	ego_go_k2 = p_stay_k2 >= threshold
+	risk_k1 = float(np.mean(ego_go_k1 & gt_goes))
+	risk_k2 = float(np.mean(ego_go_k2 & gt_goes))
+
+	rng = np.random.default_rng(0)
+	jitter = rng.uniform(-0.12, 0.12, len(p_stay_k1))
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with plt.rc_context(
+		{
+			"text.usetex": True,
+			"font.family": "serif",
+			"font.serif": ["Computer Modern Roman"],
+			"mathtext.fontset": "cm",
+			"axes.labelsize": 13,
+			"axes.titlesize": 13,
+			"xtick.labelsize": 12,
+			"ytick.labelsize": 12,
+			"legend.fontsize": 12,
+		}
+	):
+		if p_stay_rsreg is not None:
+			nego_go_rsreg = p_stay_rsreg >= threshold
+			risk_rsreg = float(np.mean(nego_go_rsreg & gt_goes))
+			fig, axes = plt.subplots(1, 4, figsize=(14.4, 4.2), gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.45]})
+			fig.subplots_adjust(left=0.06, right=0.985, top=0.88, bottom=0.20, wspace=0.12)
+			strip_specs = [
+				(axes[0], p_stay_rsreg, r"RS-Reg", "#6A3D9A", risk_rsreg),
+				(axes[1], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
+				(axes[2], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
+			]
+			ax_bar = axes[3]
+			methods = [r"RS-Reg", r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
+			risks = [risk_rsreg, risk_k1, risk_k2]
+			bar_colors = ["#6A3D9A", "#4C78A8", "#F58518"]
+		else:
+			fig, axes = plt.subplots(1, 3, figsize=(10.9, 4.2), gridspec_kw={"width_ratios": [1.0, 1.0, 1.35]})
+			fig.subplots_adjust(left=0.07, right=0.985, top=0.88, bottom=0.20, wspace=0.14)
+			strip_specs = [
+				(axes[0], p_stay_k1, r"$\alpha$-smoothing", "#4C78A8", risk_k1),
+				(axes[1], p_stay_k2, r"Clustered $\alpha$-smoothing", "#F58518", risk_k2),
+			]
+			ax_bar = axes[2]
+			methods = [r"$\alpha$-smooth.", r"Clustered $\alpha$-smooth."]
+			risks = [risk_k1, risk_k2]
+			bar_colors = ["#4C78A8", "#F58518"]
+
+		for strip_idx, (ax, p_stay, title, color, risk) in enumerate(strip_specs):
+			gt_x = np.where(gt_stays, 0.0, 1.0)
+			# Keep scatter colours fixed across methods for comparability.
+			point_colors = np.where(gt_stays, "#4C78A8", "#C73E1D")
+			ax.scatter(gt_x + jitter, p_stay, c=point_colors, alpha=0.55, s=20, linewidths=0, zorder=2)
+			ax.axhline(
+				threshold, color="#333333", linestyle="--", linewidth=1.1, zorder=3,
+				label=rf"Threshold $= {threshold}$",
+			)
+			# Shade the risky quadrant: ego goes (p_stay >= threshold) AND other goes (right half)
+			ax.axhspan(threshold, 1.05, xmin=0.5, color="#C73E1D", alpha=0.08, zorder=0)
+			ax.set_xticks([0.0, 1.0])
+			ax.set_xticklabels(["Vehicle\nStays", "Vehicle\nGoes"])
+			if strip_idx == 0:
+				ax.set_ylabel(r"$P(\mbox{vehicle stays})$")
+			else:
+				ax.tick_params(axis="y", labelleft=False)
+			ax.set_ylim(-0.05, 1.05)
+			ax.set_title(title)
+			ax.grid(True, linestyle=":", alpha=0.35)
+
+		bars = ax_bar.bar(methods, risks, color=bar_colors, alpha=0.75, edgecolor="black", linewidth=0.8)
+		ax_bar.set_ylabel("")
+		ax_bar.tick_params(axis="y", left=False, right=False, labelleft=False, labelright=False)
+		ax_bar.tick_params(axis="x", labelsize=10)
+		ylim_top = min(1.0, max(max(risks, default=0.1) * 1.35, 0.1))
+		ax_bar.set_ylim(0.0, ylim_top)
+		for bar, risk in zip(bars, risks):
+			risk_pct = f"{risk * 100:.1f}\\%"
+			ax_bar.text(
+				bar.get_x() + bar.get_width() / 2,
+				bar.get_height() + 0.005,
+				risk_pct,
+				ha="center", va="bottom", fontsize=11,
+			)
+		ax_bar.grid(True, linestyle=":", alpha=0.35, axis="y")
+		ax_bar.set_title("Risk rate")
+
+		fig.savefig(output_path, dpi=200)
+		plt.close(fig)
+
+	return output_path
 

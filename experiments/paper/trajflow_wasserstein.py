@@ -33,11 +33,15 @@ from randomized_smoothing.dataclasses import (
     ClusteringParameters,
     ConfidenceParameters,
     Parameters,
+    RuntimeHeuristics,
     SmoothingParameters,
 )
 from randomized_smoothing.smoothing import GaussianAlphaTrimmingSmoothing
-from plotting import plot_trajflow_wasserstein_histograms
-from stochastic_functions import TrajFlowMeszarosStochasticFunction
+from plotting import plot_trajflow_wasserstein_histograms, plot_wasserstein_per_timestep, plot_wasserstein_trajectory_barchart
+from stochastic_functions import (
+    TrajFlowMeszarosStochasticFunction,
+    TrajFlowMeszarosFullTrajectoryStochasticFunction,
+)
 from trajflow_robustness import (
     _ask_yes_no,
     _ask_num_indices,
@@ -49,6 +53,7 @@ from trajflow_robustness import (
     _load_or_create_fixed_random_order,
     _prepare_inputs_from_arrays,
 )
+from experiment_configs import WASSERSTEIN as cfg
 
 
 def _compute_sinkhorn_wasserstein_2_distance(
@@ -97,38 +102,87 @@ def _compute_sinkhorn_wasserstein_2_distance(
     return float(math.sqrt(max(w2_squared, 0.0)))
 
 
-def _build_reference_parameters(args: argparse.Namespace, max_num_clusters: int) -> Parameters:
-    """Match trajflow_experiment parameterization for k=1 and k=2 smoothers."""
+def _build_reference_parameters(max_num_clusters: int) -> Parameters:
+    """Build Parameters for k=1 or k=2 smoother using the WASSERSTEIN config."""
     if max_num_clusters == 1:
         clustering = ClusteringParameters(
             max_num_clusters=1,
-            coverage=args.coverage,
+            coverage=cfg.coverage,
             strategy="dbscan",
-            dbscan_eps=args.dbscan_eps,
-            dbscan_min_samples=args.dbscan_min_samples,
+            dbscan_eps=cfg.dbscan_eps,
+            dbscan_min_samples=cfg.dbscan_min_samples,
         )
     else:
         clustering = ClusteringParameters(
             max_num_clusters=max_num_clusters,
-            coverage=args.coverage,
-            strategy=args.cluster_strategy,
-            dbscan_eps=args.dbscan_eps,
-            dbscan_min_samples=args.dbscan_min_samples,
-            behavior_stay_radius=args.behavior_stay_radius,
-            behavior_min_down=args.behavior_min_down,
-            behavior_min_left=args.behavior_min_left,
+            coverage=cfg.coverage,
+            strategy=cfg.cluster_strategy,
+            dbscan_eps=cfg.dbscan_eps,
+            dbscan_min_samples=cfg.dbscan_min_samples,
+            behavior_stay_radius=cfg.behavior_stay_radius,
+            behavior_min_down=cfg.behavior_min_down,
+            behavior_min_left=cfg.behavior_min_left,
         )
-
     return Parameters(
-        smoothing=SmoothingParameters(N=args.smoothing_N, alpha=args.alpha),
+        smoothing=SmoothingParameters(N=cfg.smoothing_N, alpha=cfg.alpha),
         clustering=clustering,
-        confidence=ConfidenceParameters(num_samples=args.confidence_num_samples, beta=1e-5),
+        confidence=ConfidenceParameters(num_samples=cfg.confidence_num_samples, beta=1e-5),
+        runtime=RuntimeHeuristics(noise_sub_batch_size=cfg.noise_sub_batch_size),
     )
 
 
+def _build_rsreg_parameters() -> Parameters:
+    """Build Parameters for RSReg: standard Gaussian smoothing with alpha=0, one cluster.
+
+    RSReg (Randomized Smoothing Regular) is the degenerate case of
+    alpha-trimming with alpha=0 — no samples are trimmed and the smoother
+    collapses to a single-cluster, unweighted mean of the noisy outputs.
+    It serves as a baseline that lacks both trimming and clustering.
+    """
+    return Parameters(
+        smoothing=SmoothingParameters(N=cfg.smoothing_N, alpha=0.0),
+        clustering=ClusteringParameters(
+            max_num_clusters=1,
+            coverage=cfg.coverage,
+            strategy="dbscan",
+            dbscan_eps=cfg.dbscan_eps,
+            dbscan_min_samples=cfg.dbscan_min_samples,
+        ),
+        confidence=ConfidenceParameters(num_samples=cfg.confidence_num_samples, beta=1e-5),
+        runtime=RuntimeHeuristics(noise_sub_batch_size=cfg.noise_sub_batch_size),
+    )
+
+
+def _noisy_reference_samples(
+    stochastic_fn: TrajFlowMeszarosStochasticFunction | TrajFlowMeszarosFullTrajectoryStochasticFunction,
+    model_input: torch.Tensor,
+    helper: list[torch.Tensor],
+    sigma: float,
+    num_samples: int,
+    noise_sub_batch_size: int,
+) -> torch.Tensor:
+    """Draw samples from h_w(x+ε) — model evaluated at Gaussian-perturbed inputs.
+
+    Each sample draws a fresh ε ~ N(0, σ²I) independently, matching the noise
+    distribution used by the smoothers.  This is the natural reference for
+    evaluating how well each smoother approximates the noisy predictive
+    distribution that it is designed to represent.
+    """
+    dimension = model_input.shape[-1]
+    mean = torch.zeros(dimension, device=model_input.device, dtype=model_input.dtype)
+    cov = (sigma ** 2) * torch.eye(dimension, device=model_input.device, dtype=model_input.dtype)
+    smoothing_distribution = MultivariateGaussian(mean=mean, cov=cov)
+    return stochastic_fn.sample_from_noisy_inputs(
+        x=model_input,
+        smoothing_distribution=smoothing_distribution,
+        num_samples=num_samples,
+        h=helper,
+        noise_sub_batch_size=noise_sub_batch_size,
+    )  # (nx, num_samples, output_dim)
+
+
 def _compute_batch_wasserstein_rows(
-    args: argparse.Namespace,
-    stochastic_fn: TrajFlowMeszarosStochasticFunction,
+    stochastic_fn: TrajFlowMeszarosStochasticFunction | TrajFlowMeszarosFullTrajectoryStochasticFunction,
     batch_indices: np.ndarray,
     inputs: np.ndarray,
     outputs_gt: np.ndarray,
@@ -140,70 +194,159 @@ def _compute_batch_wasserstein_rows(
     )
     cluster_anchor = _extract_target_initial_position(x_position)
 
-    if args.input_mode == "position":
+    if cfg.input_mode == "position":
         model_input = x_position
         helper: list[torch.Tensor] = []
     else:
         model_input, helper = stochastic_fn.pos_to_ctrl(x_position)
 
+    # For endpoint_dbscan we do not need an endpoint anchor (data-driven from
+    # model outputs). behavior_split requires the initial position of the target agent.
+    anchor_k2 = (
+        None if cfg.cluster_strategy == "endpoint_dbscan"
+        else cluster_anchor
+    )
+
+    smoother_rsreg = GaussianAlphaTrimmingSmoothing(
+        stochastic_function=stochastic_fn,
+        x=model_input,
+        sigma=cfg.sigma,
+        parameters=_build_rsreg_parameters(),
+        h=helper,
+        cluster_anchor=None,
+    )
     smoother_k1 = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
-        sigma=args.sigma,
-        parameters=_build_reference_parameters(args, max_num_clusters=1),
+        sigma=cfg.sigma,
+        parameters=_build_reference_parameters(max_num_clusters=1),
         h=helper,
-        cluster_anchor=cluster_anchor,
+        cluster_anchor=None,
     )
     smoother_k2 = GaussianAlphaTrimmingSmoothing(
         stochastic_function=stochastic_fn,
         x=model_input,
-        sigma=args.sigma,
-        parameters=_build_reference_parameters(args, max_num_clusters=2),
+        sigma=cfg.sigma,
+        parameters=_build_reference_parameters(max_num_clusters=2),
         h=helper,
-        cluster_anchor=cluster_anchor,
+        cluster_anchor=anchor_k2,
     )
 
-    base_noise = MultivariateGaussian(
-        mean=torch.zeros(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
-        cov=(args.sigma**2)
-        * torch.eye(model_input.shape[-1], dtype=model_input.dtype, device=model_input.device),
+    # Reference distribution: h_w(x+ε) — model evaluated at Gaussian-perturbed inputs.
+    # Each sample draws a fresh ε ~ N(0, σ²I), matching the smoother's noise distribution.
+    noisy_ref_samples = _noisy_reference_samples(
+        stochastic_fn=stochastic_fn,
+        model_input=model_input,
+        helper=helper,
+        sigma=cfg.sigma,
+        num_samples=cfg.distribution_samples,
+        noise_sub_batch_size=cfg.noise_sub_batch_size,
     )
+    smoothed_rsreg_samples = smoother_rsreg.monte_carlo(num_simulations=cfg.distribution_samples)
+    smoothed_k1_samples = smoother_k1.monte_carlo(num_simulations=cfg.distribution_samples)
+    smoothed_k2_samples = smoother_k2.monte_carlo(num_simulations=cfg.distribution_samples)
 
-    noisy_samples = stochastic_fn.sample_from_noisy_inputs(
-        x=model_input,
-        smoothing_distribution=base_noise,
-        num_samples=args.distribution_samples,
-        h=helper,
-        noise_sub_batch_size=args.noise_sub_batch_size,
-    )
-    smoothed_k1_samples = smoother_k1.monte_carlo(num_simulations=args.distribution_samples)
-    smoothed_k2_samples = smoother_k2.monte_carlo(num_simulations=args.distribution_samples)
-
-    noisy_np = noisy_samples.detach().cpu().numpy()
+    noisy_ref_np = noisy_ref_samples.detach().cpu().numpy()  # (nx, n_samples, output_dim)
+    rsreg_np = smoothed_rsreg_samples.detach().cpu().numpy()
     k1_np = smoothed_k1_samples.detach().cpu().numpy()
     k2_np = smoothed_k2_samples.detach().cpu().numpy()
 
+    # Record how many clusters were actually found for each input so callers
+    # can filter to inputs where k=2 was genuinely observed.
+    k2_k_per_row: list[int] = smoother_k2.cluster.k_per_row.tolist()
+
+    output_dim = noisy_ref_np.shape[-1]
+    # Detect trajectory mode: full output (num_timesteps * 2) vs endpoint (2).
+    is_trajectory = output_dim > 2
+    num_timesteps = output_dim // 2 if is_trajectory else 1
+
     rows: list[dict[str, Any]] = []
     for i, dataset_idx in enumerate(batch_indices.tolist()):
-        w2_noisy_k1 = _compute_sinkhorn_wasserstein_2_distance(
-            noisy_np[i],
-            k1_np[i],
-            reg=args.sinkhorn_reg,
-            ot_method=args.ot_method,
-        )
-        w2_noisy_k2 = _compute_sinkhorn_wasserstein_2_distance(
-            noisy_np[i],
-            k2_np[i],
-            reg=args.sinkhorn_reg,
-            ot_method=args.ot_method,
-        )
-        rows.append(
-            {
-                "dataset_index": int(dataset_idx),
-                "w2_noisy_vs_k1": float(w2_noisy_k1),
-                "w2_noisy_vs_k2": float(w2_noisy_k2),
-            }
-        )
+        row: dict[str, Any] = {
+            "dataset_index": int(dataset_idx),
+            "k_per_row_k2": int(k2_k_per_row[i]),
+        }
+
+        if is_trajectory:
+            # All metrics are 2-D, evaluated only at the selected timesteps so
+            # that the computation stays tractable while still capturing the
+            # temporal trend.  The main histogram key reuses the last selected
+            # timestep (= final position), which is the same quantity as
+            # endpoint mode and avoids inflating W2 over 40-D trajectory space.
+            eval_indices = [
+                t for t in cfg.timestep_eval_indices if t < num_timesteps
+            ]
+            w2_per_t_rsreg: list[float] = []
+            w2_per_t_k1: list[float] = []
+            w2_per_t_k2: list[float] = []
+            for t in eval_indices:
+                sl = slice(2 * t, 2 * t + 2)
+                w2_t_rsreg = _compute_sinkhorn_wasserstein_2_distance(
+                    noisy_ref_np[i, :, sl],
+                    rsreg_np[i, :, sl],
+                    reg=cfg.sinkhorn_reg,
+                    ot_method=cfg.ot_method,
+                )
+                w2_t_k1 = _compute_sinkhorn_wasserstein_2_distance(
+                    noisy_ref_np[i, :, sl],
+                    k1_np[i, :, sl],
+                    reg=cfg.sinkhorn_reg,
+                    ot_method=cfg.ot_method,
+                )
+                w2_t_k2 = _compute_sinkhorn_wasserstein_2_distance(
+                    noisy_ref_np[i, :, sl],
+                    k2_np[i, :, sl],
+                    reg=cfg.sinkhorn_reg,
+                    ot_method=cfg.ot_method,
+                )
+                w2_per_t_rsreg.append(float(w2_t_rsreg))
+                w2_per_t_k1.append(float(w2_t_k1))
+                w2_per_t_k2.append(float(w2_t_k2))
+            row["w2_per_timestep_rsreg"] = w2_per_t_rsreg
+            row["w2_per_timestep_k1"] = w2_per_t_k1
+            row["w2_per_timestep_k2"] = w2_per_t_k2
+            row["w2_timestep_indices"] = eval_indices
+            # Histogram key = last evaluated (= final) timestep 2-D W2.
+            row["w2_noisy_vs_rsreg"] = w2_per_t_rsreg[-1]
+            row["w2_noisy_vs_k1"] = w2_per_t_k1[-1]
+            row["w2_noisy_vs_k2"] = w2_per_t_k2[-1]
+            # Full-trajectory W2: treat each complete trajectory (R^{output_dim})
+            # as a single sample.  This captures joint-distribution discrepancy
+            # across all timesteps, unlike the per-step 2-D quantities above.
+            row["w2_traj_noisy_vs_rsreg"] = float(_compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i], rsreg_np[i], reg=cfg.sinkhorn_reg, ot_method=cfg.ot_method,
+            ))
+            row["w2_traj_noisy_vs_k1"] = float(_compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i], k1_np[i], reg=cfg.sinkhorn_reg, ot_method=cfg.ot_method,
+            ))
+            row["w2_traj_noisy_vs_k2"] = float(_compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i], k2_np[i], reg=cfg.sinkhorn_reg, ot_method=cfg.ot_method,
+            ))
+        else:
+            # Endpoint mode: the full output is already 2-D.
+            w2_noisy_rsreg = _compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i],
+                rsreg_np[i],
+                reg=cfg.sinkhorn_reg,
+                ot_method=cfg.ot_method,
+            )
+            w2_noisy_k1 = _compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i],
+                k1_np[i],
+                reg=cfg.sinkhorn_reg,
+                ot_method=cfg.ot_method,
+            )
+            w2_noisy_k2 = _compute_sinkhorn_wasserstein_2_distance(
+                noisy_ref_np[i],
+                k2_np[i],
+                reg=cfg.sinkhorn_reg,
+                ot_method=cfg.ot_method,
+            )
+            row["w2_noisy_vs_rsreg"] = float(w2_noisy_rsreg)
+            row["w2_noisy_vs_k1"] = float(w2_noisy_k1)
+            row["w2_noisy_vs_k2"] = float(w2_noisy_k2)
+
+        rows.append(row)
 
     return rows
 
@@ -215,201 +358,30 @@ def _save_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    """All smoothing/model parameters are in experiment_configs.py (WASSERSTEIN)."""
     parser = argparse.ArgumentParser(
         description=(
-            "Compute empirical 2-Wasserstein distances between noisy TrajFlow outputs "
-            "h_w(x+epsilon) and smoothed outputs from k=1 and k=2 smoothers."
+            "Compute empirical 2-Wasserstein distances between noisy TrajFlow outputs\n"
+            "h_w(x+ε) and smoothed outputs from RSReg, k=1 and k=2 smoothers.\n"
+            "Edit experiment_configs.WASSERSTEIN to change model/smoothing parameters."
         )
     )
-    parser.add_argument(
-        "--num-inputs",
-        type=int,
-        default=None,
-        help=(
-            "How many valid inputs to evaluate when selected-indices is not provided. "
-            "If omitted, the script asks interactively. Use 0 for all valid indices."
-        ),
-    )
-    parser.add_argument(
-        "--selected-indices",
-        type=str,
-        default="",
-        help="Optional comma-separated dataset indices. Overrides --num-inputs.",
-    )
-    parser.add_argument(
-        "--input-batch-size",
-        type=int,
-        default=5,
-        help="How many selected inputs to process at once.",
-    )
-    parser.add_argument(
-        "--distribution-samples",
-        type=int,
-        default=150,
-        help="Number of samples drawn from each distribution per input.",
-    )
-    parser.add_argument(
-        "--sinkhorn-reg",
-        type=float,
-        default=0.1,
-        help="Entropic regularization used by POT Sinkhorn approximation.",
-    )
-    parser.add_argument(
-        "--ot-method",
-        type=str,
-        choices=("sinkhorn_log", "sinkhorn_stabilized", "sinkhorn", "emd"),
-        default="sinkhorn_log",
-        help=(
-            "POT OT solver. 'sinkhorn_log' is usually the most stable regularized option; "
-            "'emd' computes exact OT (slower, no reg used)."
-        ),
-    )
-    parser.add_argument(
-        "--sigma",
-        type=float,
-        default=1.0,
-        help="Gaussian input perturbation std used for noisy sampling and smoothing.",
-    )
-    parser.add_argument(
-        "--smoothing-N",
-        type=int,
-        default=10,
-        help="N for alpha-trimming smoothing.",
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=0.35,
-        help="Trimming parameter alpha.",
-    )
-    parser.add_argument(
-        "--coverage",
-        type=float,
-        default=0.80,
-        help="Coverage parameter for cluster regions.",
-    )
-    parser.add_argument(
-        "--cluster-strategy",
-        type=str,
-        choices=("dbscan", "behavior_split"),
-        default="behavior_split",
-        help="Clustering strategy for k=2 smoothing.",
-    )
-    parser.add_argument(
-        "--input-mode",
-        type=str,
-        choices=("control", "position"),
-        default="control",
-        help="Input representation for smoothing and noisy perturbation.",
-    )
-    parser.add_argument(
-        "--behavior-stay-radius",
-        type=float,
-        default=1.0,
-        help="Stay mode threshold: ||y - y_init|| <= radius.",
-    )
-    parser.add_argument(
-        "--behavior-min-down",
-        type=float,
-        default=0.5,
-        help="Turn mode threshold on axis x2: y2 - y2_init <= -min_down.",
-    )
-    parser.add_argument(
-        "--behavior-min-left",
-        type=float,
-        default=0.0,
-        help="Turn mode threshold on axis x1: y1 - y1_init <= -min_left.",
-    )
-    parser.add_argument(
-        "--dbscan-eps",
-        type=float,
-        default=0.5,
-        help="DBSCAN eps for clustering inside smoothing.",
-    )
-    parser.add_argument(
-        "--dbscan-min-samples",
-        type=int,
-        default=35,
-        help="DBSCAN min_samples for clustering inside smoothing.",
-    )
-    parser.add_argument(
-        "--noise-sub-batch-size",
-        type=int,
-        default=300,
-        help="Sub-batch size along noise/sample dimension for stochastic sampling.",
-    )
-    parser.add_argument(
-        "--confidence-num-samples",
-        type=int,
-        default=350,
-        help="num_samples for confidence parameter used in smoothing setup.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=0,
-        help="Random seed for sampling.",
-    )
-    parser.add_argument(
-        "--analysis-dir",
-        type=str,
-        default=str(EXPERIMENTS / "data" / "analysis" / "wasserstein"),
-        help="Directory where Wasserstein JSON is saved.",
-    )
-    parser.add_argument(
-        "--figures-dir",
-        type=str,
-        default=str(EXPERIMENTS / "data" / "figures"),
-        help="Directory where Wasserstein histogram figure is saved.",
-    )
-    parser.add_argument(
-        "--histogram-name",
-        type=str,
-        default="trajflow_wasserstein_histograms.pdf",
-        help="Filename for the side-by-side histogram figure.",
-    )
-    parser.add_argument(
-        "--hist-bins",
-        type=int,
-        default=24,
-        help="Number of bins per histogram.",
-    )
-    parser.add_argument(
-        "--fixed-index-order-file",
-        type=str,
-        default="",
-        help=(
-            "Optional path to the persistent random ordering JSON. "
-            "If omitted, uses <experiments-data>/fixed_random_index_order.json."
-        ),
-    )
-    parser.add_argument(
-        "--regenerate",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=(
-            "If set, recomputes data even when a saved JSON already exists. "
-            "If --no-regenerate is set, loads from existing JSON and only plots. "
-            "If omitted, the script asks interactively when JSON already exists."
-        ),
-    )
+    parser.add_argument("--num-inputs", type=int, default=0,
+                        help="How many valid inputs to evaluate (0 = all). Ignored if --selected-indices is set.")
+    parser.add_argument("--selected-indices", type=str, default="",
+                        help="Comma-separated dataset indices. Overrides --num-inputs.")
+    parser.add_argument("--regenerate", action=argparse.BooleanOptionalAction, default=None,
+                        help="Re-run even when a saved JSON already exists.")
+    parser.add_argument("--analysis-dir", default=str(EXPERIMENTS / "data" / "analysis" / "wasserstein"))
+    parser.add_argument("--figures-dir", default=str(EXPERIMENTS / "data" / "figures"))
+    parser.add_argument("--histogram-name", default="trajflow_wasserstein_histograms.pdf")
+    parser.add_argument("--timestep-plot-name", default="trajflow_wasserstein_per_timestep.pdf")
+    parser.add_argument("--traj-barchart-name", default="trajflow_wasserstein_trajectory_barchart.pdf")
+    parser.add_argument("--fixed-index-order-file", default="")
     args = parser.parse_args()
 
-    if args.input_batch_size <= 0:
-        raise ValueError("input-batch-size must be positive")
-    if args.distribution_samples <= 0:
-        raise ValueError("distribution-samples must be positive")
-    if args.noise_sub_batch_size <= 0:
-        raise ValueError("noise-sub-batch-size must be positive")
-    if args.sigma <= 0.0:
-        raise ValueError("sigma must be positive")
-    if args.ot_method != "emd" and args.sinkhorn_reg <= 0.0:
-        raise ValueError("sinkhorn-reg must be positive")
-    if args.hist_bins <= 0:
-        raise ValueError("hist-bins must be positive")
-
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
 
     analysis_dir = Path(args.analysis_dir)
     json_path = analysis_dir / "trajflow_wasserstein.json"
@@ -417,14 +389,17 @@ def main() -> None:
     if args.regenerate is not None:
         do_regenerate = bool(args.regenerate)
     elif json_path.exists():
-        do_regenerate = _ask_yes_no(
-            "Found existing Wasserstein data JSON.\nRegenerate? [y/n]: "
-        )
+        do_regenerate = _ask_yes_no("Found existing Wasserstein data JSON.\nRegenerate? [y/n]: ")
     else:
         do_regenerate = True
 
     if do_regenerate:
-        stochastic_fn = TrajFlowMeszarosStochasticFunction()
+        if cfg.output_mode == "trajectory":
+            stochastic_fn: TrajFlowMeszarosStochasticFunction | TrajFlowMeszarosFullTrajectoryStochasticFunction = (
+                TrajFlowMeszarosFullTrajectoryStochasticFunction()
+            )
+        else:
+            stochastic_fn = TrajFlowMeszarosStochasticFunction()
         all_inputs, outputs_gt = _load_inputs_and_outputs()
         valid_indices = np.flatnonzero(_finite_target_mask(outputs_gt))
 
@@ -434,37 +409,29 @@ def main() -> None:
             else EXPERIMENTS / "data" / "fixed_random_index_order.json"
         )
         fixed_random_order = _load_or_create_fixed_random_order(
-            path=fixed_order_path,
-            valid_indices=valid_indices,
-            seed=args.seed,
+            path=fixed_order_path, valid_indices=valid_indices, seed=cfg.seed,
         )
 
-        if args.num_inputs is None and not (args.selected_indices or "").strip():
+        num_inputs = args.num_inputs
+        if num_inputs == 0 and not (args.selected_indices or "").strip():
             print(f"Available valid indices in dataset: {len(valid_indices)}")
-            args.num_inputs = _ask_num_indices(
-                "How many xs should be analyzed? (0 for all) ",
-                len(valid_indices),
+            num_inputs = _ask_num_indices(
+                "How many xs should be analyzed? (0 for all) ", len(valid_indices)
             )
-        if args.num_inputs is None:
-            args.num_inputs = 0
 
         selected_indices = _choose_indices(
             fixed_random_order=fixed_random_order,
-            num_inputs=args.num_inputs,
+            num_inputs=num_inputs,
             selected_indices_text=args.selected_indices,
         )
 
         all_rows: list[dict[str, Any]] = []
-        num_batches = (len(selected_indices) + args.input_batch_size - 1) // args.input_batch_size
-        for batch_id, start in enumerate(range(0, len(selected_indices), args.input_batch_size), start=1):
+        num_batches = (len(selected_indices) + cfg.input_batch_size - 1) // cfg.input_batch_size
+        for batch_id, start in enumerate(range(0, len(selected_indices), cfg.input_batch_size), start=1):
             t0 = time.perf_counter()
-            batch_indices = selected_indices[start : start + args.input_batch_size]
-            print(
-                f"processing batch {batch_id}/{num_batches} "
-                f"with {len(batch_indices)} dataset indices"
-            )
+            batch_indices = selected_indices[start : start + cfg.input_batch_size]
+            print(f"processing batch {batch_id}/{num_batches} with {len(batch_indices)} dataset indices")
             rows = _compute_batch_wasserstein_rows(
-                args=args,
                 stochastic_fn=stochastic_fn,
                 batch_indices=batch_indices,
                 inputs=all_inputs,
@@ -478,8 +445,7 @@ def main() -> None:
         if not isinstance(loaded_rows, list):
             raise ValueError(f"Invalid per_input list in {json_path}")
         all_rows = loaded_rows
-        selected_from_config = payload.get("config", {}).get("selected_indices", [])
-        selected_indices = np.array(selected_from_config, dtype=int)
+        selected_indices = np.array(payload.get("config", {}).get("selected_indices", []), dtype=int)
         fixed_order_path = (
             Path(args.fixed_index_order_file)
             if args.fixed_index_order_file
@@ -490,52 +456,134 @@ def main() -> None:
     if len(all_rows) == 0:
         raise ValueError("No per-input Wasserstein rows found to plot.")
 
-    w_noisy_vs_k1 = np.array([float(row["w2_noisy_vs_k1"]) for row in all_rows], dtype=float)
-    w_noisy_vs_k2 = np.array([float(row["w2_noisy_vs_k2"]) for row in all_rows], dtype=float)
+    # Focus on inputs where the k=2 smoother genuinely found 2 clusters.
+    rows_for_plot = [r for r in all_rows if r.get("k_per_row_k2", 2) >= 2]
+    if not rows_for_plot:
+        rows_for_plot = all_rows  # safety fallback
+    n_filtered = len(all_rows) - len(rows_for_plot)
+    if n_filtered > 0:
+        print(f"  ({n_filtered} input(s) with <2 clusters excluded from plots; {len(rows_for_plot)} remaining)")
+
+    rows_with_rsreg = [r for r in rows_for_plot if "w2_noisy_vs_rsreg" in r]
+    w_noisy_vs_rsreg: np.ndarray | None = (
+        np.array([float(r["w2_noisy_vs_rsreg"]) for r in rows_with_rsreg], dtype=float)
+        if rows_with_rsreg
+        else None
+    )
+    if w_noisy_vs_rsreg is None:
+        print("  (RSReg W2 data not found in loaded JSON; RSReg will be omitted from plots)")
+
+    w_noisy_vs_k1 = np.array([float(r["w2_noisy_vs_k1"]) for r in rows_for_plot], dtype=float)
+    w_noisy_vs_k2 = np.array([float(r["w2_noisy_vs_k2"]) for r in rows_for_plot], dtype=float)
+
+    # When RSReg is present we restrict all three arrays to the same rows so the
+    # histograms are directly comparable.  Otherwise fall back to k1/k2 only.
+    if w_noisy_vs_rsreg is not None and len(rows_with_rsreg) != len(rows_for_plot):
+        rsreg_mask = np.array(["w2_noisy_vs_rsreg" in r for r in rows_for_plot], dtype=bool)
+        w_noisy_vs_k1 = w_noisy_vs_k1[rsreg_mask]
+        w_noisy_vs_k2 = w_noisy_vs_k2[rsreg_mask]
 
     histogram_path = Path(args.figures_dir) / args.histogram_name
     plot_trajflow_wasserstein_histograms(
         w_noisy_vs_k1=w_noisy_vs_k1,
         w_noisy_vs_k2=w_noisy_vs_k2,
         output_path=histogram_path,
-        bins=args.hist_bins,
+        bins=cfg.hist_bins,
+        w_noisy_vs_rsreg=w_noisy_vs_rsreg,
     )
 
+    # Per-timestep Wasserstein plot (trajectory mode only).
+    if cfg.output_mode == "trajectory" or any("w2_per_timestep_k1" in r for r in rows_for_plot):
+        rows_with_ts = [
+            r for r in rows_for_plot
+            if "w2_per_timestep_k1" in r and "w2_per_timestep_k2" in r
+        ]
+        if rows_with_ts:
+            w2_ts_k1 = np.array([r["w2_per_timestep_k1"] for r in rows_with_ts], dtype=float)
+            w2_ts_k2 = np.array([r["w2_per_timestep_k2"] for r in rows_with_ts], dtype=float)
+            w2_ts_rsreg: np.ndarray | None = None
+            rows_with_ts_rsreg = [r for r in rows_with_ts if "w2_per_timestep_rsreg" in r]
+            if rows_with_ts_rsreg:
+                w2_ts_rsreg = np.array(
+                    [r["w2_per_timestep_rsreg"] for r in rows_with_ts_rsreg], dtype=float
+                )
+                # Align k1/k2 arrays to RSReg rows.
+                if len(rows_with_ts_rsreg) != len(rows_with_ts):
+                    rsreg_ts_mask = np.array(
+                        ["w2_per_timestep_rsreg" in r for r in rows_with_ts], dtype=bool
+                    )
+                    w2_ts_k1 = w2_ts_k1[rsreg_ts_mask]
+                    w2_ts_k2 = w2_ts_k2[rsreg_ts_mask]
+            ts_indices = np.array(rows_with_ts[0].get(
+                "w2_timestep_indices", list(range(w2_ts_k1.shape[1]))
+            ), dtype=int)
+            timestep_path = Path(args.figures_dir) / args.timestep_plot_name
+            plot_wasserstein_per_timestep(
+                w2_k1=w2_ts_k1, w2_k2=w2_ts_k2,
+                output_path=timestep_path, timesteps=ts_indices,
+                w2_rsreg=w2_ts_rsreg,
+            )
+            print(f"saved: {timestep_path}")
+
+    # Full-trajectory W2 bar chart (trajectory mode only).
+    rows_with_traj = [r for r in rows_for_plot if "w2_traj_noisy_vs_k1" in r and "w2_traj_noisy_vs_k2" in r]
+    if rows_with_traj:
+        w2_traj_k1 = np.array([r["w2_traj_noisy_vs_k1"] for r in rows_with_traj], dtype=float)
+        w2_traj_k2 = np.array([r["w2_traj_noisy_vs_k2"] for r in rows_with_traj], dtype=float)
+        w2_traj_rsreg: np.ndarray | None = None
+        rows_with_traj_rsreg = [r for r in rows_with_traj if "w2_traj_noisy_vs_rsreg" in r]
+        if rows_with_traj_rsreg:
+            w2_traj_rsreg = np.array([r["w2_traj_noisy_vs_rsreg"] for r in rows_with_traj_rsreg], dtype=float)
+            if len(rows_with_traj_rsreg) != len(rows_with_traj):
+                traj_rsreg_mask = np.array(["w2_traj_noisy_vs_rsreg" in r for r in rows_with_traj], dtype=bool)
+                w2_traj_k1 = w2_traj_k1[traj_rsreg_mask]
+                w2_traj_k2 = w2_traj_k2[traj_rsreg_mask]
+        traj_barchart_path = Path(args.figures_dir) / args.traj_barchart_name
+        plot_wasserstein_trajectory_barchart(
+            w2_traj_k1=w2_traj_k1, w2_traj_k2=w2_traj_k2,
+            output_path=traj_barchart_path,
+            w2_traj_rsreg=w2_traj_rsreg,
+        )
+        print(f"saved: {traj_barchart_path}")
+
     if do_regenerate:
+        aggregate: dict[str, Any] = {
+            "mean_w2_noisy_vs_k1": float(np.mean(w_noisy_vs_k1)),
+            "std_w2_noisy_vs_k1": float(np.std(w_noisy_vs_k1)),
+            "mean_w2_noisy_vs_k2": float(np.mean(w_noisy_vs_k2)),
+            "std_w2_noisy_vs_k2": float(np.std(w_noisy_vs_k2)),
+        }
+        if w_noisy_vs_rsreg is not None:
+            aggregate["mean_w2_noisy_vs_rsreg"] = float(np.mean(w_noisy_vs_rsreg))
+            aggregate["std_w2_noisy_vs_rsreg"] = float(np.std(w_noisy_vs_rsreg))
+        if rows_with_traj:
+            aggregate["mean_w2_traj_noisy_vs_k1"] = float(np.mean(w2_traj_k1))
+            aggregate["std_w2_traj_noisy_vs_k1"] = float(np.std(w2_traj_k1))
+            aggregate["mean_w2_traj_noisy_vs_k2"] = float(np.mean(w2_traj_k2))
+            aggregate["std_w2_traj_noisy_vs_k2"] = float(np.std(w2_traj_k2))
+            if w2_traj_rsreg is not None:
+                aggregate["mean_w2_traj_noisy_vs_rsreg"] = float(np.mean(w2_traj_rsreg))
+                aggregate["std_w2_traj_noisy_vs_rsreg"] = float(np.std(w2_traj_rsreg))
         summary = {
             "config": {
                 "selected_indices": selected_indices.tolist(),
-                "distribution_samples": int(args.distribution_samples),
-                "ot_method": args.ot_method,
-                "sinkhorn_reg": float(args.sinkhorn_reg),
-                "sigma": float(args.sigma),
-                "smoothing_N": int(args.smoothing_N),
-                "alpha": float(args.alpha),
-                "coverage": float(args.coverage),
-                "cluster_strategy": args.cluster_strategy,
-                "input_mode": args.input_mode,
-                "behavior_stay_radius": float(args.behavior_stay_radius),
-                "behavior_min_down": float(args.behavior_min_down),
-                "behavior_min_left": float(args.behavior_min_left),
-                "dbscan_eps": float(args.dbscan_eps),
-                "dbscan_min_samples": int(args.dbscan_min_samples),
-                "noise_sub_batch_size": int(args.noise_sub_batch_size),
-                "confidence_num_samples": int(args.confidence_num_samples),
-                "input_batch_size": int(args.input_batch_size),
-                "seed": int(args.seed),
-                "fixed_index_order_file": str(fixed_order_path),
-                "hist_bins": int(args.hist_bins),
-                "histogram_path": str(histogram_path),
+                "output_mode": cfg.output_mode,
+                "distribution_samples": cfg.distribution_samples,
+                "ot_method": cfg.ot_method,
+                "sinkhorn_reg": cfg.sinkhorn_reg,
+                "sigma": cfg.sigma,
+                "smoothing_N": cfg.smoothing_N,
+                "alpha": cfg.alpha,
+                "coverage": cfg.coverage,
+                "cluster_strategy": cfg.cluster_strategy,
+                "behavior_stay_radius": cfg.behavior_stay_radius,
+                "confidence_num_samples": cfg.confidence_num_samples,
+                "input_batch_size": cfg.input_batch_size,
+                "seed": cfg.seed,
             },
-            "aggregate": {
-                "mean_w2_noisy_vs_k1": float(np.mean(w_noisy_vs_k1)),
-                "std_w2_noisy_vs_k1": float(np.std(w_noisy_vs_k1)),
-                "mean_w2_noisy_vs_k2": float(np.mean(w_noisy_vs_k2)),
-                "std_w2_noisy_vs_k2": float(np.std(w_noisy_vs_k2)),
-            },
+            "aggregate": aggregate,
             "per_input": all_rows,
         }
-
         _save_json(json_path, summary)
 
     print("=== TrajFlow Wasserstein Experiment ===")
