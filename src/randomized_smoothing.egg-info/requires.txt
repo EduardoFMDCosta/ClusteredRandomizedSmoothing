@@ -1,5 +1,0 @@
-torch>=2.2
-
-[plots]
-matplotlib>=3.8
-numpy>=2.0
